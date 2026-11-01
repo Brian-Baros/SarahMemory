@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryVoice.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,6 +13,7 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+===============================================================================
 
 SarahMemory v8.0 - Voice & Sound Synthesis Module
 
@@ -50,7 +51,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -115,6 +116,13 @@ def _sm_sanitize_llm_text_local(text: str) -> str:
     if "Assistant:" in t:
         t = t.split("Assistant:")[-1].strip()
 
+    # Preserve mathematical meaning for speech, without changing canonical chat content.
+    t = re.sub(r"(?<=\d)\s*\*\*\s*(?=\d)", " to the power of ", t)
+    t = re.sub(r"(?<=\d)\s*\^\s*(?=\d)", " to the power of ", t)
+    t = re.sub(r"(?<=\d)\s*<=\s*(?=\d)", " less than or equal to ", t)
+    t = re.sub(r"(?<=\d)\s*>=\s*(?=\d)", " greater than or equal to ", t)
+    t = re.sub(r"(?<=\d)\s*<\s*(?=\d)", " less than ", t)
+    t = re.sub(r"(?<=\d)\s*>\s*(?=\d)", " greater than ", t)
     # Markdown / provenance cleanup for spoken output.
     t = re.sub(r"(?is)```.*?```", lambda m: re.sub(r"^```[a-zA-Z0-9_-]*\n?|\n?```$", "", m.group(0).strip()), t)
     t = re.sub(r"`([^`]+)`", r"\1", t)
@@ -1967,22 +1975,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML registration confirmed; runtime measurements not performed"],
     }
 
 
@@ -1992,7 +2000,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryVoice',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

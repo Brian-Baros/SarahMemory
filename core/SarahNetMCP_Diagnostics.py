@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-
 """--==The SarahMemory Project==--
 File: SarahNetMCP_Diagnostics.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -15,8 +14,8 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+===============================================================================
 
-------------------------------------------------------------
 Unified SarahNet / MCP broker diagnostics test suite.
 
 Combines prior standalone tests:
@@ -54,7 +53,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -102,6 +101,18 @@ def _ms(t0: float) -> float:
 
 
 def _req(session: requests.Session, method: str, base: str, path: str, timeout: float = 15.0, **kw):
+    from urllib.parse import urlparse
+    from ipaddress import ip_address
+    endpoint = urlparse(base)
+    host = (endpoint.hostname or '').lower()
+    try:
+        local = ip_address(host).is_loopback
+    except ValueError:
+        local = host == 'localhost'
+    if endpoint.scheme not in ('http','https') or not local:
+        raise PermissionError('Network diagnostics require a verified remote-session grant; local loopback only')
+    if method.upper() != 'GET':
+        raise PermissionError('Diagnostic mutation requires governed network authorization')
     url = urljoin(base.rstrip("/") + "/", path.lstrip("/"))
     t0 = time.time()
     r = session.request(method, url, timeout=timeout, **kw)
@@ -173,7 +184,12 @@ def _sha256_hex(b: bytes) -> str:
 
 
 def _send_file_small(s: requests.Session, base: str, from_node: str, to_node: str, file_path: str, timeout: float):
-    data = open(file_path, "rb").read()
+    if os.path.getsize(file_path) > 1024 * 1024:
+        raise ValueError('Diagnostic file exceeds 1 MiB bound')
+    with open(file_path, 'rb') as inp:
+        data = inp.read(1024 * 1024 + 1)
+    if len(data) > 1024 * 1024:
+        raise ValueError('Diagnostic file exceeds 1 MiB bound')
     b64 = base64.b64encode(data).decode("utf-8")
     payload = {
         "filename": os.path.basename(file_path),
@@ -414,22 +430,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML registration confirmed; runtime measurements not performed"],
     }
 
 
@@ -439,7 +455,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahNetMCP_Diagnostics',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

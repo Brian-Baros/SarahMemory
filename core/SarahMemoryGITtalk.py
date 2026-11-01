@@ -3,8 +3,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryGITtalk.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -15,6 +15,7 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+===============================================================================
 
 SarahMemoryGITtalk.py  (MASTER monkey patch - FRONTEND ONLY)
 
@@ -64,7 +65,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -247,15 +248,11 @@ def _mask_token(url: str) -> str:
         return url
 
 
+
 def _run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        cmd,
-        cwd=str(cwd) if cwd else None,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=check,
-    )
+    """Bounded Git subprocess; no shell, no secrets in outputs."""
+    return subprocess.run(cmd, cwd=str(cwd) if cwd else None, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, text=True, check=check, timeout=30)
 
 
 def _read_json(path: Path, default: dict) -> dict:
@@ -312,7 +309,7 @@ def _require_admin(req) -> Tuple[bool, str]:
     hdr = (req.headers.get("X-Sarah-Admin-Key") or "").strip()
     if not hdr:
         return False, "Missing X-Sarah-Admin-Key header."
-    if hdr != SARAH_ADMIN_KEY:
+    if not __import__("hmac").compare_digest(hdr, SARAH_ADMIN_KEY):
         return False, "Invalid admin key."
     return True, ""
 
@@ -329,36 +326,32 @@ def _ensure_repo() -> None:
         raise RuntimeError("Safety gate: package.json missing. This doesn't look like the frontend checkout.")
 
 
+
 def _ensure_correct_remote() -> str:
-    cp = _run(["git", "remote", "get-url", ALLOWED_REMOTE], cwd=REPO_DIR, check=True)
-    remote_url = (cp.stdout or "").strip()
-    if ALLOWED_REPO_KEYWORD not in remote_url.lower():
-        raise RuntimeError(
-            f"Safety gate failed: {ALLOWED_REMOTE} URL does not contain '{ALLOWED_REPO_KEYWORD}'.\n"
-            f"origin = {remote_url}"
-        )
-    return remote_url
+    """Require exact GitHub repository basename on origin (owner may vary)."""
+    from urllib.parse import urlsplit
+    raw = (_run(["git", "remote", "get-url", ALLOWED_REMOTE], cwd=REPO_DIR).stdout or "").strip()
+    if raw.startswith("git@github.com:"):
+        tail = raw.split(":", 1)[1]
+    else:
+        u = urlsplit(raw)
+        if u.scheme != "https" or u.hostname != "github.com" or u.username or u.password or u.port:
+            raise RuntimeError("Untrusted frontend origin host or credentials")
+        tail = u.path.lstrip("/")
+    parts = tail.rstrip("/").split("/")
+    approved_owner = os.getenv("SARAH_GITTALK_REPO_OWNER", "").strip()
+    if (not approved_owner or not re.fullmatch(r"[A-Za-z0-9_.-]+", approved_owner)
+            or len(parts) != 2 or parts[0] != approved_owner
+            or parts[1] not in ("sarah-s-dashboard", "sarah-s-dashboard.git")):
+        raise RuntimeError("Frontend remote must match an explicitly approved GitHub owner and repository")
+    return raw
+
 
 
 def _configure_https_remote_if_needed() -> None:
-    """
-    If using SSH deploy keys: do nothing.
-    If using HTTPS+token and you set SARAH_GIT_HTTPS_URL/UI_REPO_URL: re-point origin.
-    """
-    if not GIT_HTTPS_URL:
-        return  # likely SSH origin already configured
-
-    if ALLOWED_REPO_KEYWORD not in GIT_HTTPS_URL.lower():
-        raise RuntimeError("Safety gate: SARAH_GIT_HTTPS_URL/UI_REPO_URL is not sarah-s-dashboard.")
-
-    if not GITHUB_TOKEN:
-        raise RuntimeError("HTTPS remote requested but no token found in env (GITHUB_TOKEN/GH_TOKEN/GITHUB_PAT).")
-
-    safe_url = GIT_HTTPS_URL.replace("https://", "https://x-access-token:***@")
-    token_url = GIT_HTTPS_URL.replace("https://", f"https://x-access-token:{GITHUB_TOKEN}@")
-
-    _run(["git", "remote", "set-url", ALLOWED_REMOTE, token_url], cwd=REPO_DIR, check=True)
-    _print("Remote configured (HTTPS token)", f"Set {ALLOWED_REMOTE} to {_mask_token(safe_url)}")
+    """Do not persist an embedded Git access token in repository configuration."""
+    if GIT_HTTPS_URL:
+        raise PermissionError("Credential-bearing remote rewrite disabled; use a preconfigured secure Git credential helper")
 
 
 # =============================================================================
@@ -375,46 +368,17 @@ def git_status_porcelain() -> str:
     return (cp.stdout or "").strip()
 
 
-def apply_patch_text(patch_text: str) -> str:
-    """
-    Applies a unified diff patch text using `git apply` from stdin.
-    """
-    _ensure_repo()
-    _ensure_correct_remote()
-    _configure_https_remote_if_needed()
 
-    p = subprocess.run(
-        ["git", "apply", "--whitespace=fix", "-"],
-        cwd=str(REPO_DIR),
-        input=patch_text,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    if p.returncode != 0:
-        raise RuntimeError(f"git apply failed:\n{p.stdout}")
-    return p.stdout or "Patch applied."
+def apply_patch_text(patch_text: str) -> str:
+    ok, why = validate_unified_diff(patch_text)
+    if not ok:
+        raise ValueError(why)
+    raise PermissionError("Git apply requires an authenticated per-patch OperatorCore deployment receipt")
+
 
 
 def commit_and_push(message: str) -> str:
-    _configure_https_remote_if_needed()
-
-    _run(["git", "add", "-A"], cwd=REPO_DIR, check=True)
-
-    # commit (handle nothing to commit)
-    commit_out = ""
-    try:
-        cp_commit = _run(["git", "commit", "-m", message], cwd=REPO_DIR, check=True)
-        commit_out = cp_commit.stdout or ""
-    except subprocess.CalledProcessError as e:
-        out = (e.stdout or "")
-        if "nothing to commit" in out.lower():
-            commit_out = out
-        else:
-            raise
-
-    cp_push = _run(["git", "push", ALLOWED_REMOTE, ALLOWED_BRANCH], cwd=REPO_DIR, check=True)
-    return (commit_out or "") + "\n" + (cp_push.stdout or "")
+    raise PermissionError("Commit and push require an authenticated per-patch OperatorCore deployment receipt")
 
 
 def get_head_commit() -> str:
@@ -425,12 +389,9 @@ def get_head_commit() -> str:
 # =============================================================================
 # Build/deploy
 # =============================================================================
-def run_ui_updater() -> str:
-    if not UI_UPDATER.exists():
-        raise RuntimeError(f"SarahMemoryUIupdater.py not found: {UI_UPDATER}")
 
-    cp = _run([sys.executable, str(UI_UPDATER)], cwd=CORE_DIR, check=True)
-    return cp.stdout or ""
+def run_ui_updater() -> str:
+    raise PermissionError("UI deployment requires an authenticated per-patch OperatorCore deployment receipt")
 
 
 # =============================================================================
@@ -462,7 +423,7 @@ def ai_generate_patch(user_request: str) -> str:
             {"role": "user", "content": user_request},
         ],
         # store enables server-side retention; previous_response_id chains the conversation
-        "store": True,
+        "store": False,
     }
     if prev_id:
         kwargs["previous_response_id"] = prev_id
@@ -493,6 +454,12 @@ def ai_generate_patch(user_request: str) -> str:
 # =============================================================================
 # Patch storage (so WebUI can preview/apply without bash)
 # =============================================================================
+def _safe_patch_id(patch_id: str) -> str:
+    if not isinstance(patch_id, str) or not re.fullmatch(r"patch_[0-9]{8}_[0-9]{6}_[0-9a-f]{8}", patch_id):
+        raise ValueError("invalid_patch_id")
+    return patch_id
+
+
 def _new_patch_id() -> str:
     return f"patch_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
@@ -501,20 +468,26 @@ def save_pending_patch(patch_text: str, patch_id: Optional[str] = None) -> str:
     _ensure_dirs()
     if not patch_id:
         patch_id = _new_patch_id()
-    path = PENDING_DIR / f"{patch_id}.patch"
-    path.write_text(patch_text, encoding="utf-8")
+    path = PENDING_DIR / f"{_safe_patch_id(patch_id)}.patch"
+    ok, why = validate_unified_diff(patch_text)
+    if not ok:
+        raise ValueError(why)
+    if path.exists() or path.is_symlink():
+        raise FileExistsError("patch_id_already_exists")
+    with path.open("x", encoding="utf-8") as f:
+        f.write(patch_text)
     return patch_id
 
 
 def load_pending_patch(patch_id: str) -> str:
-    path = PENDING_DIR / f"{patch_id}.patch"
+    path = PENDING_DIR / f"{_safe_patch_id(patch_id)}.patch"
     if not path.exists():
         raise RuntimeError(f"Pending patch not found: {patch_id}")
     return path.read_text(encoding="utf-8", errors="replace")
 
 
 def delete_pending_patch(patch_id: str) -> None:
-    path = PENDING_DIR / f"{patch_id}.patch"
+    path = PENDING_DIR / f"{_safe_patch_id(patch_id)}.patch"
     try:
         if path.exists():
             path.unlink()
@@ -522,15 +495,37 @@ def delete_pending_patch(patch_id: str) -> None:
         pass
 
 
+
 def validate_unified_diff(patch_text: str) -> Tuple[bool, str]:
-    t = (patch_text or "").lstrip()
-    if t.startswith("ASK:"):
-        return False, "Model requested clarification (ASK: ...)."
-    if not t.startswith("diff --git"):
-        return False, "Not a unified diff (must start with 'diff --git')."
-    # cheap safety: must mention frontend-ish paths; not perfect but reduces nonsense
-    if "diff --git" not in t:
-        return False, "Missing diff headers."
+    """Inspect every Git diff header and reject protected/escaping paths.
+
+    Validation alone is not a permission to apply a patch.
+    """
+    if not isinstance(patch_text, str) or len(patch_text.encode("utf-8")) > 1024 * 1024:
+        return False, "empty or oversized patch"
+    s = patch_text.strip()
+    if not s.startswith("diff --git ") or "\x00" in s:
+        return False, "missing Git unified diff header"
+    paths = []
+    for line in s.splitlines():
+        if line.startswith("diff --git "):
+            match = re.fullmatch(r"diff --git a/(\S+) b/(\S+)", line)
+            if not match or match.group(1) != match.group(2):
+                return False, "invalid/rename patch header"
+            paths.append(match.group(1))
+        if line.startswith(("rename from ", "rename to ", "copy from ", "copy to ", "GIT binary patch", "Binary files ", "Submodule ")):
+            return False, "rename, copy, binary and submodule patches require dedicated review"
+    if not paths or len(paths) > 40:
+        return False, "missing or excessive changed paths"
+    banned_dirs = {".git", ".github", "api", "server", "core", "infra", "deployment", "scripts", "node_modules", "dist", "build"}
+    banned_names = {".env", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "vite.config.ts", "vite.config.js", "package.json"}
+    for p in paths:
+        parts = p.replace("\\", "/").split("/")
+        if (p.startswith("/") or ":" in p or any(x in ("", ".", "..") for x in parts)
+                or parts[0].lower() in banned_dirs
+                or any(x.lower() in banned_dirs or x.lower() in banned_names for x in parts)
+                or not p.lower().endswith((".js", ".jsx", ".ts", ".tsx", ".css", ".scss", ".html", ".svg", ".json"))):
+            return False, "protected, escaping or unsupported frontend path"
     return True, ""
 
 
@@ -538,83 +533,27 @@ def validate_unified_diff(patch_text: str) -> Tuple[bool, str]:
 # Core apply pipeline (non-interactive)
 # =============================================================================
 def apply_patch_id_and_deploy(patch_id: str) -> dict:
+    """Review-only transition: no authenticated approval receipt in legacy contract.
+
+    The admin header authenticates the API caller but does not authorize an
+    independently verified Git commit, push, or production deployment.
     """
-    Non-interactive path used by WebUI endpoint:
-    - git pull
-    - git apply (patch text)
-    - commit
-    - PUSH to sarah-s-dashboard
-    - run UI updater build/deploy
-    """
-    _ensure_dirs()
-    _set_run_state(status="running", last_error="", last_ok="", last_patch_id=patch_id)
-
-    logs: dict = {
-        "patch_id": patch_id,
-        "steps": [],
-        "ok": False,
-        "started_ts": _now_unix(),
-        "finished_ts": None,
-    }
-
-    def step(name: str, out: str) -> None:
-        logs["steps"].append({"name": name, "out": out})
-
+    started = _now_unix()
     try:
-        _ensure_repo()
-        origin = _ensure_correct_remote()
-        step("repo_verify", f"REPO_DIR={REPO_DIR}\norigin={_mask_token(origin)}")
-
-        out = git_pull()
-        step("git_pull", out)
-
-        patch_text = load_pending_patch(patch_id)
-        ok, why = validate_unified_diff(patch_text)
-        if not ok:
-            raise RuntimeError(f"Patch validation failed: {why}")
-
-        out = apply_patch_text(patch_text)
-        step("git_apply", out)
-
-        status = git_status_porcelain()
-        step("git_status", status or "(clean)")
-
-        if not status:
-            # nothing changed; do not push/build
-            logs["ok"] = True
-            logs["note"] = "Patch applied cleanly but produced no changes; nothing to commit/push/build."
-            _set_run_state(status="idle", last_ok=logs["note"], last_error="")
-            logs["finished_ts"] = _now_unix()
-            return logs
-
-        msg = f"[sarah-s-dashboard] apply {patch_id}"
-        out = commit_and_push(msg)
-        step("commit_push", out)
-
-        head = get_head_commit()
-        step("head_commit", head)
-        _set_run_state(last_commit=head, last_push="ok")
-
-        out = run_ui_updater()
-        step("ui_updater", out)
-        _set_run_state(last_build="ok")
-
-        logs["ok"] = True
-        logs["finished_ts"] = _now_unix()
-        _set_run_state(status="idle", last_ok="Deployed successfully.", last_error="")
-
-        # optional: remove pending patch after success
-        delete_pending_patch(patch_id)
-
-        return logs
-
-    except Exception as e:
-        logs["ok"] = False
-        logs["finished_ts"] = _now_unix()
-        err = f"{type(e).__name__}: {e}"
-        step("error", err)
-        _set_run_state(status="idle", last_error=err)
-        return logs
+        patch = load_pending_patch(patch_id)
+        good, reason = validate_unified_diff(patch)
+        if not good:
+            raise ValueError(reason)
+        message = "OperatorCore per-patch deployment receipt unavailable; proposal retained for review"
+        _set_run_state(status="review_required", last_error=message, last_patch_id=patch_id)
+        return {"ok": False, "patch_id": patch_id, "status": "review_required",
+                "steps": [{"name": "validation", "out": "passed"}],
+                "error": message, "started_ts": started, "finished_ts": _now_unix()}
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        _set_run_state(status="blocked", last_error=message)
+        return {"ok": False, "patch_id": patch_id, "status": "blocked",
+                "steps": [], "error": message, "started_ts": started, "finished_ts": _now_unix()}
 
 
 # =============================================================================
@@ -758,7 +697,11 @@ def cli_ai_plan(request_text: str, out_name: str = "") -> int:
     if out_name:
         # also write to PATCH_DIR for convenience
         PATCH_DIR.mkdir(parents=True, exist_ok=True)
-        (PATCH_DIR / out_name).write_text(patch_text, encoding="utf-8")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}\.patch", out_name):
+            raise ValueError("invalid_output_filename")
+        out_path = PATCH_DIR / out_name
+        with out_path.open("x", encoding="utf-8") as output:
+            output.write(patch_text)
 
     _print("AI Patch Planned", f"patch_id={patch_id}\nSaved: {PENDING_DIR / (patch_id + '.patch')}")
     return 0
@@ -793,7 +736,8 @@ def main() -> int:
         return cli_ai_plan(req, out_name=args.out_name or "")
 
     if args.apply_id:
-        return cli_apply_patch_id(args.apply_id.strip())
+        _print("REVIEW REQUIRED", "No verified OperatorCore deployment receipt is available for CLI promotion")
+        return 1
 
     _print("INFO", "No CLI action specified. This file is primarily intended to be mounted as a Flask blueprint.")
     return 0
@@ -810,7 +754,7 @@ if __name__ == "__main__":
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryGITtalk',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Unknown',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -828,22 +772,16 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Report only observed SML registration state; no fabricated performance scores."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "unverified_runtime", "availability": None,
+        "integrity": None, "performance": None, "reliability": None,
+        "confidence": 0.0, "latency_ms": None, "stability": None,
+        "compatibility": None, "notes": ["SML registration present; runtime health not measured"],
     }
 
 
@@ -853,7 +791,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryGITtalk',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

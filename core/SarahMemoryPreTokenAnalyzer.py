@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryPreTokenAnalyzer.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,6 +13,7 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+===============================================================================
 
 Purpose: Governed pre-token semantic analysis and ambiguity control for SarahMemory AiOS
 Notes:
@@ -54,7 +55,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -142,6 +143,11 @@ def extract_surface_task(text: str, preferred_app: Optional[str] = None) -> Dict
     if not raw:
         return {}
     lowered = raw.lower()
+    # Mentioning an app in a question is not an instruction to launch it.
+    if not re.search(r"\b(?:open|launch|start|create|write|make|draw|search|find|navigate|go to)\b", lowered):
+        return {}
+    if re.search(r"\b(?:don't|do not|never|without)\s+(?:open|launch|start|create|write|make|draw|search|navigate)\b", lowered):
+        return {}
 
     preferred = _canonical_surface_app(preferred_app or "") if preferred_app else ""
     if preferred in _SURFACE_VERBS or preferred not in _VALID_SURFACE_APPS:
@@ -447,7 +453,7 @@ def analyze_text(raw_text: str, context_packet: Optional[Dict[str, Any]] = None)
     query_id = str(context_packet.get("query_id") or context_packet.get("id") or _new_id("pta"))
     concept_group_id = str(
         context_packet.get("concept_group_id")
-        or context_packet.get("meta", {}).get("concept_group_id")
+        or (context_packet.get("meta") if isinstance(context_packet.get("meta"), dict) else {}).get("concept_group_id")
         or query_id
     )
 
@@ -2077,22 +2083,23 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    import copy
+    return copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter present; runtime health and integration not independently measured"],
     }
 
 
@@ -2102,7 +2109,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryPreTokenAnalyzer',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": sml_get_metadata(),
         "health": sml_health(),
     }
 

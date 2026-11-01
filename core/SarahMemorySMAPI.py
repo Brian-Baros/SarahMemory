@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemorySMAPI.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,8 +13,8 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
+
 SarahMemorySMAPI - System Management & Introspection API (v8.0)
 ===============================================================================
 
@@ -49,12 +49,13 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Safe, auditable internal system-management and introspection API for runtime status snapshots and controlled settings access with SAFE_MODE enforcement."
 # --- SARAHMETA END ---
+# v9.1.0a enterprise source hardening: original interfaces preserved; state-changing legacy paths require governed authorization.
 
 import json
 import logging
@@ -183,29 +184,21 @@ class SarahMemorySMAPI:
         }
 
         try:
-            status["core_modules_status"] = {
-                "AiFunctions": bool(_get_module_function("SarahMemoryAiFunctions", "route_intent_response")),
-                "Database": bool(_get_module_function("SarahMemoryDatabase", "init_database")),
-                "Ledger": bool(_get_module_function("SarahMemoryLedger", "top_nodes")),
-                "Voice": bool(_get_module_function("SarahMemoryVoice", "list_voices")),
-                "Avatar": bool(_get_module_function("UnifiedAvatarController", "get_panel_api")),
-                "Synapes": bool(_get_module_function("SarahMemorySynapes", "get_status")),
-                "Diagnostics": bool(_get_module_function("SarahMemoryDiagnostics", "run_all_checks")),
-                "Optimization": bool(_get_module_function("SarahMemoryOptimization", "get_runtime_status")),
-            }
-
-            # Extend with diagnostics summary if available
-            diagnostics_runner = _get_module_function("SarahMemoryDiagnostics", "run_all_checks")
-            if diagnostics_runner:
-                try:
-                    diag_results = diagnostics_runner()
-                    if isinstance(diag_results, dict):
-                        status["diagnostics"] = diag_results
-                    else:
-                        status["diagnostics"] = {"raw": diag_results}
-                except Exception as e:
-                    logger.error("[SMAPI] Error running Diagnostics via SMAPI: %s", e)
-                    status.setdefault("errors", []).append(f"diagnostics: {e}")
+            # No dynamic module imports: importing modules can run startup tasks.
+            import sys
+            for label, module_name in (
+                ("AiFunctions", "SarahMemoryAiFunctions"),
+                ("Database", "SarahMemoryDatabase"),
+                ("Ledger", "SarahMemoryLedger"),
+                ("Voice", "SarahMemoryVoice"),
+                ("Avatar", "UnifiedAvatarController"),
+                ("Synapes", "SarahMemorySynapes"),
+                ("Diagnostics", "SarahMemoryDiagnostics"),
+                ("Optimization", "SarahMemoryOptimization"),
+            ):
+                status["core_modules_status"][label] = None
+            status["module_presence_not_measured"] = True
+            status["diagnostics"] = {"status": "NOT_RUN", "reason": "read_only_snapshot"}
 
         except Exception as e:
             logger.error("[SMAPI] get_system_status failed: %s", e, exc_info=True)
@@ -233,8 +226,24 @@ class SarahMemorySMAPI:
         """Internal helper to save settings.json (never raises to caller)."""
         try:
             _ensure_parent_dir(self.SETTINGS_FILE)
-            with open(self.SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump(settings, f, indent=2, ensure_ascii=False)
+            import tempfile
+            target = os.path.realpath(self.SETTINGS_FILE)
+            parent = os.path.realpath(os.path.dirname(self.SETTINGS_FILE))
+            if os.path.islink(self.SETTINGS_FILE) or os.path.commonpath([target, parent]) != parent:
+                return False
+            blob = json.dumps(settings, indent=2, ensure_ascii=False)
+            if len(blob.encode("utf-8")) > 1_000_000:
+                return False
+            fd, temp_path = tempfile.mkstemp(prefix=".smapi-settings-", dir=parent)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(blob)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(temp_path, self.SETTINGS_FILE)
+            finally:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
             return True
         except Exception as e:
             logger.error("[SMAPI] Error saving settings file '%s': %s",
@@ -251,6 +260,9 @@ class SarahMemorySMAPI:
             return None
 
     def set_user_setting(self, key: str, value: Any) -> bool:
+        # No authenticated scoped approval receipt exists in this legacy API.
+        # OperatorCore owns all state-changing settings operations.
+        return False
         """
         Sets a user setting and logs the change to AiFunctions/system logs.
 
@@ -307,8 +319,8 @@ class SarahMemorySMAPI:
                 "subsystem": subsystem,
                 "change_type": change_type,
                 "target": target,
-                "old_value": old_value,
-                "new_value": new_value,
+                "old_value": "[REDACTED]",
+                "new_value": "[REDACTED]",
                 "ts": time.time(),
             }
             details = json.dumps(payload, ensure_ascii=False)
@@ -361,6 +373,7 @@ sm_api = SarahMemorySMAPI()
 # ====================================================================
 
 # --- SML ORGAN ADAPTER START ---
+import copy as _sml_copy
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemorySMAPI',
@@ -382,22 +395,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return _sml_copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter registered; runtime quality not measured"],
     }
 
 
@@ -407,7 +420,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemorySMAPI',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": _sml_copy.deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

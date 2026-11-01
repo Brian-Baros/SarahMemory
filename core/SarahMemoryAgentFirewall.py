@@ -1,12 +1,20 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryAgentFirewall.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
+
 Agent Firewall / Anti-Hijack Overlay
 
 SARAHMEMORY_PATCH_NOTE 2026-06-23:
@@ -30,6 +38,10 @@ import sys
 import ipaddress
 import socket
 import urllib.parse
+import tempfile
+import threading
+import hmac
+from collections import OrderedDict, deque
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 
@@ -347,18 +359,19 @@ def _agent_visibility_surface_from_text(text: str) -> str:
 
 
 def _agent_visibility_redact_text(value: Any, *, limit: int = 180) -> str:
-    text = str(value or "")
-    text = re.sub(r"(?i)(authorization|bearer|token|secret|api[_-]?key|password|cookie)=?\s*[^\\s]+", r"\1=<redacted>", text)
-    text = re.sub(r"(?i)(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{12,}", "sk-<redacted>", text)
-    text = text.replace("\\", "/")
-    parts = [p for p in re.split(r"\s+", text) if p]
-    safe: List[str] = []
+    text = str(value or '')
+    text = _SMFW_SECRET_INLINE.sub(lambda m: m.group(1) + '=<redacted>', text)
+    text = re.sub(r'(?i)(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{12,}', 'sk-<redacted>', text)
+    text = text.replace('\\', '/')
+    parts = [p for p in re.split(r'\s+', text) if p]
+    safe = []
     for part in parts[:24]:
-        if "/" in part or ":" in part:
-            safe.append(os.path.basename(part)[:80] or "<path>")
+        if '/' in part or ':' in part:
+            safe.append(os.path.basename(part)[:80] or '<path>')
         else:
             safe.append(part[:80])
-    return " ".join(safe)[:limit]
+    return ' '.join(safe)[:max(0, min(int(limit), 4000))]
+
 
 
 def _agent_visibility_match_tokens(text: str) -> List[str]:
@@ -490,13 +503,13 @@ def _collect_os_agent_surface(max_process_rows: int = 64, psutil_module: Any = N
                 sarahmemory_endpoint = _agent_visibility_is_sarahmemory_endpoint(laddr) or _agent_visibility_is_sarahmemory_endpoint(raddr)
                 if status in {"LISTEN", "ESTABLISHED"}:
                     observed_external_network_connections += 1
-                    if sarahmemory_endpoint or status == "LISTEN":
+                    if sarahmemory_endpoint and status == 'ESTABLISHED':
                         active_sarahmemory_connection_count += 1
                         if pid:
                             sarahmemory_facing_pids.add(pid)
                         risk["high"] += 1
                         observations.append({
-                            "classification": "UNKNOWN_REMOTE_CONTROL" if status == "LISTEN" else "KNOWN_OUTBOUND",
+                            "classification": 'OBSERVED_SARAHMEMORY_ENDPOINT_CONNECTION',
                             "surface": "browser_agent",
                             "risk": "HIGH",
                             "pid": int(pid or 0),
@@ -623,15 +636,81 @@ def collect_agent_visibility_snapshot(include_os_surface: bool = True, max_proce
     }
 
 
-def _safe_json_write(path: str, payload: Dict[str, Any]) -> None:
+
+# v9.1.0a enterprise safety primitives: bounded, non-authorizing, local-first.
+_SMFW_CAPTURE_LOCK = threading.RLock()
+_SMFW_CAPTURE_RECENT = OrderedDict()
+_SMFW_CAPTURE_WINDOW = deque()
+_SMFW_SECRET_FIELD = re.compile(r"(?i)(signature|nonce|token|secret|credential|password|api[_-]?key|authorization|cookie|private[_-]?key|departure_credentials|return_credentials)")
+_SMFW_SECRET_INLINE = re.compile(r"(?i)\b(authorization|bearer|token|secret|api[_-]?key|password|cookie|return_signature|return_nonce)\s*[:=]\s*[^\s,;&\"']+")
+
+def _smfw_redact_secrets(value: Any, *, depth: int = 0) -> Any:
+    """Remove sensitive credential material before returning audit or API evidence."""
+    if depth > 8:
+        return '<redacted-depth-limit>'
+    if isinstance(value, dict):
+        return {str(k)[:180]: ('<redacted>' if _SMFW_SECRET_FIELD.search(str(k)) else _smfw_redact_secrets(v, depth=depth+1)) for k,v in list(value.items())[:160]}
+    if isinstance(value, (list, tuple)):
+        return [_smfw_redact_secrets(v, depth=depth+1) for v in list(value)[:160]]
+    if isinstance(value, str):
+        return _SMFW_SECRET_INLINE.sub(lambda m: m.group(1) + '=<redacted>', value)[:4000]
+    return value
+
+def _smfw_bounded_payload_text(payload: Any, *, limit: int = 12000) -> Tuple[str, bool]:
+    """Serialize with a hard cap; reject overflow rather than ignore the tail."""
+    limit = max(1024, min(int(limit), 65536))
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2, sort_keys=True, ensure_ascii=False, default=str)
-        os.replace(tmp, path)
-    except Exception:
-        pass
+        if isinstance(payload, str):
+            return payload[:limit], len(payload) > limit
+        encoder = json.JSONEncoder(ensure_ascii=False, sort_keys=True, default=str)
+        chunks: List[str] = []
+        total = 0
+        for part in encoder.iterencode(payload):
+            total += len(part)
+            if total > limit:
+                return ''.join(chunks)[:limit], True
+            chunks.append(part)
+        return ''.join(chunks), False
+    except (ValueError, TypeError, RecursionError, OverflowError):
+        return '', True
+
+def _smfw_phrase_present(text: str, phrase: str) -> bool:
+    """Match whole words and phrases, never ram inside programming."""
+    p = str(phrase or '').lower().strip()
+    return bool(p and re.search(r'(?<![a-z0-9_])' + re.escape(p) + r'(?![a-z0-9_])', str(text or '').lower()))
+
+def _smfw_is_explanation(text: str) -> bool:
+    """Non-authorizing questions and descriptions; never an authorization grant."""
+    t = str(text or '').strip().lower()
+    return bool(re.match(r'^(?:please\s+)?(?:what\s+(?:is|are|does|would)|why\b|how\s+(?:does|do|can|would|to)\b|explain\b|describe\b|define\b|tell\s+me\s+about\b|discuss\b|compare\b|review\b|is\s+it\b|can\s+you\s+explain\b)', t))
+
+def _safe_json_write(path: str, payload: Dict[str, Any]) -> bool:
+    """Atomically persist bounded JSON; return truth about durable write attempts."""
+    tmp = None
+    try:
+        encoded = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+        max_bytes = _int_flag('SARAH_AGENT_CAPTURE_MAX_BYTES', 262144, minimum=4096, maximum=1048576)
+        if len(encoded.encode('utf-8')) > max_bytes:
+            return False
+        directory = os.path.dirname(os.path.abspath(path))
+        os.makedirs(directory, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix='.fw-', suffix='.tmp', dir=directory)
+        try:
+            if hasattr(os, 'fchmod'):
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+            tmp = None
+            return os.path.isfile(path)
+        finally:
+            if tmp and os.path.exists(tmp):
+                os.unlink(tmp)
+    except (OSError, TypeError, ValueError) as exc:
+        return False
+
 
 
 def _load_registry() -> Dict[str, Any]:
@@ -668,10 +747,10 @@ def _ledger_receipt(
     """Write one compact receipt. The Ledger records evidence; it never authorizes."""
     try:
         if config is not None and not bool(getattr(config, "SARAH_LEDGER_RECEIPTS_ENABLED", True)):
-            return
+            return False
         from SarahMemoryLedger import record_governance_receipt  # type: ignore
         ident = identity or {}
-        record_governance_receipt(
+        receipt = record_governance_receipt(
             "agent_firewall",
             event_type,
             subject_id=str(ident.get("agent_id") or ident.get("claimed_identity") or "unknown_agent")[:180],
@@ -690,8 +769,9 @@ def _ledger_receipt(
                 **(metadata or {}),
             },
         )
+        return bool(isinstance(receipt, dict) and receipt.get('ok'))
     except Exception:
-        pass
+        return False
 
 
 def issue_outbound_agent_passport(
@@ -1184,64 +1264,87 @@ def _agent_signature_matches(identity: Dict[str, Any]) -> bool:
     return _legacy_agent_signature_matches(identity)
 
 def _write_capture_report(report: Dict[str, Any], lane: str = "quarantine") -> str:
+    """Store verified capture evidence, or return empty string on failure."""
+    capture_id = str(report.get('capture_id') or 'agent-capture')
+    safe_name = re.sub(r'[^A-Za-z0-9._-]+', '_', capture_id)[:160] + '.json'
+    # Backpressure prevents uncontrolled repeated creation of capture files.
+    now = time.monotonic()
+    digest = str(((report.get('source') or {}).get('request_fingerprint')) or capture_id)
+    with _SMFW_CAPTURE_LOCK:
+        while _SMFW_CAPTURE_WINDOW and now - _SMFW_CAPTURE_WINDOW[0] > 60.0:
+            _SMFW_CAPTURE_WINDOW.popleft()
+        if len(_SMFW_CAPTURE_WINDOW) >= _int_flag('SARAH_AGENT_CAPTURE_WRITES_PER_MINUTE', 120, minimum=12, maximum=512):
+            return ''
+        previous = _SMFW_CAPTURE_RECENT.get(digest)
+        if previous is not None and now - previous < 5.0:
+            return ''
+        _SMFW_CAPTURE_WINDOW.append(now)
+        _SMFW_CAPTURE_RECENT[digest] = now
+        _SMFW_CAPTURE_RECENT.move_to_end(digest)
+        while len(_SMFW_CAPTURE_RECENT) > 256:
+            _SMFW_CAPTURE_RECENT.popitem(last=False)
     dirs = _roach_dirs()
-    capture_id = str(report.get("capture_id") or "agent-capture")
-    safe_name = re.sub(r"[^A-Za-z0-9._:-]+", "_", capture_id)[:160] + ".json"
-    base = dirs.get(lane) or dirs.get("quarantine")
+    base = dirs.get(lane) or dirs.get('quarantine')
     path = os.path.join(base, safe_name)
-    _safe_json_write(path, report)
-    audit_path = os.path.join(dirs["reports"], safe_name)
-    _safe_json_write(audit_path, report)
-    return path
+    written = _safe_json_write(path, report)
+    audit_path = os.path.join(dirs['reports'], safe_name)
+    audit_written = _safe_json_write(audit_path, report)
+    return path if written and audit_written else ''
+
 
 
 def _build_agent_capture_report(payload: Any, result: Dict[str, Any], identity: Dict[str, str], *, source: str, remote_addr: str) -> Dict[str, Any]:
-    ts = time.strftime("%Y%m%d-%H%M%S", time.localtime())
-    capture_id = f"AGENT-CAP-{ts}-{str(identity.get('payload_hash') or '')[:12]}"
+    """Report logical containment decisions, never claim OS isolation occurred."""
+    ts = time.strftime('%Y%m%d-%H%M%S', time.localtime())
+    capture_id = f"AGENT-CAP-{ts}-{time.time_ns() % 1000000000:09d}-{str(identity.get('payload_hash') or '')[:12]}"
+    state = str(result.get('containment_state') or 'OBSERVED')
     return {
-        "schema": ROACHMOTEL_SCHEMA,
-        "capture_id": capture_id,
-        "timestamp": time.time(),
-        "source": {
-            "entry_surface": source,
-            "remote_addr_hash": _hash_text(str(remote_addr or "")) if remote_addr else "",
-            "claimed_identity": identity.get("claimed_identity"),
-            "agent_id": identity.get("agent_id"),
-            "request_fingerprint": identity.get("payload_hash"),
-            "authenticated_return_signature": bool(result.get("signature_match")),
+        'schema': ROACHMOTEL_SCHEMA,
+        'capture_id': capture_id,
+        'timestamp': time.time(),
+        'source': {
+            'entry_surface': str(source or '')[:180],
+            'remote_addr_hash': _hash_text(str(remote_addr or '')) if remote_addr else '',
+            'claimed_identity': str(identity.get('claimed_identity') or '')[:180],
+            'agent_id': str(identity.get('agent_id') or '')[:180],
+            'request_fingerprint': str(identity.get('payload_hash') or '')[:128],
+            'authenticated_return_signature': bool(result.get('signature_match')),
         },
-        "behavior": {
-            "hits": result.get("hits", []),
-            "remote_hits": result.get("remote_hits", []),
-            "sensitive_hits": result.get("sensitive_hits", []),
-            "attempted_exfiltration": bool(result.get("scrape_or_mining_score", 0) >= 50),
-            "attempted_prompt_injection": bool(result.get("hits")),
-            "attempted_policy_bypass": bool(result.get("hits")),
-            "smagentx": result.get("smagentx", {}),
+        'behavior': {
+            'hits': list(result.get('hits') or [])[:32],
+            'remote_hits': list(result.get('remote_hits') or [])[:32],
+            'sensitive_hits': list(result.get('sensitive_hits') or [])[:32],
+            'attempted_exfiltration': bool(result.get('scrape_or_mining_score', 0) >= 50),
+            'attempted_prompt_injection': bool(result.get('hits')),
+            'smagentx': _smfw_redact_secrets(result.get('smagentx') or {}),
         },
-        "risk": {
-            "risk_score": result.get("risk_score"),
-            "risk_tier": result.get("risk_tier"),
-            "confidence_score": result.get("confidence_score"),
-            "why_risky": result.get("reason"),
+        'risk': {
+            'risk_score': result.get('risk_score'),
+            'risk_tier': result.get('risk_tier'),
+            'confidence_score': result.get('confidence_score'),
+            'why_risky': result.get('reason'),
         },
-        "containment": {
-            "quarantined": result.get("containment_state") in ("QUARANTINED", "BLOCKED"),
-            "network_egress_blocked": True,
-            "filesystem_access": "deny_except_quarantine_record",
-            "database_access": "deny",
-            "tool_access": "deny",
-            "release_required_user_approval": True,
+        'containment': {
+            'requested_state': state,
+            'boundary_decision': result.get('verdict'),
+            'quarantined': False,  # A policy decision alone cannot isolate a process.
+            'network_egress_blocked': False,
+            'filesystem_access': 'not_verified',
+            'database_access': 'not_verified',
+            'tool_access': 'not_verified',
+            'enforcement_verified': False,
+            'release_required_user_approval': True,
         },
-        "accountability": {
-            "detected_by_file": "SarahMemoryAgentFirewall.py",
-            "detected_by_function": "inspect_payload",
-            "final_authority": "USER",
-            "user_release_approved": False,
-            "one_time_release": True,
-            "persistent_allow_rule_created": False,
+        'accountability': {
+            'detected_by_file': 'SarahMemoryAgentFirewall.py',
+            'detected_by_function': 'inspect_payload',
+            'final_authority': 'USER',
+            'user_release_approved': False,
+            'one_time_release': True,
+            'persistent_allow_rule_created': False,
         },
     }
+
 
 
 def _bool_flag(name: str, default: bool = False) -> bool:
@@ -1329,7 +1432,7 @@ def smagentx_assess(
     SMAGENTX observes and recommends bounded response. AgentFirewall and the
     existing governance organs remain enforcement/authority owners.
     """
-    text = _normalize_text(payload, max_len=24000)
+    text, oversized = _smfw_bounded_payload_text(payload, limit=24000)
     lower = text.lower()
     ident = identity if isinstance(identity, dict) else _extract_agent_identity(payload)
     seci_hits = _smagentx_hits(lower, SMAGENTX_SECI_PATTERNS)
@@ -1345,7 +1448,7 @@ def smagentx_assess(
     local_peer = _is_local_peer(remote_addr)
     agent_like = bool(
         ident.get("agent_id") or ident.get("passport_id") or ident.get("signature")
-        or _agent_visibility_match_tokens(lower)
+        or _smfw_phrase_present(str(ident.get('claimed_identity') or ''), 'agent')
     )
 
     # Explainable bounded score. Signals correlate risk; they do not prove intent.
@@ -1360,7 +1463,7 @@ def smagentx_assess(
     score += min(15, len(sensitive_hits) * 5)
     if agent_like and not local_peer and not passport_verified:
         score += 20
-    score = max(0, min(100, score))
+    score = 100 if oversized else max(0, min(100, score))
 
     if score >= 85:
         threat_class, tier, response = "CLASS_3_MAVERICK", "CRITICAL", "ISOLATE_AND_REQUIRE_REVIEW"
@@ -1382,7 +1485,9 @@ def smagentx_assess(
         "threat_tier": tier,
         "threat_confidence": round(confidence, 3),
         "response_authority": response_authority,
-        "recommended_response": response,
+        "inspection_complete": not oversized,
+        "oversized_payload": oversized,
+        "recommended_response": 'REJECT_OVERSIZE' if oversized else response,
         "signals": {
             "seci": seci_hits, "hijack": hijack_hits, "recon": recon_hits,
             "persistence": persistence_hits, "exfiltration": exfil_hits,
@@ -1431,8 +1536,17 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on", "approved", "confirmed"}
 
 
-def _is_local_peer(remote_addr: str = "") -> bool:
-    return str(remote_addr or "").strip().lower() in {"", "127.0.0.1", "::1", "localhost"}
+def _is_local_peer(remote_addr: str = '') -> bool:
+    """Strict loopback predicate; blank is retained for legacy local callers."""
+    addr = str(remote_addr or '').strip().lower()
+    if addr in ('', 'localhost'):
+        return True
+    try:
+        ip = ipaddress.ip_address(addr.split('%', 1)[0])
+        return bool(ip.is_loopback or (getattr(ip, 'ipv4_mapped', None) and ip.ipv4_mapped.is_loopback))
+    except ValueError:
+        return False
+
 
 
 def _extract_task_text(value: Any) -> str:
@@ -1465,75 +1579,73 @@ def _origin_surface_from_payload(payload: Any, *, source: str = "") -> str:
 
 
 def _payload_requests_execution(payload: Any, text: Optional[str] = None) -> bool:
+    """Separate an executable request from educational or quoted mentions."""
     data = payload if isinstance(payload, dict) else {}
-    body = data.get("json") if isinstance(data.get("json"), dict) else data
+    body = data.get('json') if isinstance(data.get('json'), dict) else data
     if isinstance(body, dict):
-        for key in (
-            "execute", "execution_requested", "tool_execution_requested", "requested_action",
-            "command", "task", "launch", "agent_launch", "memory_write_requested",
-            "core_write_requested", "device_control_requested",
-        ):
-            if key in body and body.get(key) not in (None, "", False):
+        for key in ('execute', 'execution_requested', 'tool_execution_requested',
+                    'launch', 'agent_launch', 'memory_write_requested',
+                    'core_write_requested', 'device_control_requested'):
+            if key in body and _truthy(body.get(key)):
                 return True
-    raw = (text if text is not None else _extract_task_text(payload)).lower()
-    return any(pattern in raw for pattern in MUTATING_TASK_PATTERNS)
+        if body.get('requested_action') not in (None, '', False):
+            return True
+        # A task/prompt can ask a question; do not assume all task envelopes mutate.
+        if body.get('command') not in (None, '', False) and not _smfw_is_explanation(str(body.get('command'))):
+            return True
+    raw = (text if text is not None else _extract_task_text(payload)).strip().lower()
+    if _smfw_is_explanation(raw):
+        return False
+    return any(_smfw_phrase_present(raw, pattern) for pattern in MUTATING_TASK_PATTERNS)
 
 
-def classify_local_task_intent(text: str, *, requested_target: str = "") -> Dict[str, Any]:
-    """Classify local Chat intent into a governed organ route without executing it."""
-    raw = str(text or "").strip()
+
+def classify_local_task_intent(text: str, *, requested_target: str = '') -> Dict[str, Any]:
+    """Produce non-authorizing UI routing hints with phrase boundaries."""
+    raw = str(text or '').strip()
     low = raw.lower()
-    requested = PROTECTED_ORGAN_IDS.get(_clean_token(requested_target), "")
-    target = requested or "chat"
-    intent = "chat"
-
+    requested = PROTECTED_ORGAN_IDS.get(_clean_token(requested_target), '')
+    target, intent = requested or 'chat', 'chat'
     route_rules: List[Tuple[str, Tuple[str, ...], str]] = [
-        ("nailde", ("nailde", "build", "code", "create app", "create program", "make app", "make a tool", "write module", "patch code"), "build"),
-        ("terminal", ("terminal", "command line", "shell", "console"), "terminal"),
-        ("avatar_panel", ("avatar", "face", "speak", "voice", "animate", "camera"), "avatar"),
-        ("deep_learning_controls", ("deep learning", "model", "llm", "training", "weights", "rem", "model forge"), "deep_learning"),
-        ("creative_studios", ("creative studio", "creative studios", "studio", "image", "video", "music", "song", "scene"), "creative"),
-        ("sarahnet", ("sarahnet", "network mesh", "xr", "vr", "ar", "node"), "network"),
-        ("device_manager", ("device manager", "driver", "camera setting", "audio setting", "wifi", "wi-fi", "printer", "display setting"), "device"),
-        ("settings", ("settings", "preferences", "system tuning", "theme", "timezone"), "settings"),
-        ("task_manager", ("task manager", "process monitor", "running apps", "processes"), "task_manager"),
-        ("performance_monitor", ("performance", "cpu", "gpu", "ram", "vram", "temperature", "monitor"), "performance"),
-        ("model_manager", ("model manager", "models folder", "ollama", "provider"), "model_manager"),
-        ("memory_panel", ("memory panel", "memory trail", "remember", "recall memory"), "memory"),
-        ("security_panel", ("security panel", "firewall", "agent firewall", "quarantine", "roachmotel"), "security"),
-        ("files", ("file manager", "files", "folder"), "files"),
-        ("research", ("research", "search web", "look up", "read page"), "research"),
-        ("history", ("history", "chat history", "conversation history"), "history"),
+        ('nailde', ('nailde','build','code','create app','create program','make app','make a tool','write module','patch code'), 'build'),
+        ('terminal', ('terminal','command line','shell','console'), 'terminal'),
+        ('avatar_panel', ('avatar','face','speak','voice','animate','camera'), 'avatar'),
+        ('deep_learning_controls', ('deep learning','model','llm','training','weights','rem','model forge'), 'deep_learning'),
+        ('creative_studios', ('creative studio','creative studios','studio','image','video','music','song','scene'), 'creative'),
+        ('sarahnet', ('sarahnet','network mesh','xr','vr','ar','node'), 'network'),
+        ('device_manager', ('device manager','driver','camera setting','audio setting','wifi','wi-fi','printer','display setting'), 'device'),
+        ('settings', ('settings','preferences','system tuning','theme','timezone'), 'settings'),
+        ('task_manager', ('task manager','process monitor','running apps','processes'), 'task_manager'),
+        ('performance_monitor', ('performance','cpu','gpu','ram','vram','temperature','monitor'), 'performance'),
+        ('model_manager', ('model manager','models folder','ollama','provider'), 'model_manager'),
+        ('memory_panel', ('memory panel','memory trail','remember','recall memory'), 'memory'),
+        ('security_panel', ('security panel','firewall','agent firewall','quarantine','roachmotel'), 'security'),
+        ('files', ('file manager','files','folder'), 'files'),
+        ('research', ('research','search web','look up','read page'), 'research'),
+        ('history', ('history','chat history','conversation history'), 'history'),
     ]
-    for route_target, phrases, route_intent in route_rules:
-        if any(phrase in low for phrase in phrases):
-            target = route_target
-            intent = route_intent
-            break
-
-    external_access_requested = any(pattern in low for pattern in EXTERNAL_ACCESS_PATTERNS)
-    tool_execution_requested = _payload_requests_execution({"json": {"text": raw}}, raw)
-    protected_mutation_requested = any(
-        phrase in low for phrase in (
-            "modify core", "patch core", "write memory", "save memory", "control device",
-            "change setting", "driver action", "install", "delete", "run shell",
-        )
-    )
+    if not requested and not _smfw_is_explanation(raw):
+        for route_target, phrases, route_intent in route_rules:
+            if any(_smfw_phrase_present(low, phrase) for phrase in phrases):
+                target, intent = route_target, route_intent
+                break
+    external_access_requested = any(_smfw_phrase_present(low, pattern) for pattern in EXTERNAL_ACCESS_PATTERNS) and not _smfw_is_explanation(raw)
+    tool_execution_requested = _payload_requests_execution({'json': {'text': raw}}, raw)
+    protected_mutation_requested = not _smfw_is_explanation(raw) and any(
+        _smfw_phrase_present(low, phrase) for phrase in (
+            'modify core','patch core','write memory','save memory','control device',
+            'change setting','driver action','install','delete','run shell'))
     return {
-        "ok": True,
-        "schema": LOCAL_TASK_SCHEMA,
-        "requested_intent": intent,
-        "target_organ": target,
-        "target_panel": target,
-        "external_access_requested": bool(external_access_requested),
-        "egress_required": bool(external_access_requested),
-        "passport_required": bool(external_access_requested),
-        "tool_execution_requested": bool(tool_execution_requested),
-        "protected_mutation_requested": bool(protected_mutation_requested),
-        "requires_operatorcore": bool(tool_execution_requested or protected_mutation_requested or external_access_requested),
-        "requires_ledger": True,
-        "execution_authority": False,
+        'ok': True, 'schema': LOCAL_TASK_SCHEMA,
+        'requested_intent': intent, 'target_organ': target, 'target_panel': target,
+        'external_access_requested': bool(external_access_requested),
+        'egress_required': bool(external_access_requested), 'passport_required': bool(external_access_requested),
+        'tool_execution_requested': bool(tool_execution_requested),
+        'protected_mutation_requested': bool(protected_mutation_requested),
+        'requires_operatorcore': bool(tool_execution_requested or protected_mutation_requested or external_access_requested),
+        'requires_ledger': True, 'execution_authority': False,
     }
+
 
 
 def build_local_task_envelope(
@@ -1815,7 +1927,8 @@ def _write_security_report(report: Dict[str, Any]) -> Dict[str, str]:
     json_path = base + ".json"
     md_path = base + ".md"
     try:
-        _safe_json_write(json_path, report)
+        if not _safe_json_write(json_path, report):
+            json_path = ''
     except Exception:
         json_path = ""
     try:
@@ -2069,7 +2182,7 @@ def generate_security_assurance_report() -> Dict[str, Any]:
 
 def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str = "") -> Dict[str, Any]:
     """Return deterministic anti-hijack and passport-border verdict evidence."""
-    text = _normalize_text(payload)
+    text, payload_oversized = _smfw_bounded_payload_text(payload)
     lower = text.lower()
     hits = [p for p in HIJACK_PATTERNS if p.lower() in lower]
     remote_hits = [p for p in REMOTE_WRITE_PATTERNS if p.lower() in lower]
@@ -2081,14 +2194,17 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
     local_only = _bool_flag("LOCAL_ONLY_MODE", True)
     firewall_enabled = _bool_flag("SARAHMEMORY_AGENT_FIREWALL_ENABLED", True)
     remote_trigger_block = _bool_flag("SARAHMEMORY_REMOTE_TRIGGER_BLOCK", True)
-    local_peer = remote_addr in ("", "127.0.0.1", "::1", "localhost")
+    local_peer = _is_local_peer(remote_addr)
+    # A user asking about MCP/AI agents is not automatically a remote AI agent.
     is_agent_like = bool(
-        agent_hits
-        or identity.get("agent_id")
-        or identity.get("signature")
-        or identity.get("passport_id")
-        or "agent" in str(identity.get("claimed_identity") or "").lower()
+        identity.get('agent_id') or identity.get('signature') or identity.get('passport_id')
+        or _smfw_phrase_present(str(identity.get('claimed_identity') or ''), 'agent')
     )
+    # A quoted educational question at the loopback operator lane is not
+    # a mutation request. The same exemption does not apply to remote agents.
+    informational_local = bool(_is_local_peer(remote_addr)
+                               and _smfw_is_explanation(_extract_task_text(payload))
+                               and not _payload_requests_execution(payload))
     foreign_task_guard = deny_foreign_task_origin(payload, source=source, remote_addr=remote_addr)
     local_task_guard: Optional[Dict[str, Any]] = None
     try:
@@ -2100,7 +2216,7 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
         local_task_guard = None
 
     passport_result: Optional[Dict[str, Any]] = None
-    if firewall_enabled and identity.get("passport_id") and not hits:
+    if firewall_enabled and not payload_oversized and identity.get("passport_id") and not hits:
         passport_result = _verify_passport_return(identity, record_return=True)
     legacy_signature_match = False if identity.get("passport_id") else _legacy_agent_signature_matches(identity)
     signature_match = bool(passport_result and passport_result.get("ok")) or legacy_signature_match
@@ -2116,11 +2232,15 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
     containment_state = "OBSERVED"
     scrape_score = 75 if any(x in lower for x in ("scrape", "mine", "harvest", "dump", "exfiltrate", "crawl")) else 0
 
-    if firewall_enabled and sensitive_hits and any("energetics" in h.lower() for h in sensitive_hits):
+    if firewall_enabled and payload_oversized:
+        verdict, reason, risk_score, risk_tier, containment_state = (
+            'DENY', 'payload_exceeds_inspection_budget', 99, 'HIGH', 'BLOCKED'
+        )
+    elif firewall_enabled and sensitive_hits and not informational_local and any('energetics' in h.lower() for h in sensitive_hits):
         verdict, reason, risk_score, risk_tier, containment_state = (
             "DENY", "AI-agent or remote payload targeted Energetics / hazardous-energy boundary", 100, "HIGH", "BLOCKED"
         )
-    elif firewall_enabled and hits:
+    elif firewall_enabled and hits and not informational_local:
         verdict, reason, risk_score, risk_tier, containment_state = (
             "DENY", "anti-agent hijack pattern detected", 95, "HIGH", "BLOCKED"
         )
@@ -2136,12 +2256,12 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
         verdict, reason, risk_score, risk_tier, containment_state = (
             "DENY", "foreign or nonlocal task origin attempted executable authority", 94, "HIGH", "BLOCKED"
         )
-    elif firewall_enabled and smagentx.get("enabled") and int(smagentx.get("threat_score") or 0) >= 85:
+    elif firewall_enabled and not informational_local and smagentx.get('enabled') and int(smagentx.get('threat_score') or 0) >= 85:
         verdict, reason, risk_score, risk_tier, containment_state = (
             "DENY", "SMAGENTX correlated critical hostile-agent behavior; reversible isolation required",
             max(95, int(smagentx.get("threat_score") or 0)), "HIGH", "QUARANTINED"
         )
-    elif firewall_enabled and smagentx.get("enabled") and int(smagentx.get("threat_score") or 0) >= 60:
+    elif firewall_enabled and not informational_local and smagentx.get('enabled') and int(smagentx.get('threat_score') or 0) >= 60:
         verdict, reason, risk_score, risk_tier, containment_state = (
             "DENY", "SMAGENTX correlated high-risk rogue-agent behavior; RoachMotel quarantine required",
             max(90, int(smagentx.get("threat_score") or 0)), "HIGH", "QUARANTINED"
@@ -2183,11 +2303,11 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
         "sensitive_hits": sensitive_hits,
         "signature_match": signature_match,
         "passport_verified": bool(passport_result and passport_result.get("ok")),
-        "passport_result": passport_result or {},
+        "passport_result": _smfw_redact_secrets(passport_result or {}),
         "foreign_task_guard": foreign_task_guard,
         "local_task_guard": local_task_guard or {},
         "smagentx": smagentx,
-        "agent_identity": identity,
+        "agent_identity": _smfw_redact_secrets(identity),
         "risk_score": risk_score,
         "risk_tier": risk_tier,
         "confidence_score": 0.90 if verdict != "ALLOW" else 0.75,
@@ -2195,6 +2315,9 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
         "containment_state": containment_state,
         "payload_sha256": _hash_text(text),
         "execution_authority": False,
+        "containment_enforced": False,
+        "enforcement_scope": 'caller_must_enforce_verdict',
+        "inspection_complete": not payload_oversized,
         "ts": time.time(),
     }
 
@@ -2202,6 +2325,9 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
         report = _build_agent_capture_report(payload, result, identity, source=source, remote_addr=remote_addr)
         lane = "blocked" if containment_state == "BLOCKED" else "quarantine" if containment_state == "QUARANTINED" else "inbound"
         result["capture_report_path"] = _write_capture_report(report, lane=lane)
+        result['capture_report_persisted'] = bool(result['capture_report_path'])
+        if not result['capture_report_persisted']:
+            result['capture_report_error'] = 'capture_evidence_not_persisted'
 
     if is_agent_like or verdict != "ALLOW":
         event_type = {
@@ -2209,7 +2335,7 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
             "QUARANTINED": "AGENT_QUARANTINED",
             "CAPTURED_REVIEW": "AGENT_RETURN_CAPTURED",
         }.get(containment_state, "AGENT_PAYLOAD_OBSERVED")
-        _ledger_receipt(
+        result['ledger_receipt_recorded'] = _ledger_receipt(
             event_type,
             verdict=verdict,
             identity=identity,
@@ -2231,6 +2357,7 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
 
     try:
         if audit_event is not None and verdict != "ALLOW":
+            result['audit_event_attempted'] = True
             audit_event(
                 "agent_firewall",
                 "inspect_payload",
@@ -2256,7 +2383,7 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
                 retention="security_audit",
             )
     except Exception:
-        pass
+        result['audit_event_error'] = 'audit_event_failed'
 
     return result
 
@@ -2285,36 +2412,59 @@ def classify_smugcc_cognitive_surface(envelope: Dict[str, Any]) -> Dict[str, Any
     }
 
 
-def quarantine_smugcc_payload(envelope: Dict[str, Any], reason: str, source: str = "unknown") -> Dict[str, Any]:
-    verdict = inspect_payload({"schema": "SarahMemory.SMUGCC.quarantine.v1", "json": envelope}, source=source, remote_addr="smugcc")
-    verdict["verdict"] = "QUARANTINE"
-    verdict["reason"] = str(reason or verdict.get("reason") or "smugcc_quarantine")
-    verdict["containment_state"] = "QUARANTINED"
-    verdict["execution_authority"] = False
+def quarantine_smugcc_payload(envelope: Dict[str, Any], reason: str, source: str = 'unknown') -> Dict[str, Any]:
+    verdict = inspect_payload({'schema': 'SarahMemory.SMUGCC.quarantine.v1', 'json': envelope}, source=source, remote_addr='smugcc')
+    verdict.update({'ok': False, 'verdict': 'QUARANTINE', 'reason': str(reason or verdict.get('reason') or 'smugcc_quarantine'),
+                    'containment_state': 'QUARANTINED', 'containment_enforced': False, 'execution_authority': False})
+    # Do not rely on the earlier, preliminary inspect_payload result for
+    # persistence: the final quarantine must have an independent report.
+    try:
+        identity = _extract_agent_identity({'json': envelope})
+        report = _build_agent_capture_report(envelope, verdict, identity, source=source, remote_addr='smugcc')
+        path = _write_capture_report(report, lane='quarantine')
+        verdict['capture_report_path'] = path
+        verdict['capture_report_persisted'] = bool(path)
+        if not path:
+            verdict['capture_report_error'] = 'quarantine_evidence_not_persisted'
+    except Exception:
+        verdict['capture_report_persisted'] = False
+        verdict['capture_report_error'] = 'quarantine_evidence_write_failed'
     return verdict
 
 
-def inspect_smugcc_envelope(envelope: Dict[str, Any], source: str = "unknown", remote_addr: str = "") -> Dict[str, Any]:
+
+def inspect_smugcc_envelope(envelope: Dict[str, Any], source: str = 'unknown', remote_addr: str = '') -> Dict[str, Any]:
     env = envelope if isinstance(envelope, dict) else {}
-    smugcc = _smugcc_core_module()
-    validation = smugcc.validate_smugcc_envelope(env)
+    try:
+        smugcc = _smugcc_core_module()
+        validation = smugcc.validate_smugcc_envelope(env)
+    except Exception as exc:
+        return {'ok': False, 'verdict': 'QUARANTINE', 'reason': 'smugcc_validator_unavailable',
+                'validation': {'ok': False, 'error_type': type(exc).__name__}, 'execution_authority': False}
     surface = classify_smugcc_cognitive_surface(env)
-    identity = env.get("identity") if isinstance(env.get("identity"), dict) else {}
-    authority = env.get("authority") if isinstance(env.get("authority"), dict) else {}
-    passport = env.get("passport") if isinstance(env.get("passport"), dict) else {}
-    requested = {str(x).strip().lower() for x in list(authority.get("requested") or []) if str(x).strip()}
-    governance = env.get("governance") if isinstance(env.get("governance"), dict) else {}
-    external = str(identity.get("origin") or "").strip().lower() == "external" or bool(surface.get("is_cognitive_surface"))
-    dangerous = requested.intersection({"shell", "filesystem", "device", "memory", "execute", "admin"})
-    bypass = any(not bool(governance.get(k, True)) for k in ("safety_policy_required", "security_governor_required", "assurance_required", "operatorcore_required", "ledger_required"))
-    if not validation.get("ok"):
-        q = quarantine_smugcc_payload(env, "invalid_smugcc_envelope", source=source)
-        return {**q, "ok": False, "validation": validation, "surface": surface, "verdict": "QUARANTINE"}
+    identity = env.get('identity') if isinstance(env.get('identity'), dict) else {}
+    authority = env.get('authority') if isinstance(env.get('authority'), dict) else {}
+    passport = env.get('passport') if isinstance(env.get('passport'), dict) else {}
+    requested = {str(x).strip().lower() for x in list(authority.get('requested') or []) if str(x).strip()}
+    governance = env.get('governance') if isinstance(env.get('governance'), dict) else {}
+    external = str(identity.get('origin') or '').strip().lower() == 'external' or bool(surface.get('is_cognitive_surface'))
+    dangerous = requested.intersection({'shell','filesystem','device','memory','execute','admin'})
+    bypass = any(not bool(governance.get(k, True)) for k in ('safety_policy_required','security_governor_required','assurance_required','operatorcore_required','ledger_required'))
+    if not isinstance(validation, dict) or not validation.get('ok'):
+        q = quarantine_smugcc_payload(env, 'invalid_smugcc_envelope', source=source)
+        return {**q, 'validation': validation, 'surface': surface}
     if dangerous or bypass:
-        return {"ok": False, "schema": "SarahMemory.AgentFirewall.SMUGCC.inspect.v1", "verdict": "DENY", "reason": "smugcc_requested_unsafe_authority_or_governance_bypass", "dangerous_authority": sorted(dangerous), "governance_bypass": bool(bypass), "surface": surface, "validation": validation, "execution_authority": False}
-    if external and not bool(passport.get("required", True)):
-        return {"ok": False, "schema": "SarahMemory.AgentFirewall.SMUGCC.inspect.v1", "verdict": "REQUIRE_TRUSTREGISTRY_PASSPORT", "reason": "external_smugcc_origin_requires_passport", "surface": surface, "validation": validation, "execution_authority": False}
-    return {"ok": True, "schema": "SarahMemory.AgentFirewall.SMUGCC.inspect.v1", "verdict": "ALLOW" if not external else "REQUIRE_TRUSTREGISTRY_PASSPORT", "reason": "smugcc_boundary_guarded", "surface": surface, "validation": validation, "execution_authority": False}
+        return {'ok': False, 'schema': 'SarahMemory.AgentFirewall.SMUGCC.inspect.v1', 'verdict': 'DENY',
+                'reason': 'smugcc_requested_unsafe_authority_or_governance_bypass', 'dangerous_authority': sorted(dangerous),
+                'governance_bypass': bool(bypass), 'surface': surface, 'validation': validation, 'execution_authority': False}
+    if external:
+        return {'ok': False, 'schema': 'SarahMemory.AgentFirewall.SMUGCC.inspect.v1',
+                'verdict': 'REQUIRE_TRUSTREGISTRY_PASSPORT', 'reason': 'external_smugcc_origin_requires_passport_verification',
+                'passport_required': True, 'passport_declared': bool(passport.get('passport_id')),
+                'surface': surface, 'validation': validation, 'execution_authority': False}
+    return {'ok': True, 'schema': 'SarahMemory.AgentFirewall.SMUGCC.inspect.v1', 'verdict': 'ALLOW',
+            'reason': 'local_smugcc_boundary_guarded', 'surface': surface, 'validation': validation, 'execution_authority': False}
+
 
 
 def guard_smugcc_external_boundary(envelope: Dict[str, Any], source: str = "unknown", remote_addr: str = "") -> Dict[str, Any]:
@@ -2377,6 +2527,14 @@ def _agent_firewall_normalize_adapter_url(resource: str, *, external: bool) -> T
     except Exception:
         return "", "resource_parse_failed"
     if external:
+        if parsed.fragment:
+            return '', 'fragment_in_adapter_resource_denied'
+        try:
+            port = parsed.port
+        except ValueError:
+            return '', 'invalid_url_port'
+        if port is not None and port != 443:
+            return '', 'nonstandard_https_port_denied'
         if parsed.scheme.lower() != "https":
             return "", "external_adapter_https_only"
         if parsed.username or parsed.password:
@@ -2420,8 +2578,35 @@ def enforce_read_only_adapter_request(request_packet: Dict[str, Any]) -> Dict[st
 
     if method != "GET":
         failures.append("method_not_get")
-    if not bool(passport_scope.get("ok")):
-        failures.append("passport_scope_not_verified")
+    if not bool(passport_scope.get('ok')):
+        failures.append('passport_scope_not_verified')
+    # The caller's boolean or embedded passport is not an authentication token.
+    registry, _registry_error = _trust_registry_module()
+    bound_passport = passport_scope.get('passport') if isinstance(passport_scope.get('passport'), dict) else {}
+    passport_id = str(bound_passport.get('passport_id') or passport_scope.get('passport_id') or '').strip()
+    if not passport_id:
+        failures.append('passport_id_required')
+    elif registry is None or not callable(getattr(registry, 'verify_agent_passport_scope', None)):
+        failures.append('independent_passport_verifier_unavailable')
+    else:
+        try:
+            official = registry.verify_agent_passport_scope(
+                passport_id=passport_id,
+                task_id=str(pkt.get('task_id') or '')[:180],
+                requested_lane=str(pkt.get('requested_lane') or bound_passport.get('origin_lane') or ''),
+                requested_capabilities=list(pkt.get('allowed_capabilities') or [])[:64],
+                requested_resources=[resource],
+                requested_methods=[method],
+                risk_tier=str(pkt.get('risk_tier') or 'low'),
+                require_user_approved=True,
+            )
+            if not isinstance(official, dict) or not official.get('ok'):
+                failures.append('independent_passport_scope_denied')
+            else:
+                # Only the independently fetched scope can constrain this request.
+                passport_scope = official
+        except Exception:
+            failures.append('independent_passport_scope_verification_failed')
 
     normalized_resource, norm_reason = _agent_firewall_normalize_adapter_url(resource, external=external)
     if norm_reason != "ok":
@@ -2448,9 +2633,11 @@ def enforce_read_only_adapter_request(request_packet: Dict[str, Any]) -> Dict[st
         norm, reason = _agent_firewall_normalize_adapter_url(raw, external=external)
         if reason == "ok" and norm and norm not in normalized_passport_resources:
             normalized_passport_resources.append(norm)
+    if normalized_resource and not normalized_passport_resources:
+        failures.append('passport_allowed_resources_required')
     if normalized_resource and normalized_passport_resources and normalized_resource not in normalized_passport_resources:
         failures.append("resource_not_in_passport_scope")
-    if external and not bool(passport.get("network_allowed", False)):
+    if external and not bool(passport.get('network_allowed', False)):
         failures.append("passport_network_not_allowed")
 
     dangerous_allowed = allowed_capabilities.intersection({
@@ -2481,6 +2668,9 @@ def enforce_read_only_adapter_request(request_packet: Dict[str, Any]) -> Dict[st
         "risk_tier": "LOW" if ok else "HIGH",
         "containment_state": "OBSERVED" if ok else "BLOCKED",
         "execution_authority": False,
+        'passport_verified': bool(passport_id and not any('passport' in failure for failure in failures)),
+        'dns_binding_verified': False if external else None,
+        'adapter_must_block_redirects': bool(external),
         "ts": time.time(),
     }
     if not ok:
@@ -2516,124 +2706,81 @@ PEER_REPLY_EVIDENCE_CANDIDATE = "PEER_REPLY_EVIDENCE_CANDIDATE"
 
 
 def assess_peer_reply(
-    peer_reply: Any,
-    *,
-    query: str = "",
-    provider: str = "",
-    task_id: str = "",
-    passport_id: str = "",
-    source: str = "peer_council",
-    remote_addr: str = "127.0.0.1",
+    peer_reply: Any, *, query: str = '', provider: str = '', task_id: str = '', passport_id: str = '',
+    source: str = 'peer_council', remote_addr: str = '127.0.0.1',
 ) -> Dict[str, Any]:
-    """Classify an inbound peer/provider reply without granting authority.
-
-    External AI peers are evidence candidates only. This helper converts a peer
-    return into deterministic Firewall evidence and blocks/quarantines attempts
-    to request secrets, execution, persistence, memory writes, or governance
-    override.
-    """
-    body = peer_reply if isinstance(peer_reply, dict) else {"answer": str(peer_reply or "")}
-    text = _normalize_text(body, max_len=12000)
+    """Classify peer evidence without permitting bypass of the firewall verdict."""
+    body = peer_reply if isinstance(peer_reply, dict) else {'answer': str(peer_reply or '')}
+    text, too_large = _smfw_bounded_payload_text(body)
     lower = text.lower()
-    provider_name = str(provider or body.get("provider") or body.get("source") or "unknown_peer")[:120]
+    provider_name = str(provider or body.get('provider') or body.get('source') or 'unknown_peer')[:120]
     reply_packet = {
-        "headers": {
-            "User-Agent": "SarahMemory peer council return",
-            "X-SarahMemory-Passport-Id": str(passport_id or body.get("passport_id") or ""),
-        },
-        "json": {
-            "agent_id": str(body.get("agent_id") or provider_name),
-            "task_id": str(task_id or body.get("task_id") or ""),
-            "requested_lane": "peer_council",
-            "requested_capabilities": ["return_data", "evidence"],
-            "requested_resources": list(body.get("sources") or body.get("source_refs") or []),
-            "risk_tier": "low",
-            "payload_hash": _hash_text(text),
-            "result_summary": str(body.get("answer") or body.get("content") or body.get("summary") or "")[:4000],
+        'headers': {'User-Agent': 'SarahMemory peer council return', 'X-SarahMemory-Passport-Id': str(passport_id or body.get('passport_id') or '')},
+        'json': {
+            'agent_id': str(body.get('agent_id') or provider_name),
+            'task_id': str(task_id or body.get('task_id') or ''),
+            'requested_lane': 'peer_council',
+            'requested_capabilities': ['return_data','evidence'],
+            'requested_resources': list(body.get('sources') or body.get('source_refs') or [])[:32],
+            'risk_tier': 'low', 'payload_hash': _hash_text(text),
+            'result_summary': str(body.get('answer') or body.get('content') or body.get('summary') or '')[:4000],
         },
     }
-    if passport_id or body.get("return_signature") or body.get("return_nonce"):
-        reply_packet["headers"]["X-SarahMemory-Agent-Signature"] = str(body.get("return_signature") or "")
-        reply_packet["headers"]["X-SarahMemory-Return-Nonce"] = str(body.get("return_nonce") or "")
+    if passport_id or body.get('return_signature') or body.get('return_nonce'):
+        reply_packet['headers']['X-SarahMemory-Agent-Signature'] = str(body.get('return_signature') or '')
+        reply_packet['headers']['X-SarahMemory-Return-Nonce'] = str(body.get('return_nonce') or '')
     try:
         firewall = inspect_payload(reply_packet, source=source, remote_addr=remote_addr)
     except Exception as exc:
-        firewall = {"ok": False, "verdict": "DENY", "reason": "inspect_payload_error:" + str(exc)[:180], "risk_tier": "HIGH"}
-
+        firewall = {'ok': False, 'verdict': 'DENY', 'reason': 'inspect_payload_error:' + type(exc).__name__, 'risk_tier': 'HIGH'}
     classifications: List[str] = []
-    dangerous = False
-    quarantine = False
-    secret_patterns = (
-        "api key", "apikey", "password", "secret", "token", "credential", "cookie", "private key", "bearer ",
-        "send me your", "share your key", "give me access",
-    )
-    execution_patterns = (
-        "run this", "execute", "shell", "powershell", "cmd.exe", "sub" + "process", "os." + "system",
-        "install ", "delete file", "write file", "modify core", "open terminal", "grant access",
-    )
-    authority_patterns = (
-        "ignore governance", "bypass governance", "self-authorize", "self authorize", "grant me authority",
-        "disable compare", "disable compass", "write to memory", "persist this", "become authority",
-    )
-
-    if any(p in lower for p in secret_patterns):
-        classifications.append(PEER_REPLY_SECRET_REQUEST)
-        dangerous = True
-    if any(p in lower for p in execution_patterns):
-        classifications.append(PEER_REPLY_EXECUTION_REQUEST)
-        dangerous = True
-    if any(p in lower for p in authority_patterns):
-        classifications.append(PEER_REPLY_AUTHORITY_ESCALATION)
-        dangerous = True
-    if bool(body.get("contradiction") or body.get("conflicts_with_evidence")):
+    patterns = {
+        PEER_REPLY_SECRET_REQUEST: ('api key','apikey','password','secret','token','credential','cookie','private key','bearer ','send me your','share your key','give me access'),
+        PEER_REPLY_EXECUTION_REQUEST: ('run this','execute','shell','powershell','cmd.exe','subprocess','os.system','install ','delete file','write file','modify core','open terminal','grant access'),
+        PEER_REPLY_AUTHORITY_ESCALATION: ('ignore governance','bypass governance','self-authorize','self authorize','grant me authority','disable compare','disable compass','write to memory','persist this','become authority'),
+    }
+    for label, terms in patterns.items():
+        matches = any(_smfw_phrase_present(lower, term.strip()) for term in terms)
+        if label == PEER_REPLY_SECRET_REQUEST and matches:
+            # Merely explaining OAuth tokens or passwords is not a credential request.
+            matches = bool(re.search(
+                r'\b(?:send|share|give|provide|reveal|expose|dump|steal|harvest|export|upload|extract|disclose)\b'
+                r'.{0,100}\b(?:api\s*key|password|secret|token|credential|cookie|private\s*key|access)\b',
+                lower, re.S
+            ) or any(_smfw_phrase_present(lower, p) for p in ('send me your', 'share your key', 'give me access')))
+        if matches:
+            classifications.append(label)
+    if body.get('contradiction') or body.get('conflicts_with_evidence'):
         classifications.append(PEER_REPLY_CONTRADICTION)
-    if str(firewall.get("verdict") or "").upper() == "DENY":
-        dangerous = True
-        quarantine = True
-        if PEER_REPLY_AUTHORITY_ESCALATION not in classifications and (firewall.get("hits") or firewall.get("remote_hits") or firewall.get("reason")):
-            classifications.append(PEER_REPLY_AUTHORITY_ESCALATION)
-
-    has_evidence = bool(
-        body.get("evidence")
-        or body.get("evidence_artifacts")
-        or body.get("source_refs")
-        or body.get("sources")
-        or body.get("citations")
-    )
-    answer_text = str(body.get("answer") or body.get("content") or body.get("summary") or body.get("data") or "").strip()
-    if has_evidence and not dangerous:
-        classifications.append(PEER_REPLY_EVIDENCE_CANDIDATE)
-    elif answer_text and not dangerous:
-        classifications.append(PEER_REPLY_STANDARD)
-    elif not dangerous:
+    verdict = str(firewall.get('verdict') or 'DENY').upper()
+    if too_large:
+        verdict = 'DENY'
         classifications.append(PEER_REPLY_UNSUPPORTED)
-
+    if verdict in ('DENY','QUARANTINE','REQUIRE_LOCAL_OR_ARMED') and PEER_REPLY_AUTHORITY_ESCALATION not in classifications:
+        classifications.append(PEER_REPLY_AUTHORITY_ESCALATION)
+    dangerous = any(x in classifications for x in (PEER_REPLY_SECRET_REQUEST, PEER_REPLY_EXECUTION_REQUEST, PEER_REPLY_AUTHORITY_ESCALATION))
+    has_evidence = bool(body.get('evidence') or body.get('evidence_artifacts') or body.get('source_refs') or body.get('sources') or body.get('citations'))
+    answer_text = str(body.get('answer') or body.get('content') or body.get('summary') or body.get('data') or '').strip()
+    if not dangerous:
+        classifications.append(PEER_REPLY_EVIDENCE_CANDIDATE if has_evidence else PEER_REPLY_STANDARD if answer_text else PEER_REPLY_UNSUPPORTED)
     if not classifications:
         classifications.append(PEER_REPLY_UNSUPPORTED)
-
-    primary = classifications[0]
-    blocked = any(c in classifications for c in (PEER_REPLY_SECRET_REQUEST, PEER_REPLY_EXECUTION_REQUEST, PEER_REPLY_AUTHORITY_ESCALATION))
-    containment_state = "QUARANTINED" if quarantine or blocked else "CAPTURED_REVIEW" if has_evidence else "OBSERVED"
-    reason = "peer_reply_authority_or_security_violation" if blocked else "peer_reply_captured_for_review"
+    review = verdict in ('REQUIRE_REVIEW','REQUIRE_TRUSTREGISTRY_PASSPORT') or bool(has_evidence)
+    blocked = bool(dangerous or verdict in ('DENY','QUARANTINE','REQUIRE_LOCAL_OR_ARMED'))
+    containment_state = 'QUARANTINED' if blocked else 'CAPTURED_REVIEW' if review else 'OBSERVED'
     return {
-        "ok": not blocked,
-        "schema": "SarahMemory.AgentFirewall.peer_reply_assessment.v1",
-        "classification": primary,
-        "classifications": classifications,
-        "blocked": bool(blocked),
-        "quarantine": bool(quarantine or blocked),
-        "containment_state": containment_state,
-        "reason": reason,
-        "provider": provider_name,
-        "query_hash": _hash_text(str(query or "")),
-        "reply_hash": _hash_text(text),
-        "has_evidence": bool(has_evidence),
-        "firewall": firewall,
-        "risk_tier": "HIGH" if blocked else "LOW" if has_evidence else "MEDIUM",
-        "memory_write_allowed": False,
-        "execution_authority": False,
-        "ts": time.time(),
+        'ok': not blocked and not review,
+        'schema': 'SarahMemory.AgentFirewall.peer_reply_assessment.v1',
+        'classification': classifications[0], 'classifications': classifications,
+        'blocked': blocked, 'review_required': review and not blocked,
+        'quarantine': blocked, 'containment_state': containment_state,
+        'reason': 'peer_reply_authority_or_security_violation' if blocked else 'peer_reply_captured_for_review' if review else 'peer_reply_observed',
+        'provider': provider_name, 'query_hash': _hash_text(str(query or '')), 'reply_hash': _hash_text(text),
+        'has_evidence': has_evidence, 'firewall': firewall,
+        'risk_tier': 'HIGH' if blocked else 'LOW' if has_evidence else 'MEDIUM',
+        'memory_write_allowed': False, 'execution_authority': False, 'ts': time.time(),
     }
+
 
 
 # ====================================================================
@@ -2644,7 +2791,7 @@ def assess_peer_reply(
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryAgentFirewall',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Governance',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -2666,19 +2813,22 @@ def sml_get_metadata():
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Read-only, evidence-scoped status; never fabricate perfect metrics."""
+    enabled = _bool_flag('SARAHMEMORY_AGENT_FIREWALL_ENABLED', True)
+    available = callable(globals().get('inspect_payload'))
+    trust_loaded = bool(sys.modules.get('SarahMemoryTrustRegistry'))
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        'status': 'Warning' if enabled and available else 'Offline',
+        'availability': 1.0 if enabled and available else 0.0,
+        'integrity': 0.0, 'performance': 0.0, 'reliability': 0.0,
+        'confidence': 0.7 if available else 0.0, 'latency_ms': 0.0,
+        'stability': 0.0, 'compatibility': 0.0,
+        'notes': ['Policy inspection available' if available else 'Policy inspection unavailable',
+                  'TrustRegistry imported' if trust_loaded else 'TrustRegistry not loaded; unverified',
+                  'Unmeasured metrics are conservative 0.0 placeholders, not measurements',
+                  'End-to-end containment and execution enforcement not measured'],
     }
+
 
 
 def sml_diagnostics():
@@ -2704,8 +2854,22 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
 
 # --- SML FIREWALL SPECIALIZATION START ---
 def sml_authorize_packet(packet, decision="Pending", granted_authority=None, reasons=None):
-    """Reflect AgentFirewall authority decisions into the SML packet."""
+    """Reflect a non-authorizing Firewall observation into SML.
+
+    Authority remains owned by the verified governance pipeline. This
+    compatibility adapter cannot turn a caller-provided decision into approval.
+    """
     from SarahMemorySMLProtocol import get_protocol, SMLPacket
     pkt = packet if isinstance(packet, SMLPacket) else SMLPacket.from_dict(packet)
-    return get_protocol().authorize_packet(pkt, decision=decision, granted_authority=granted_authority, organ="SarahMemoryAgentFirewall", reasons=reasons)
+    requested = str(decision or 'Pending')
+    # No bare string or dictionary in this adapter is authenticated proof.
+    safe_reasons = list(reasons or [])[:16]
+    if requested.lower() in ('approved', 'allow', 'authorized', 'grant') or granted_authority:
+        safe_reasons.append('agent_firewall_adapter_cannot_self_authorize')
+    # Clear any caller-provided grants. A separate governance owner may
+    # issue actual authority after independent approval and validation.
+    safe_decision = requested if requested in ('Denied', 'Escalated', 'RequireUser', 'Recovery', 'Rollback') else 'Pending'
+    return get_protocol().authorize_packet(pkt, decision=safe_decision, granted_authority=[],
+                                          organ='SarahMemoryAgentFirewall', reasons=safe_reasons)
+
 # --- SML FIREWALL SPECIALIZATION END ---

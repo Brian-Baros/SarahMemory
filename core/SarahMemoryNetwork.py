@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryNetwork.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ==============================================================================================================================================================
 """
 
@@ -38,7 +37,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -136,8 +135,8 @@ def _energetics_network_preflight(action_type: str, requested_power_mode: str = 
 
 def _network_power_allowed(action_type: str, requested_power_mode: str = "ACTIVE", *, device_type: str = "network", context: Optional[Dict[str, Any]] = None) -> Tuple[bool, Dict[str, Any]]:
     verdict = _energetics_network_preflight(action_type, requested_power_mode, device_type=device_type, context=context)
-    decision = str(verdict.get("decision") or "ALLOW").upper()
-    allowed = decision not in {"DENY", "DEFER"}
+    decision = str(verdict.get("decision") or "DEFER").strip().upper()
+    allowed = (verdict.get("ok") is True and decision in {"ALLOW", "APPROVED"})
     return allowed, verdict
 
 
@@ -1600,17 +1599,21 @@ def verify_signature(public_key_bytes: bytes, message: bytes, signature: bytes) 
         return False
 
 def derive_shared_key(priv_key_bytes: bytes, peer_pub_bytes: bytes) -> bytes:
+    """Return a real NaCl X25519/HSalsa20 shared key or fail closed.
+
+    This remains an unauthenticated key exchange until a trusted peer public-key
+    identity is established by the existing TrustRegistry. No hash downgrade.
+    """
+    if not isinstance(priv_key_bytes, bytes) or not isinstance(peer_pub_bytes, bytes) or len(priv_key_bytes) != 32 or len(peer_pub_bytes) != 32:
+        raise ValueError("x25519_key_material_must_be_32_bytes")
     try:
         from nacl.public import PrivateKey, PublicKey, Box
-        sk = PrivateKey(priv_key_bytes)
-        pk = PublicKey(peer_pub_bytes)
-        box = Box(sk, pk)
-        # derive by boxing zeros
-        nonce = b"\x00" * 24
-        return box.encrypt(b"seed", nonce).ciphertext[:32]
-    except Exception:
-        import hashlib
-        return hashlib.sha256(priv_key_bytes + peer_pub_bytes).digest()
+    except ImportError as exc:
+        raise RuntimeError("secure_key_agreement_unavailable") from exc
+    try:
+        return Box(PrivateKey(priv_key_bytes), PublicKey(peer_pub_bytes)).shared_key()
+    except Exception as exc:
+        raise ValueError("invalid_x25519_key_material") from exc
 
 def pack_envelope(payload: dict, nonce: str, sender_pub: bytes, signature: bytes) -> dict:
     return {"nonce": nonce, "from": sender_pub.hex(), "sig": signature.hex(), "payload": payload}
@@ -1634,11 +1637,17 @@ def heartbeat_server(base_url=None, timeout=4.0, allow_insecure_env="SARAHMEMORY
         class config: pass
     if base_url is None:
         base_url = getattr(config, "REMOTE_API_BASE", "https://www.sarahmemory.com/api")
-    allow_insecure = str(os.getenv(allow_insecure_env, "1")).strip().lower() in ("1","true","yes","on")
-    url = base_url.rstrip("/") + "/health"
+    # Kept allow_insecure_env in signature solely for binary/API compatibility.
+    # Environment opt-out cannot disable TLS peer authentication.
+    url = str(base_url or "").rstrip("/") + "/health"
+    from urllib.parse import urlsplit
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        logging.warning("[NET] Refusing non-HTTPS/credentialed heartbeat endpoint")
+        return False, None
     t0 = time.time()
     try:
-        r = requests.get(url, timeout=timeout, verify=not allow_insecure)
+        r = requests.get(url, timeout=max(0.25, min(float(timeout), 10.0)), verify=True)
         ok = (200 <= r.status_code < 300)
     except Exception as e:
         logging.warning("[NET] Heartbeat failed: %s", e)
@@ -1918,22 +1927,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Expose adapter presence without fabricating operational measurements."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "UNKNOWN",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter registered; live operational measurements not verified"],
     }
 
 
@@ -1943,7 +1952,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryNetwork',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryDataAuditor.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 Read-only SarahMemory data-layout auditor, focused tree generator, and future
@@ -67,7 +66,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -90,7 +89,7 @@ except Exception:  # pragma: no cover - expected to be usable standalone
     config = None  # type: ignore
 
 
-VERSION_STR = "v9.0.0"
+VERSION_STR = "v9.1.0a"
 VERSION_TAG = "v800"
 MODULE_NAME = "SarahMemoryDataAuditor"
 
@@ -343,7 +342,9 @@ class SarahMemoryDataAuditor:
     def scope_roots(self, scope: str) -> List[Path]:
         key = (scope or "data-root").strip().lower()
         scopes = self.available_scopes()
-        return scopes.get(key, [self.data_dir])
+        if key not in scopes:
+            raise ValueError('unknown_data_audit_scope:' + key)
+        return scopes[key]
 
     # ------------------------------------------------------------------
     # Classification logic
@@ -528,7 +529,7 @@ class SarahMemoryDataAuditor:
             return findings
 
         try:
-            entries = sorted([p for p in self.registry_dir.rglob("*") if p.is_file()])
+            entries = sorted([p for p in self.registry_dir.rglob('*') if p.is_file() and not p.is_symlink() and self._is_under(p, self.registry_dir)])[:1200]
         except Exception as e:
             findings.append(AuditFinding(
                 severity="WARN",
@@ -733,6 +734,8 @@ class SarahMemoryDataAuditor:
         stack: List[Tuple[Path, int]] = [(root, 0)]
         while stack and yielded < max_entries:
             current, depth = stack.pop()
+            if current.is_symlink() or not self._is_under(current, root):
+                continue
             try:
                 is_dir = current.is_dir()
             except Exception:
@@ -757,6 +760,8 @@ class SarahMemoryDataAuditor:
                 if nm in DEFAULT_EXCLUDE_DIRS or nm in DEFAULT_EXCLUDE_FILES:
                     continue
                 try:
+                    if child.is_symlink() or not self._is_under(child, root):
+                        continue
                     if child.is_dir():
                         dirs.append(child)
                     elif include_files and not dirs_only:
@@ -819,16 +824,23 @@ class SarahMemoryDataAuditor:
         opts = options or TreeOptions()
         self.report_version_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        out = Path(output_path) if output_path else self.report_version_dir / f"data_tree_{opts.scope}_{ts}.txt"
+        out = Path(output_path) if output_path else self.report_version_dir / f'data_tree_{opts.scope}_{ts}.txt'
+        if out.is_symlink() or not self._is_under(out, self.report_version_dir):
+            raise ValueError('audit_output_must_remain_within_reports_root')
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(self.build_tree_text(opts), encoding="utf-8")
+        if out.exists():
+            raise FileExistsError('audit_output_collision')
+        with out.open('x', encoding='utf-8') as f:
+            f.write(self.build_tree_text(opts))
         return out
 
     def write_audit_report(self, output_path: Optional[str | Path] = None) -> Path:
         payload = self.audit()
         self.report_version_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        out = Path(output_path) if output_path else self.report_version_dir / f"data_layout_audit_{ts}.json"
+        out = Path(output_path) if output_path else self.report_version_dir / f'data_layout_audit_{ts}.json'
+        if out.is_symlink() or not self._is_under(out, self.report_version_dir) or out.exists():
+            raise ValueError('audit_output_invalid_or_collision')
         self._atomic_write_json(out, payload)
         return out
 
@@ -1211,7 +1223,7 @@ def get_semantic_telemetry_snapshot() -> Dict[str, Any]:
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryDataAuditor',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Governance',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -1229,22 +1241,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter present; runtime health not independently measured"],
     }
 
 
@@ -1254,7 +1266,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryDataAuditor',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

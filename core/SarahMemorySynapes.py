@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemorySynapes.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,6 +13,7 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+===============================================================================
 
 SYNAPSES MODULE - NEURAL SELF-LEARNING ARCHITECTURE
 ================================================================
@@ -62,7 +63,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -767,82 +768,10 @@ def record_eval_result(
     return eval_id
 
 
-def promote_adapter(
-    *,
-    adapter_model_id: str,
-    lane: str = "default",
-    require_canary_pass: bool = True,
-) -> bool:
-    """
-    Promote an adapter to active for a given lane.
-    Governance gate: optional canary requirement.
-    """
-    try:
-        conn = connect_db("synapses.db")
-        cur = conn.cursor()
-
-        if require_canary_pass:
-            cur.execute(
-                """
-                SELECT passed
-                FROM eval_results
-                WHERE model_id=? AND suite_name='canary'
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                (str(adapter_model_id),),
-            )
-            r = cur.fetchone()
-            if not r or int(r[0]) != 1:
-                conn.close()
-                logger.warning(f"[LivingModel] Promotion blocked (missing canary pass): {adapter_model_id}")
-                return False
-
-        # set registry status active
-        cur.execute(
-            """
-            UPDATE model_registry
-            SET status='active', updated_at=?
-            WHERE model_id=? AND model_type='adapter'
-            """,
-            (_now_iso(), str(adapter_model_id)),
-        )
-
-        # update adapter_registry.json lane mapping (transparent)
-        ensure_sarahmemory_model_dirs()
-        reg = {"adapters": [], "updated_at": _now_iso()}
-        try:
-            if os.path.exists(ADAPTER_REGISTRY_JSON):
-                with open(ADAPTER_REGISTRY_JSON, "r", encoding="utf-8") as f:
-                    reg = json.load(f) or reg
-        except Exception:
-            pass
-
-        adapters = reg.get("adapters", [])
-        # remove existing lane entry
-        adapters = [a for a in adapters if str(a.get("lane")) != str(lane)]
-        adapters.append({
-            "lane": lane,
-            "active_adapter_model_id": adapter_model_id,
-            "promoted_at": _now_iso(),
-        })
-        reg["adapters"] = adapters
-        reg["updated_at"] = _now_iso()
-
-        try:
-            with open(ADAPTER_REGISTRY_JSON, "w", encoding="utf-8") as f:
-                json.dump(reg, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
-
-        conn.commit()
-        conn.close()
-        logger.info(f"[LivingModel] Adapter promoted: {adapter_model_id} -> lane:{lane}")
-        return True
-
-    except Exception as e:
-        logger.error(f"[LivingModel] promote_adapter failed: {e}", exc_info=True)
-        return False
+def promote_adapter(*, adapter_model_id: str, lane: str = "default", require_canary_pass: bool = True) -> bool:
+    """Restricted: legacy signature cannot carry an OperatorCore promotion receipt."""
+    logger.warning('Adapter promotion staged only; verified OperatorCore approval and canary required')
+    return False
 
 
 def _score_sample_heuristic(sample: Dict[str, Any]) -> float:
@@ -2416,51 +2345,17 @@ class SandboxTester:
         return passed, issues
 
     def execution_test(self, code: str, timeout: float = 5.0) -> Tuple[bool, str, float]:
-        """Stage 4: Controlled execution test"""
-        result_container = {'passed': False, 'error': '', 'completed': False}
+        """Return a truthful outcome: this module has no OS-isolated sandbox.
 
-        def run_in_sandbox():
-            try:
-                restricted_globals = {
-                    '__builtins__': self.restricted_builtins,
-                    '__name__': '__sandbox__',
-                    '__doc__': None,
-                }
-                restricted_locals = {}
-
-                exec(code, restricted_globals, restricted_locals)
-
-                result_container['passed'] = True
-                result_container['completed'] = True
-
-            except Exception as e:
-                result_container['error'] = f"{type(e).__name__}: {str(e)}"
-                result_container['completed'] = True
-
-        start_time = time.time()
-
-        thread = threading.Thread(target=run_in_sandbox, daemon=True)
-        thread.start()
-        thread.join(timeout)
-
-        execution_time_ms = (time.time() - start_time) * 1000
-
-        if thread.is_alive():
-            error_msg = f"Execution timeout after {timeout}s"
-            logger.warning(f"Execution test: TIMEOUT - {error_msg}")
-            return False, error_msg, execution_time_ms
-
-        if not result_container['completed']:
-            error_msg = "Execution did not complete"
-            logger.warning(f"Execution test: INCOMPLETE - {error_msg}")
-            return False, error_msg, execution_time_ms
-
-        if result_container['passed']:
-            logger.debug(f"Execution test: PASSED ({execution_time_ms:.2f}ms)")
-            return True, "", execution_time_ms
-        else:
-            logger.warning(f"Execution test: FAILED - {result_container['error']}")
-            return False, result_container['error'], execution_time_ms
+        Thread-based exec cannot be killed. No syntax pass can establish a secure
+        runtime pass; activation requires an independently managed process sandbox.
+        """
+        start = time.monotonic()
+        try:
+            ast.parse(str(code), mode='exec')
+        except Exception as exc:
+            return False, f'syntax_invalid:{type(exc).__name__}', (time.monotonic()-start)*1000
+        return False, 'isolated_execution_sandbox_unavailable', (time.monotonic()-start)*1000
 
     def run_full_test_suite(self, code: str, code_hash: str) -> Tuple[bool, List[Dict[str, Any]]]:
         """Run complete test suite"""
@@ -2764,7 +2659,8 @@ TEST RESULTS:
                 with open(approved_path, 'w', encoding='utf-8') as f:
                     f.write(generated_code.code)
 
-                save_code_to_addons(f"{generated_code.function_name}.py", generated_code.code)
+                # No direct add-on promotion from a Boolean auto_approve flag.
+                raise PermissionError('Generated code requires verified OperatorCore promotion')
 
                 report += f"\n✅ AUTO-APPROVED: {approved_path}"
                 logger.info("Module auto-approved")
@@ -3064,28 +2960,13 @@ def log_software_task(app_name, category, file_output_path, status="pending"):
 
 
 def run_sandbox_test(code_str):
-    """Legacy sandbox test (simple version)"""
+    """No in-process Python exec is an isolation boundary; reject runtime execution."""
     try:
-        compiled_code = compile(code_str, '<sandbox>', 'exec')
-    except Exception as e:
-        logger.error(f"Compilation error: {e}")
+        compile(str(code_str),'<sandbox>', 'exec')
+    except Exception:
         return False
-
-    restricted_globals = {
-        '__builtins__': {
-            'print': print, 'range': range, 'len': len,
-            'str': str, 'int': int, 'float': float,
-            'bool': bool, 'list': list,
-        }
-    }
-
-    try:
-        exec(compiled_code, restricted_globals, {})
-        logger.info("Sandbox test passed")
-        return True
-    except Exception as e:
-        logger.error(f"Execution error: {traceback.format_exc()}")
-        return False
+    logger.warning('Legacy in-process sandbox execution restricted: OS-isolated runner required')
+    return False
 
 
 # ============================================================================
@@ -3416,22 +3297,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML registration confirmed; runtime measurements not performed"],
     }
 
 
@@ -3441,7 +3322,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemorySynapes',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

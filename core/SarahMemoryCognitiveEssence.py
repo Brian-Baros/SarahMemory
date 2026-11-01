@@ -1,10 +1,18 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryCognitiveEssence.py
-Part of the SarahMemory AiOS Governed Cognitive Runtime / GCAIOS
-Version: v9.0.0-alpha
-Date: 2026-09-21
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
+Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-www.sarahmemory.com
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
 
 ===============================================================================
 PURPOSE
@@ -92,7 +100,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-09-21"
+# VALIDATION_DATE = "2026-11-01"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime / GCAIOS"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Governed portable identity/memory/lineage continuity capsules. No execution or autonomous replication authority."
@@ -175,7 +183,7 @@ _local_arile_sentinel = LocalARILESentinel()
 # Constants and contracts
 # -----------------------------------------------------------------------------
 MODULE_NAME = "SarahMemoryCognitiveEssence"
-MODULE_VERSION = "9.0.0-alpha-hardening1"
+MODULE_VERSION = "9.1.0a"
 ESSENCE_SCHEMA = "SARAHMEMORY_COGNITIVE_ESSENCE_V1"
 ESSENCE_SCHEMA_VERSION = 1
 ESSENCE_SIGNATURE_ALGORITHM = "HMAC-SHA256"
@@ -1447,6 +1455,9 @@ def persist_cognitive_essence_capsule(
             "execution_authority": False,
         }
     cap = capsule if isinstance(capsule, CognitiveEssenceCapsule) else CognitiveEssenceCapsule.from_dict(capsule)
+    structural = validate_cognitive_essence_capsule(cap, require_signature=False)
+    if not structural.ok:
+        return {"ok": False, "error": "invalid_capsule_structure", "validation": structural.to_dict(), "execution_authority": False}
     size = _capsule_size_bytes(cap)
     if size > MAX_CAPSULE_BYTES:
         return {"ok": False, "error": "capsule_exceeds_size_limit", "size_bytes": size, "execution_authority": False}
@@ -1526,8 +1537,13 @@ def load_cognitive_essence_capsule(
         raw = path.read_bytes()
         data = json.loads(raw.decode("utf-8"))
         cap = CognitiveEssenceCapsule.from_dict(data)
+        structural = validate_cognitive_essence_capsule(cap, require_signature=False)
+        if not structural.ok:
+            return {"ok": False, "error": "invalid_capsule_structure", "validation": structural.to_dict(), "path": str(path), "execution_authority": False}
         return {
             "ok": True,
+            "authentication_verified": False,  # requires caller-provided signing secret
+            "validation": structural.to_dict(),
             "capsule": cap.to_dict(),
             "path": str(path),
             "file_sha256": _sha256_bytes(raw),
@@ -1781,8 +1797,8 @@ def sml_get_metadata() -> Dict[str, Any]:
 
 def _dependency_probe(module_name: str) -> Dict[str, Any]:
     try:
-        __import__(module_name)
-        return {"ok": True, "module": module_name}
+        import importlib.util
+        return {"ok": importlib.util.find_spec(module_name) is not None, "module": module_name, "probe": "non_executing"}
     except Exception as exc:
         return {"ok": False, "module": module_name, "error": str(exc)[:300]}
 
@@ -1810,13 +1826,13 @@ def sml_health() -> Dict[str, Any]:
     return {
         "status": status,
         "availability": round(availability, 3),
-        "integrity": 1.0 if not missing else 0.75,
-        "performance": 0.95,
-        "reliability": 0.95 if not missing else 0.70,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
         "confidence": 0.95 if not missing else 0.70,
-        "latency_ms": 0.0,
-        "stability": 0.95,
-        "compatibility": 0.90 if not missing else 0.65,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
         "execution_authority": False,
         "dependencies": dependencies,
         "notes": notes,

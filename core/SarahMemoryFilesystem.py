@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryFilesystem.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 SarahMemoryFilesystem.py - Backup System & File Manager
@@ -53,7 +52,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -175,8 +174,8 @@ def _norm_path(path: str) -> str:
 
 def _is_path_under(child: str, parent: str) -> bool:
     try:
-        child_abs = _norm_path(child)
-        parent_abs = _norm_path(parent)
+        child_abs = os.path.realpath(_norm_path(child))
+        parent_abs = os.path.realpath(_norm_path(parent))
         return os.path.commonpath([child_abs, parent_abs]) == parent_abs
     except Exception:
         return False
@@ -198,6 +197,8 @@ def _is_backup_excluded_file(file_path: str, destination: str = "") -> Tuple[boo
         if destination and p == _norm_path(destination):
             return True, "destination_zip"
         base = os.path.basename(p).lower()
+        if base in {".env", ".env.local", ".env.production", "secrets.json", "credentials.json", "encryption.key"}:
+            return True, "sensitive_secret_file"
         if base.startswith("~$") or base.endswith(".swp") or base.endswith(".part"):
             return True, "temporary_file"
         for suffix in _BACKUP_EXCLUDED_FILE_SUFFIXES:
@@ -217,13 +218,23 @@ def _is_backup_excluded_file(file_path: str, destination: str = "") -> Tuple[boo
 def _collect_backup_files(source_dir: str, destination: str = "") -> Tuple[List[str], Dict[str, int]]:
     files_to_backup: List[str] = []
     skipped: Dict[str, int] = defaultdict(int)
+    max_files = 1000
+    max_total_bytes = 512 * 1024 * 1024
+    start = time.monotonic()
+    total_source_bytes = 0
     source_abs = _norm_path(source_dir)
 
     for foldername, subdirs, filenames in os.walk(source_abs):
+        if time.monotonic() - start > 10.0:
+            skipped["file_budget_exceeded"] += 1
+            break
         # Prune excluded directories in-place so os.walk never descends into them.
         kept_subdirs = []
         for subdir in list(subdirs):
             subdir_path = os.path.join(foldername, subdir)
+            if os.path.islink(subdir_path) or not _is_path_under(subdir_path, source_abs):
+                skipped["directory_symlink_or_escape"] += 1
+                continue
             if _is_backup_excluded_dir(subdir_path):
                 skipped[f"dir:{subdir.lower()}"] += 1
             else:
@@ -236,10 +247,25 @@ def _collect_backup_files(source_dir: str, destination: str = "") -> Tuple[List[
 
         for filename in filenames:
             file_path = os.path.join(foldername, filename)
+            if os.path.islink(file_path) or not _is_path_under(file_path, source_abs):
+                skipped["symlink_or_escape"] += 1
+                continue
+            if len(files_to_backup) >= max_files:
+                skipped["file_budget_exceeded"] += 1
+                continue
             excluded, reason = _is_backup_excluded_file(file_path, destination)
             if excluded:
                 skipped[reason] += 1
                 continue
+            try:
+                nbytes = os.path.getsize(file_path)
+            except OSError:
+                skipped["stat_failed"] += 1
+                continue
+            if total_source_bytes + nbytes > max_total_bytes:
+                skipped["file_budget_exceeded"] += 1
+                continue
+            total_source_bytes += nbytes
             files_to_backup.append(file_path)
 
     return files_to_backup, skipped
@@ -258,7 +284,7 @@ class MalwareSignatures:
     # Known malicious file hashes (SHA-256)
     MALICIOUS_HASHES = {
         # Add known malware hashes here - these are examples only
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",  # Empty file hash - example
+         # No example hashes: only externally validated indicators may be added by operator
     }
     
     # Suspicious file patterns (regex)
@@ -724,13 +750,9 @@ class FileScanner:
             except Exception as e:
                 logger.warning(f"Could not read file content for scanning: {e}")
             
-            # Take action if threats found
+            # Heuristic matches are observations, not permission to move user files.
             if result["threats"] and quarantine_on_threat:
-                if result["threat_level"] in ["critical", "high"]:
-                    quarantined = self.quarantine_file(file_path, result["threat_level"])
-                    if quarantined:
-                        result["action_taken"] = "quarantined"
-                        self.statistics["files_quarantined"] += 1
+                result["action_taken"] = "review_required"
             
             # Log scan results
             log_malware_scan(
@@ -781,15 +803,23 @@ class FileScanner:
             
             if recursive:
                 for root, dirs, files in os.walk(directory):
+                    dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]
                     for filename in files:
                         file_path = os.path.join(root, filename)
-                        files_to_scan.append(file_path)
+                        if not os.path.islink(file_path):
+                            files_to_scan.append(file_path)
+                        if len(files_to_scan) >= 200:
+                            break
+                    if len(files_to_scan) >= 200:
+                        logger.warning("Filesystem scan budget reached (200 files)")
+                        break
             else:
                 for filename in os.listdir(directory):
                     file_path = os.path.join(directory, filename)
                     if os.path.isfile(file_path):
                         files_to_scan.append(file_path)
             
+            files_to_scan = files_to_scan[:200]
             logger.info(f"Scanning {len(files_to_scan)} files...")
             
             # Scan files with thread pool for better performance
@@ -826,124 +856,21 @@ class FileScanner:
         return results
     
     def quarantine_file(self, file_path: str, threat_level: str = "medium") -> bool:
-        """
-        Move suspicious file to quarantine directory.
-        
-        Args:
-            file_path: Path to file to quarantine
-            threat_level: Severity level of threat
-        
-        Returns:
-            True if file was quarantined successfully
-        """
-        try:
-            _sm_arile_guard_file_mutation(file_path, "delete")
-            if not os.path.exists(file_path):
-                return False
-            
-            # Create quarantine directory if it doesn't exist
-            os.makedirs(QUARANTINE_DIR, exist_ok=True)
-            
-            # Generate quarantine filename with timestamp
-            basename = os.path.basename(file_path)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            quarantine_name = f"{timestamp}_{basename}.quarantined"
-            quarantine_path = os.path.join(QUARANTINE_DIR, quarantine_name)
-            
-            # Move file to quarantine
-            shutil.move(file_path, quarantine_path)
-            
-            # Log quarantine action
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO quarantine_log 
-                (timestamp, original_path, quarantine_path, reason, threat_level)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                datetime.now().isoformat(),
-                file_path,
-                quarantine_path,
-                "Malware/suspicious content detected",
-                threat_level
-            ))
-            conn.commit()
-            conn.close()
-            
-            logger.warning(f"File quarantined: {file_path} -> {quarantine_path}")
-            log_filesystem_event(
-                "quarantine",
-                file_path,
-                f"Moved to quarantine: {quarantine_path} (threat level: {threat_level})"
-            )
-            
-            return True
-        
-        except Exception as e:
-            logger.error(f"Error quarantining file {file_path}: {e}")
-            return False
+        """Biometric/malware quarantine changes require authenticated authorization.
+
+            Heuristics may suggest review but must never move or restore files themselves.
+            """
+        logger.warning("FileScanner.quarantine_file requires OperatorCore action authorization")
+        return False
     
     def restore_from_quarantine(self, quarantine_path: str, 
                                 restore_path: str = None) -> bool:
-        """
-        Restore file from quarantine.
-        
-        Args:
-            quarantine_path: Path to quarantined file
-            restore_path: Optional path to restore to (uses original if None)
-        
-        Returns:
-            True if restored successfully
-        """
-        try:
-            if not os.path.exists(quarantine_path):
-                logger.error(f"Quarantined file not found: {quarantine_path}")
-                return False
-            
-            # Get original path from database if restore_path not provided
-            if restore_path is None:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT original_path FROM quarantine_log WHERE quarantine_path = ?",
-                    (quarantine_path,)
-                )
-                row = cursor.fetchone()
-                conn.close()
-                
-                if row:
-                    restore_path = row[0]
-                else:
-                    logger.error("Could not find original path for quarantined file")
-                    return False
-            
-            # Restore file
-            os.makedirs(os.path.dirname(restore_path), exist_ok=True)
-            shutil.move(quarantine_path, restore_path)
-            
-            # Update quarantine log
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE quarantine_log 
-                SET restored = 1, restore_timestamp = ?
-                WHERE quarantine_path = ?
-            """, (datetime.now().isoformat(), quarantine_path))
-            conn.commit()
-            conn.close()
-            
-            logger.info(f"File restored from quarantine: {restore_path}")
-            log_filesystem_event(
-                "restore",
-                restore_path,
-                f"Restored from quarantine: {quarantine_path}"
-            )
-            
-            return True
-        
-        except Exception as e:
-            logger.error(f"Error restoring file from quarantine: {e}")
-            return False
+        """Biometric/malware quarantine changes require authenticated authorization.
+
+            Heuristics may suggest review but must never move or restore files themselves.
+            """
+        logger.warning("FileScanner.restore_from_quarantine requires OperatorCore action authorization")
+        return False
 
 
 # ============================================================================
@@ -967,7 +894,7 @@ class BackupManager:
     
     def generate_backup_filename(self, backup_type: str, prefix: str = "") -> str:
         """Generate unique backup filename with timestamp."""
-        date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        date_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         
         if prefix:
             return f"SarahMemory_{prefix}_{backup_type}_backup_{date_str}.zip"
@@ -989,12 +916,18 @@ class BackupManager:
             source_dir = BASE_DIR
 
         source_dir = _norm_path(source_dir)
+        if not _is_path_under(source_dir, BASE_DIR) or not os.path.isdir(source_dir):
+            logger.error("Backup source outside SarahMemory project root")
+            return None
 
         if destination is None:
             os.makedirs(BACKUP_DIR, exist_ok=True)
             backup_filename = self.generate_backup_filename("full", "F")
             destination = os.path.join(BACKUP_DIR, backup_filename)
         destination = _norm_path(destination)
+        if not _is_path_under(destination, BACKUP_DIR) or os.path.islink(destination):
+            logger.error("Backup output must remain inside the approved backup directory")
+            return None
 
         logger.info(f"Starting full backup: {source_dir} -> {destination}")
         start_time = time.time()
@@ -1007,6 +940,9 @@ class BackupManager:
             failed_count = 0
 
             files_to_backup, skipped = _collect_backup_files(source_dir, destination)
+            if skipped.get("file_budget_exceeded"):
+                logger.error("Backup budget exceeded; refusing incomplete snapshot")
+                return None
             logger.info(
                 "Backing up %s files after exclusions; skipped=%s",
                 len(files_to_backup),
@@ -1018,13 +954,27 @@ class BackupManager:
             # IMPORTANT: zipfile.ZipFile is not safe for concurrent writes.  The
             # previous threaded writer caused repeated "open writing handle" errors
             # and hammered node_modules.  Keep the ZIP writer single-threaded.
-            with zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED, compresslevel=self.compression_level) as backup_zip:
+            with zipfile.ZipFile(destination, 'x', zipfile.ZIP_DEFLATED, compresslevel=self.compression_level) as backup_zip:
                 for file_path in files_to_backup:
                     try:
                         arcname = os.path.relpath(file_path, start=source_dir)
-                        backup_zip.write(file_path, arcname)
-                        checksum = calculate_checksum(file_path)
-                        size = os.path.getsize(file_path)
+                        # SQLite online backup captures committed WAL transactions.
+                        if file_path.lower().endswith((".db", ".sqlite", ".sqlite3")):
+                            import contextlib
+                            import tempfile
+                            fd, temporary_db = tempfile.mkstemp(suffix=".sqlite")
+                            os.close(fd)
+                            try:
+                                with contextlib.closing(sqlite3.connect(f"file:{Path(file_path).as_posix()}?mode=ro", uri=True, timeout=5)) as source_db, contextlib.closing(sqlite3.connect(temporary_db)) as staged_db:
+                                    source_db.backup(staged_db)
+                                backup_zip.write(temporary_db, arcname)
+                            finally:
+                                os.unlink(temporary_db)
+                        else:
+                            backup_zip.write(file_path, arcname)
+                        import hashlib
+                        checksum = hashlib.sha256(backup_zip.read(arcname)).hexdigest()
+                        size = backup_zip.getinfo(arcname).file_size
                         checksum_map[arcname] = checksum
                         original_size += size
                         file_count += 1
@@ -1049,6 +999,13 @@ class BackupManager:
                 }
                 backup_zip.writestr("BACKUP_METADATA.json", json.dumps(metadata, indent=2))
 
+            if failed_count or not file_count or skipped.get("file_budget_exceeded", 0):
+                logger.error("Incomplete backup refused: %s failed files", failed_count)
+                try:
+                    os.remove(destination)
+                except OSError:
+                    pass
+                return None
             total_size = os.path.getsize(destination)
             compression_ratio = (1 - (total_size / original_size)) * 100 if original_size > 0 else 0
             duration = time.time() - start_time
@@ -1102,12 +1059,22 @@ class BackupManager:
         if source_dir is None:
             source_dir = BASE_DIR
         source_dir = _norm_path(source_dir)
+        if not _is_path_under(source_dir, BASE_DIR) or not os.path.isdir(source_dir):
+            logger.error("Incremental source outside SarahMemory project root")
+            return None
 
         logger.info(f"Starting incremental backup: {source_dir}")
         start_time = time.time()
 
         try:
             changed_files = self._find_changed_files(source_dir, base_backup)
+            # WAL commits can change without modifying the main SQLite file;
+            # include databases as fresh online snapshots on every incremental run.
+            all_source_files, _limits = _collect_backup_files(source_dir)
+            if _limits.get("file_budget_exceeded"):
+                logger.error("Source file inventory exceeded safe budget")
+                return None
+            changed_files = list(dict.fromkeys(changed_files + [f for f in all_source_files if f.lower().endswith((".db", ".sqlite", ".sqlite3"))]))
 
             if not changed_files:
                 logger.info("No files changed since last backup")
@@ -1126,7 +1093,7 @@ class BackupManager:
             failed_count = 0
             skipped: Dict[str, int] = defaultdict(int)
 
-            with zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED, compresslevel=self.compression_level) as backup_zip:
+            with zipfile.ZipFile(destination, 'x', zipfile.ZIP_DEFLATED, compresslevel=self.compression_level) as backup_zip:
                 for file_path in changed_files:
                     excluded, reason = _is_backup_excluded_file(file_path, destination)
                     if excluded:
@@ -1134,10 +1101,22 @@ class BackupManager:
                         continue
                     try:
                         arcname = os.path.relpath(file_path, start=source_dir)
-                        backup_zip.write(file_path, arcname)
-                        checksum = calculate_checksum(file_path)
+                        if file_path.lower().endswith((".db", ".sqlite", ".sqlite3")):
+                            import contextlib
+                            import tempfile
+                            fd, stage = tempfile.mkstemp(suffix=".sqlite")
+                            os.close(fd)
+                            try:
+                                with contextlib.closing(sqlite3.connect(f"file:{Path(file_path).as_posix()}?mode=ro", uri=True, timeout=5)) as source_db, contextlib.closing(sqlite3.connect(stage)) as staged_db:
+                                    source_db.backup(staged_db)
+                                backup_zip.write(stage, arcname)
+                            finally:
+                                os.unlink(stage)
+                        else:
+                            backup_zip.write(file_path, arcname)
+                        checksum = hashlib.sha256(backup_zip.read(arcname)).hexdigest()
                         checksum_map[arcname] = checksum
-                        size = os.path.getsize(file_path)
+                        size = backup_zip.getinfo(arcname).file_size
                         original_size += size
                         file_count += 1
                     except Exception as e:
@@ -1161,6 +1140,13 @@ class BackupManager:
                 }
                 backup_zip.writestr("BACKUP_METADATA.json", json.dumps(metadata, indent=2))
 
+            if failed_count or not file_count or skipped.get("file_budget_exceeded"):
+                logger.error("Incomplete incremental backup refused")
+                try:
+                    os.unlink(destination)
+                except OSError:
+                    pass
+                return None
             total_size = os.path.getsize(destination)
             compression_ratio = (1 - (total_size / original_size)) * 100 if original_size > 0 else 0
             duration = time.time() - start_time
@@ -1224,142 +1210,118 @@ class BackupManager:
 
         return changed_files
 
-    def restore_backup(self, backup_path: str, 
-                       destination: str = None,
-                       verify_checksum: bool = True) -> bool:
+
+    def restore_backup(self, backup_path: str, destination: str = None, verify_checksum: bool = True) -> bool:
+        """Restore a local backup only after full ZIP verification and staging.
+
+        This does not certify the ZIP's publisher: untrusted external archives must
+        not be placed in the operator-controlled BACKUP_DIR. Existing destinations
+        require separate OperatorCore authorization and are not overwritten here.
         """
-        Restore backup to specified location.
-        
-        Args:
-            backup_path: Path to backup file
-            destination: Where to restore (defaults to original location)
-            verify_checksum: Whether to verify file checksums after restore
-        
-        Returns:
-            True if restore successful
-        """
-        if not os.path.exists(backup_path):
-            logger.error(f"Backup file not found: {backup_path}")
+        import tempfile
+        import posixpath
+        import uuid
+        if not isinstance(backup_path, str) or not isinstance(destination, str) or not destination:
+            logger.error("Restore requires an explicit sandbox destination and a verified local archive")
             return False
-        
-        if not zipfile.is_zipfile(backup_path):
-            logger.error(f"Not a valid backup file: {backup_path}")
+        source = os.path.realpath(os.path.abspath(backup_path))
+        backup_root = os.path.realpath(os.path.abspath(BACKUP_DIR))
+        dest = os.path.realpath(os.path.abspath(destination))
+        if (not _is_path_under(source, backup_root) or os.path.islink(backup_path)
+                or not os.path.isfile(source) or not zipfile.is_zipfile(source)
+                or os.path.islink(destination)):
             return False
-        
-        logger.info(f"Restoring backup: {backup_path}")
-        start_time = time.time()
-        
+        # This legacy restore interface cannot prove OperatorCore approval for
+        # replacing active data. Stage new files only inside governed SANDBOX_DIR.
+        if not _is_path_under(dest, SANDBOX_DIR) or not os.path.isdir(dest):
+            return False
+        temp_root = None
+        committed = []
         try:
-            with zipfile.ZipFile(backup_path, 'r') as z:
-                # Read metadata
-                metadata = {}
-                if "BACKUP_METADATA.json" in z.namelist():
-                    metadata = json.loads(z.read("BACKUP_METADATA.json").decode('utf-8'))
-                
-                # Read checksums
+            with zipfile.ZipFile(source) as archive:
+                names = archive.namelist()
+                if len(names) > 5002 or len(names) != len(set(names)):
+                    return False
+                if "CHECKSUM_MANIFEST.txt" not in names or "BACKUP_METADATA.json" not in names:
+                    return False
+                if archive.getinfo("CHECKSUM_MANIFEST.txt").file_size > 1024 * 1024:
+                    return False
+                manifest_bytes = archive.read("CHECKSUM_MANIFEST.txt")
+                if len(manifest_bytes) > 1024 * 1024:
+                    return False
                 checksums = {}
-                if "CHECKSUM_MANIFEST.txt" in z.namelist():
-                    manifest = z.read("CHECKSUM_MANIFEST.txt").decode('utf-8')
-                    for line in manifest.split('\n'):
-                        if ': ' in line:
-                            path, checksum = line.split(': ', 1)
-                            checksums[path] = checksum
-                
-                # Determine destination
-                if destination is None:
-                    destination = metadata.get("source_directory", BASE_DIR)
-                
-                logger.info(f"Restoring to: {destination}")
-                
-                # Extract all files
-                z.extractall(destination)
-                
-                # Verify checksums if requested
-                if verify_checksum and checksums:
-                    logger.info("Verifying restored files...")
-                    verification_failed = []
-                    
-                    for arcname, expected_checksum in checksums.items():
-                        file_path = os.path.join(destination, arcname)
-                        if os.path.exists(file_path):
-                            actual_checksum = calculate_checksum(file_path)
-                            if actual_checksum != expected_checksum:
-                                verification_failed.append(arcname)
-                    
-                    if verification_failed:
-                        logger.error(
-                            f"Checksum verification failed for {len(verification_failed)} files"
-                        )
-                        for path in verification_failed[:10]:  # Show first 10
-                            logger.error(f"  - {path}")
+                for line in manifest_bytes.decode("utf-8").splitlines():
+                    if ": " not in line:
                         return False
-                    else:
-                        logger.info("All files verified successfully")
-            
-            duration = time.time() - start_time
-            logger.info(f"Restore completed in {duration:.2f}s")
-            
-            log_filesystem_event(
-                "backup_restore",
-                backup_path,
-                f"Backup restored to: {destination}"
-            )
-            
+                    key, sha = line.rsplit(": ", 1)
+                    if key in checksums or not re.fullmatch(r"[0-9a-f]{64}", sha):
+                        return False
+                    checksums[key] = sha
+                entries = [entry for entry in archive.infolist() if entry.filename not in ("CHECKSUM_MANIFEST.txt", "BACKUP_METADATA.json")]
+                if len(checksums) != len(entries) or sum(x.file_size for x in entries) > 2 * 1024**3:
+                    return False
+                for member in entries:
+                    key = member.filename
+                    parts = key.replace("\\", "/").split("/")
+                    if (member.is_dir() or not key or key.startswith(("/", "\\"))
+                            or any(part in ("", ".", "..") for part in parts)
+                            or ":" in parts[0] or key not in checksums
+                            or (member.external_attr >> 16) & 0o170000 == 0o120000
+                            or member.file_size > _BACKUP_MAX_FILE_BYTES):
+                        return False
+                    target = os.path.join(dest, *parts)
+                    if not _is_path_under(target, dest) or os.path.lexists(target):
+                        # Legacy signature provides no permission to replace an existing file.
+                        return False
+                    if any(os.path.islink(os.path.join(dest, *parts[:i])) for i in range(1, len(parts))):
+                        return False
+                temp_root = tempfile.mkdtemp(prefix=".sm_restore_", dir=dest)
+                # Stage and hash all bytes before promoting even one destination.
+                for member in entries:
+                    import hashlib
+                    out = os.path.join(temp_root, *member.filename.replace("\\", "/").split("/"))
+                    os.makedirs(os.path.dirname(out), exist_ok=True)
+                    digest = hashlib.sha256()
+                    with archive.open(member) as reader, open(out, "xb") as writer:
+                        while True:
+                            chunk = reader.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            digest.update(chunk)
+                            writer.write(chunk)
+                    if digest.hexdigest() != checksums[member.filename]:
+                        return False
+                for member in entries:
+                    target = os.path.join(dest, *member.filename.replace("\\", "/").split("/"))
+                    if os.path.lexists(target):
+                        raise FileExistsError(target)
+                    staged = os.path.join(temp_root, *member.filename.replace("\\", "/").split("/"))
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    # Exclusive creation prevents accidental overwrite, including races.
+                    with open(staged, "rb") as reader, open(target, "xb") as writer:
+                        shutil.copyfileobj(reader, writer, 1024 * 1024)
+                        writer.flush()
+                        os.fsync(writer.fileno())
+                    committed.append(target)
+            log_filesystem_event("backup_restore", source, "verified new-file restore completed")
             return True
-        
-        except Exception as e:
-            logger.error(f"Error restoring backup: {e}")
-            log_filesystem_event(
-                "backup_restore",
-                backup_path,
-                f"Restore failed: {str(e)}",
-                success=False,
-                error_message=str(e)
-            )
+        except Exception as exc:
+            logger.error("Restore failed, reverting new files: %s", exc)
+            for target in reversed(committed):
+                try:
+                    os.remove(target)
+                except OSError:
+                    logger.critical("Restore rollback incomplete for %s", target)
             return False
+        finally:
+            if temp_root:
+                shutil.rmtree(temp_root, ignore_errors=True)
     
-    def rotate_old_backups(self, max_count: int = MAX_BACKUP_COUNT,
-                           max_age_days: int = BACKUP_RETENTION_DAYS):
-        """
-        Delete old backups based on retention policy.
-        
-        Args:
-            max_count: Maximum number of backups to keep
-            max_age_days: Maximum age of backups in days
-        """
-        try:
-            if not os.path.exists(BACKUP_DIR):
-                return
-            
-            # Get all backup files
-            backups = []
-            for filename in os.listdir(BACKUP_DIR):
-                if filename.endswith('.zip'):
-                    file_path = os.path.join(BACKUP_DIR, filename)
-                    mtime = os.path.getmtime(file_path)
-                    backups.append((file_path, mtime))
-            
-            # Sort by modification time (oldest first)
-            backups.sort(key=lambda x: x[1])
-            
-            # Delete backups exceeding count limit
-            if len(backups) > max_count:
-                to_delete = backups[:len(backups) - max_count]
-                for file_path, _ in to_delete:
-                    logger.info(f"Deleting old backup (count limit): {file_path}")
-                    os.remove(file_path)
-                    log_filesystem_event("backup_delete", file_path, "Deleted by rotation policy")
-            
-            # Delete backups exceeding age limit
-            cutoff_time = time.time() - (max_age_days * 86400)
-            for file_path, mtime in backups:
-                if mtime < cutoff_time and os.path.exists(file_path):
-                    logger.info(f"Deleting old backup (age limit): {file_path}")
-                    os.remove(file_path)
-                    log_filesystem_event("backup_delete", file_path, "Deleted by age policy")
-        
-        except Exception as e:
-            logger.error(f"Error rotating backups: {e}")
+
+    def rotate_old_backups(self, max_count: int = MAX_BACKUP_COUNT, max_age_days: int = BACKUP_RETENTION_DAYS):
+        """Read-only retention inventory; automatic deletion requires OperatorCore."""
+        logger.info("Backup rotation is review-only; no authenticated deletion receipt provided")
+        return None
     
     def list_backups(self) -> List[Dict]:
         """
@@ -1423,355 +1385,56 @@ class FileOperations:
     
     @staticmethod
     def safe_delete(file_path: str, secure: bool = False) -> bool:
-        """
-        Safely delete file with optional secure deletion.
-        
-        Args:
-            file_path: Path to file to delete
-            secure: If True, overwrite file before deletion
-        
-        Returns:
-            True if deletion successful
-        """
-        try:
-            _sm_arile_guard_file_mutation(file_path, "delete")
-            if not os.path.exists(file_path):
-                logger.error(f"File not found: {file_path}")
-                return False
-            
-            size = os.path.getsize(file_path)
-            
-            # Secure deletion: overwrite file before deleting
-            if secure:
-                logger.info(f"Securely deleting file: {file_path}")
-                try:
-                    with open(file_path, 'wb') as f:
-                        f.write(os.urandom(size))
-                        f.flush()
-                        os.fsync(f.fileno())
-                except Exception as e:
-                    logger.warning(f"Could not securely overwrite file: {e}")
-            
-            # Delete file
-            os.remove(file_path)
-            
-            logger.info(f"File deleted: {file_path}")
-            
-            # Log operation
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO file_operations 
-                (timestamp, operation, source_path, user, size_bytes, success)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                datetime.now().isoformat(),
-                "delete",
-                file_path,
-                os.getenv("USERNAME", "system"),
-                size,
-                1
-            ))
-            conn.commit()
-            conn.close()
-            
-            log_filesystem_event("file_delete", file_path, 
-                               "Secure deletion" if secure else "Normal deletion")
-            
-            return True
-        
-        except Exception as e:
-            logger.error(f"Error deleting file {file_path}: {e}")
-            log_filesystem_event("file_delete", file_path, 
-                               f"Deletion failed: {str(e)}", 
-                               success=False, error_message=str(e))
-            return False
+        """Governed state-changing operation unavailable without an authenticated receipt.
+
+            The original signature has no trustworthy approval parameter; a caller
+            boolean, environment flag or model text must not grant mutation rights.
+            """
+        logger.warning("FileOperations.safe_delete held for OperatorCore execution approval")
+        return False
     
     @staticmethod
     def safe_move(source: str, destination: str, 
                   overwrite: bool = False) -> bool:
-        """
-        Safely move file with verification.
-        
-        Args:
-            source: Source file path
-            destination: Destination file path
-            overwrite: Whether to overwrite existing file
-        
-        Returns:
-            True if move successful
-        """
-        try:
-            _sm_arile_guard_file_mutation(source, "move_source")
-            _sm_arile_guard_file_mutation(destination, "move_destination")
-            if not os.path.exists(source):
-                logger.error(f"Source file not found: {source}")
-                return False
-            
-            if os.path.exists(destination) and not overwrite:
-                logger.error(f"Destination already exists: {destination}")
-                return False
-            
-            # Calculate source checksum before move
-            source_checksum = calculate_checksum(source)
-            source_size = os.path.getsize(source)
-            
-            # Create destination directory if needed
-            os.makedirs(os.path.dirname(destination), exist_ok=True)
-            
-            # Move file
-            shutil.move(source, destination)
-            
-            # Verify destination checksum
-            dest_checksum = calculate_checksum(destination)
-            
-            if source_checksum != dest_checksum:
-                logger.error("Checksum mismatch after move operation")
-                return False
-            
-            logger.info(f"File moved: {source} -> {destination}")
-            
-            # Log operation
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO file_operations 
-                (timestamp, operation, source_path, destination_path, 
-                 user, size_bytes, success)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                datetime.now().isoformat(),
-                "move",
-                source,
-                destination,
-                os.getenv("USERNAME", "system"),
-                source_size,
-                1
-            ))
-            conn.commit()
-            conn.close()
-            
-            log_filesystem_event("file_move", source, 
-                               f"Moved to: {destination}")
-            
-            return True
-        
-        except Exception as e:
-            logger.error(f"Error moving file: {e}")
-            log_filesystem_event("file_move", source, 
-                               f"Move failed: {str(e)}", 
-                               success=False, error_message=str(e))
-            return False
+        """Governed state-changing operation unavailable without an authenticated receipt.
+
+            The original signature has no trustworthy approval parameter; a caller
+            boolean, environment flag or model text must not grant mutation rights.
+            """
+        logger.warning("FileOperations.safe_move held for OperatorCore execution approval")
+        return False
     
     @staticmethod
     def safe_copy(source: str, destination: str, 
                   verify: bool = True) -> bool:
-        """
-        Safely copy file with optional verification.
-        
-        Args:
-            source: Source file path
-            destination: Destination file path
-            verify: Whether to verify checksums after copy
-        
-        Returns:
-            True if copy successful
-        """
-        try:
-            _sm_arile_guard_file_mutation(destination, "copy_destination")
-            if not os.path.exists(source):
-                logger.error(f"Source file not found: {source}")
-                return False
-            
-            # Calculate source checksum if verification requested
-            source_checksum = None
-            if verify:
-                source_checksum = calculate_checksum(source)
-            
-            source_size = os.path.getsize(source)
-            
-            # Create destination directory if needed
-            os.makedirs(os.path.dirname(destination), exist_ok=True)
-            
-            # Copy file
-            shutil.copy2(source, destination)
-            
-            # Verify if requested
-            if verify:
-                dest_checksum = calculate_checksum(destination)
-                if source_checksum != dest_checksum:
-                    logger.error("Checksum mismatch after copy operation")
-                    os.remove(destination)
-                    return False
-            
-            logger.info(f"File copied: {source} -> {destination}")
-            
-            # Log operation
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO file_operations 
-                (timestamp, operation, source_path, destination_path, 
-                 user, size_bytes, success)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                datetime.now().isoformat(),
-                "copy",
-                source,
-                destination,
-                os.getenv("USERNAME", "system"),
-                source_size,
-                1
-            ))
-            conn.commit()
-            conn.close()
-            
-            log_filesystem_event("file_copy", source, 
-                               f"Copied to: {destination}")
-            
-            return True
-        
-        except Exception as e:
-            logger.error(f"Error copying file: {e}")
-            log_filesystem_event("file_copy", source, 
-                               f"Copy failed: {str(e)}", 
-                               success=False, error_message=str(e))
-            return False
+        """Governed state-changing operation unavailable without an authenticated receipt.
+
+            The original signature has no trustworthy approval parameter; a caller
+            boolean, environment flag or model text must not grant mutation rights.
+            """
+        logger.warning("FileOperations.safe_copy held for OperatorCore execution approval")
+        return False
     
     @staticmethod
     def safe_rename(old_path: str, new_path: str) -> bool:
-        """
-        Safely rename file.
-        
-        Args:
-            old_path: Current file path
-            new_path: New file path
-        
-        Returns:
-            True if rename successful
-        """
-        try:
-            _sm_arile_guard_file_mutation(old_path, "rename_source")
-            _sm_arile_guard_file_mutation(new_path, "rename_destination")
-            if not os.path.exists(old_path):
-                logger.error(f"File not found: {old_path}")
-                return False
-            
-            if os.path.exists(new_path):
-                logger.error(f"Destination already exists: {new_path}")
-                return False
-            
-            size = os.path.getsize(old_path)
-            
-            # Rename file
-            os.rename(old_path, new_path)
-            
-            logger.info(f"File renamed: {old_path} -> {new_path}")
-            
-            # Log operation
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO file_operations 
-                (timestamp, operation, source_path, destination_path, 
-                 user, size_bytes, success)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                datetime.now().isoformat(),
-                "rename",
-                old_path,
-                new_path,
-                os.getenv("USERNAME", "system"),
-                size,
-                1
-            ))
-            conn.commit()
-            conn.close()
-            
-            log_filesystem_event("file_rename", old_path, 
-                               f"Renamed to: {new_path}")
-            
-            return True
-        
-        except Exception as e:
-            logger.error(f"Error renaming file: {e}")
-            log_filesystem_event("file_rename", old_path, 
-                               f"Rename failed: {str(e)}", 
-                               success=False, error_message=str(e))
-            return False
+        """Governed state-changing operation unavailable without an authenticated receipt.
+
+            The original signature has no trustworthy approval parameter; a caller
+            boolean, environment flag or model text must not grant mutation rights.
+            """
+        logger.warning("FileOperations.safe_rename held for OperatorCore execution approval")
+        return False
     
     @staticmethod
     def set_file_attributes(file_path: str, readonly: bool = None,
                            hidden: bool = None, system: bool = None) -> bool:
-        """
-        Set file attributes (Windows and Unix compatible).
-        
-        Args:
-            file_path: Path to file
-            readonly: Set read-only attribute
-            hidden: Set hidden attribute (Windows only)
-            system: Set system attribute (Windows only)
-        
-        Returns:
-            True if attributes set successfully
-        """
-        try:
-            if not os.path.exists(file_path):
-                logger.error(f"File not found: {file_path}")
-                return False
-            
-            current_mode = os.stat(file_path).st_mode
-            new_mode = current_mode
-            
-            # Handle read-only attribute
-            if readonly is not None:
-                if readonly:
-                    # Remove write permissions
-                    new_mode = current_mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
-                else:
-                    # Add write permissions
-                    new_mode = current_mode | stat.S_IWUSR
-            
-            # Set permissions
-            if new_mode != current_mode:
-                os.chmod(file_path, new_mode)
-            
-            # Windows-specific attributes
-            if sys.platform == 'win32' and (hidden is not None or system is not None):
-                try:
-                    import ctypes
-                    
-                    FILE_ATTRIBUTE_HIDDEN = 0x02
-                    FILE_ATTRIBUTE_SYSTEM = 0x04
-                    
-                    attrs = ctypes.windll.kernel32.GetFileAttributesW(file_path)
-                    
-                    if hidden is not None:
-                        if hidden:
-                            attrs |= FILE_ATTRIBUTE_HIDDEN
-                        else:
-                            attrs &= ~FILE_ATTRIBUTE_HIDDEN
-                    
-                    if system is not None:
-                        if system:
-                            attrs |= FILE_ATTRIBUTE_SYSTEM
-                        else:
-                            attrs &= ~FILE_ATTRIBUTE_SYSTEM
-                    
-                    ctypes.windll.kernel32.SetFileAttributesW(file_path, attrs)
-                
-                except Exception as e:
-                    logger.warning(f"Could not set Windows-specific attributes: {e}")
-            
-            logger.info(f"File attributes updated: {file_path}")
-            log_filesystem_event("file_attributes", file_path, 
-                               f"Attributes updated")
-            
-            return True
-        
-        except Exception as e:
-            logger.error(f"Error setting file attributes: {e}")
-            return False
+        """Governed state-changing operation unavailable without an authenticated receipt.
+
+            The original signature has no trustworthy approval parameter; a caller
+            boolean, environment flag or model text must not grant mutation rights.
+            """
+        logger.warning("FileOperations.set_file_attributes held for OperatorCore execution approval")
+        return False
     
     @staticmethod
     def get_file_info(file_path: str) -> Dict:
@@ -2368,7 +2031,7 @@ def rem_filesystem_study_tick(root_paths: Optional[List[str]] = None, max_files:
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryFilesystem',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Input',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -2386,22 +2049,16 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Report only observed SML registration state; no fabricated performance scores."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "unverified_runtime", "availability": None,
+        "integrity": None, "performance": None, "reliability": None,
+        "confidence": 0.0, "latency_ms": None, "stability": None,
+        "compatibility": None, "notes": ["SML registration present; runtime health not measured"],
     }
 
 
@@ -2411,7 +2068,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryFilesystem',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

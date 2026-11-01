@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryMSDC.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,6 +13,7 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+===============================================================================
 
 Motor, Servo, Device Controller (MSDC)
 ======================================
@@ -51,7 +52,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -400,20 +401,32 @@ def _safe_json_write(path: Path, payload: Any) -> bool:
 
 
 def _driver_root_for(driver_id: str) -> Path:
-    driver_id = str(driver_id or "").strip()
-    if driver_id.startswith("com.softdev0.boot."):
-        return _boot_drivers_dir() / driver_id
-    return _drivers_dir() / driver_id
+    # Driver IDs are opaque registry identifiers, not filesystem paths.
+    import re as _re
+    name = str(driver_id or "").strip()
+    if not _re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*", name) or len(name) > 160:
+        raise ValueError("invalid_driver_identifier")
+    base = (_boot_drivers_dir() if name.startswith("com.softdev0.boot.") else _drivers_dir()).resolve()
+    candidate = (base / name).resolve()
+    if candidate.parent != base or candidate == base:
+        raise ValueError("driver_path_outside_registry")
+    return candidate
 
 
 def _read_driver_manifest(driver_id: str) -> Dict[str, Any]:
-    path = _driver_root_for(driver_id) / "manifest.json"
+    try:
+        path = _driver_root_for(driver_id) / "manifest.json"
+    except (ValueError, OSError):
+        return {}
     data = _safe_json_load(path, default={})
     return data if isinstance(data, dict) else {}
 
 
 def _read_driver_config(driver_id: str) -> Dict[str, Any]:
-    root = _driver_root_for(driver_id)
+    try:
+        root = _driver_root_for(driver_id)
+    except (ValueError, OSError):
+        return {}
     config_data = _safe_json_load(root / "config.json", default={})
     if isinstance(config_data, dict) and config_data:
         return config_data
@@ -426,20 +439,17 @@ def _driver_file(driver_id: str) -> Path:
 
 
 def _load_driver_module(driver_id: str) -> Tuple[Optional[Any], Optional[str]]:
-    path = _driver_file(driver_id)
-    if not path.exists():
-        return None, f"driver_file_missing:{path}"
-    try:
-        module_name = f"_sarahmemory_msdc_driver_{driver_id.replace('.', '_')}_{int(time.time() * 1000)}"
-        spec = importlib.util.spec_from_file_location(module_name, str(path))
-        if not spec or not spec.loader:
-            return None, "spec_load_failed"
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # type: ignore[union-attr]
-        return mod, None
-    except Exception as exc:
-        return None, f"driver_import_failed:{exc}"
+    """Fail closed until the authoritative driver registry verifies an import.
 
+    This entry point has no trustworthy authorization-lease or signed-manifest
+    arguments. Static manifest inspection remains available through read-only
+    helpers; execution must not occur through an unbound driver identifier.
+    """
+    try:
+        _driver_root_for(driver_id)
+    except (ValueError, OSError):
+        return None, "invalid_driver_identifier"
+    return None, "driver_import_requires_verified_governance_and_provenance"
 
 def _action_list_from_manifest(manifest: Dict[str, Any]) -> List[str]:
     raw = manifest.get("actions_callable") or manifest.get("supported_actions") or manifest.get("actions") or []
@@ -464,30 +474,11 @@ def _action_risk(action_id: str) -> str:
 
 
 def _has_governance_authority(action_id: str, context: Optional[Dict[str, Any]] = None, payload: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
-    """Return whether MSDC may dispatch a non-read-only action.
-
-    This is not a substitute for CognitiveServices/SMGET. It is a local hard stop
-    to prevent accidental execution when no upstream contract is visible.
-    """
+    """Classify local authority without accepting caller-provided approval claims."""
     action = str(action_id or "").strip().lower()
-    context = context if isinstance(context, dict) else {}
-    payload = payload if isinstance(payload, dict) else {}
     if action in READ_ONLY_ACTIONS:
         return True, "read_only"
-    if bool(payload.get("user_authorized")) or bool(payload.get("user_confirmed")) or bool(payload.get("user_consent")):
-        return True, "explicit_user_authority"
-    contract = context.get("action_contract") or payload.get("action_contract") or context.get("operator_contract") or payload.get("operator_contract")
-    if isinstance(contract, dict):
-        decision = str(contract.get("decision") or contract.get("authorization") or contract.get("status") or "").upper()
-        if decision in {"ALLOW", "AUTHORIZED", "APPROVED", "VERIFIED"}:
-            return True, "operator_contract_authorized"
-    gov = context.get("governor") or payload.get("governor")
-    if isinstance(gov, dict):
-        decision = str(gov.get("decision") or "").upper()
-        if decision == "ALLOW" and bool(gov.get("user_present", True)):
-            return True, "governor_allow_user_present"
-    return False, "missing_user_or_operator_authority"
-
+    return False, "verified_operatorcore_receipt_required"
 
 def _call_governance_probe(action_id: str, driver_id: str, payload: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     """Best-effort governance trace. Does not override the local hard stop."""
@@ -507,8 +498,8 @@ def _call_governance_probe(action_id: str, driver_id: str, payload: Dict[str, An
                 req,
                 caller="SarahMemoryMSDC",
                 caller_context={"driver_id": driver_id, "action_id": action_id, "payload_keys": sorted(payload.keys()), "context": context},
-                user_present=bool(payload.get("user_authorized") or payload.get("user_confirmed") or context.get("user_present", False)),
-                user_consented=bool(payload.get("user_authorized") or payload.get("user_confirmed") or payload.get("user_consent")),
+                user_present=False,
+                user_consented=False,
                 proposed_action={"driver_id": driver_id, "action_id": action_id, "risk_tier": _action_risk(action_id)},
             )
             if isinstance(gov, dict):
@@ -524,8 +515,11 @@ def _call_governance_probe(action_id: str, driver_id: str, payload: Dict[str, An
 
 
 def msdc_driver_present(driver_id: str) -> bool:
-    root = _driver_root_for(driver_id)
-    return bool(root.exists() and (root / "driver.py").exists() and (root / "manifest.json").exists())
+    try:
+        root = _driver_root_for(driver_id)
+        return bool(root.exists() and (root / "driver.py").exists() and (root / "manifest.json").exists())
+    except (ValueError, OSError):
+        return False
 
 
 def msdc_get_device_capability(body_part: str = "eyes") -> DeviceCapabilityRecord:
@@ -731,6 +725,10 @@ def msdc_driver_action(driver_id: str, action_id: str, payload: Optional[Dict[st
     context = context if isinstance(context, dict) else {}
     if not driver_id or not action_id:
         return {"ok": False, "error": "missing_driver_or_action", "source": MODULE_NAME}
+    try:
+        _driver_root_for(driver_id)
+    except (ValueError, OSError):
+        return {"ok": False, "error": "invalid_driver_identifier", "source": MODULE_NAME}
 
     authorized, authority_reason = _has_governance_authority(action_id, context=context, payload=payload)
     gov_trace = _call_governance_probe(action_id, driver_id, payload, context)
@@ -1734,22 +1732,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Expose adapter presence without fabricating operational measurements."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "UNKNOWN",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter registered; live operational measurements not verified"],
     }
 
 
@@ -1759,7 +1757,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryMSDC',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

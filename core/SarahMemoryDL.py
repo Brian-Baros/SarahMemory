@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryDL.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,8 +13,8 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
+
 DEEP LEARNING ENGINE
 ===============================================================================
 
@@ -56,7 +56,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -134,7 +134,7 @@ logger.setLevel(logging.DEBUG if os.getenv("SARAH_DL_DEBUG", "0") in ("1", "true
 
 # Create file handler for deep learning logs
 dl_log_file = os.path.join(LOGS_DIR, "deep_learning.log")
-file_handler = RotatingFileHandler(
+file_handler = logging.NullHandler() if not os.path.isdir(LOGS_DIR) else RotatingFileHandler(
     dl_log_file,
     maxBytes=int(os.getenv("SARAH_DL_LOG_MAX_BYTES", "1048576") or 1048576),
     backupCount=int(os.getenv("SARAH_DL_LOG_BACKUPS", "3") or 3),
@@ -170,8 +170,7 @@ DL_EXPORTS_DIR = os.path.join(DL_MODELS_DIR, "exports")
 DL_CACHE_DIR = os.path.join(DL_MODELS_DIR, "cache")
 
 # Ensure directories exist
-for directory in [DL_MODELS_DIR, DL_CHECKPOINTS_DIR, DL_EXPORTS_DIR, DL_CACHE_DIR]:
-    os.makedirs(directory, exist_ok=True)
+# Runtime owners create model directories when actual jobs are authorized.
 
 # Configuration
 DL_CONFIG = {
@@ -400,8 +399,12 @@ if os.getenv("SARAH_DL_INIT_DB_ON_IMPORT", "0") in ("1", "true", "yes", "on"):
 def save_as_json(data: Dict, filename: str) -> bool:
     """Save data as JSON to datasets directory"""
     try:
+        if not isinstance(filename, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,96}\.json', filename):
+            return False
         path = os.path.join(DATASETS_DIR, filename)
-        with open(path, 'w', encoding='utf-8') as f:
+        if os.path.islink(path):
+            return False
+        with open(path, 'x', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
         logger.info(f"Saved JSON: {filename}")
         return True
@@ -412,7 +415,11 @@ def save_as_json(data: Dict, filename: str) -> bool:
 def load_from_json(filename: str) -> Optional[Dict]:
     """Load data from JSON in datasets directory"""
     try:
+        if not isinstance(filename, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,96}\.json', filename):
+            return None
         path = os.path.join(DATASETS_DIR, filename)
+        if os.path.islink(path) or not os.path.isfile(path) or os.path.getsize(path) > 2 * 1024 * 1024:
+            return None
         if not os.path.exists(path):
             return None
         with open(path, 'r', encoding='utf-8') as f:
@@ -833,7 +840,12 @@ class ModelManager:
             if checkpoint_name is None:
                 checkpoint_name = f"checkpoint_{model_id}_{int(time.time())}.pt"
             
+            if not isinstance(checkpoint_name, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,96}\.pt', checkpoint_name):
+                return False
+            os.makedirs(DL_CHECKPOINTS_DIR, exist_ok=True)
             checkpoint_path = os.path.join(DL_CHECKPOINTS_DIR, checkpoint_name)
+            if os.path.lexists(checkpoint_path):
+                return False
             
             checkpoint = {
                 'model_id': model_id,
@@ -851,26 +863,37 @@ class ModelManager:
             return False
     
     def load_model(self, checkpoint_path: str) -> Optional[str]:
-        """Load model from checkpoint"""
+        """Restore only a registered model's tensor weights from a trusted local checkpoint.
+
+        Reject arbitrary pickle and do not claim a model was loaded if no live model
+        instance exists. Recreating a model without an approved factory is deferred.
+        """
         try:
-            if not os.path.exists(checkpoint_path):
-                logger.error(f"Checkpoint not found: {checkpoint_path}")
+            from pathlib import Path
+            source = Path(checkpoint_path)
+            root = Path(DL_CHECKPOINTS_DIR).resolve()
+            resolved = source.resolve(strict=True)
+            if source.is_symlink() or not resolved.is_relative_to(root) or resolved.suffix != '.pt':
                 return None
-            
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
-            model_id = checkpoint['model_id']
-            config = checkpoint['config']
-            
-            # Recreate model architecture based on config
-            # (This assumes the model type and architecture info is in config)
-            # For now, we'll need to infer from the state dict
-            
-            logger.info(f"Loaded model checkpoint: {checkpoint_path}")
+            if resolved.stat().st_size > 1024 * 1024 * 1024:
+                return None
+            try:
+                checkpoint = torch.load(str(resolved), map_location='cpu', weights_only=True)
+            except TypeError:
+                return None  # older torch cannot securely load untrusted pickle
+            if not isinstance(checkpoint, dict) or not isinstance(checkpoint.get('model_state_dict'), dict):
+                return None
+            model_id = str(checkpoint.get('model_id') or '')
+            live_model = self.models.get(model_id)
+            if live_model is None:
+                return None  # no verified architectural factory call
+            live_model.load_state_dict(checkpoint['model_state_dict'], strict=True)
+            live_model.to(self.device)
             return model_id
-            
-        except Exception as e:
-            logger.error(f"Failed to load model: {e}")
+        except Exception as exc:
+            logger.warning('Model checkpoint not restored: %s', exc)
             return None
+
 
 # ===============================================================================
 # TRAINING ENGINE
@@ -1849,7 +1872,7 @@ def _normalize_dl_mode(mode: Any) -> str:
         return "manual"
     if m in {"paused", "pause", "stop", "stopped", "hold"}:
         return "paused"
-    return "auto"
+    return 'paused'  # unknown state must not activate autonomous training
 
 
 def _normalize_model_weights(raw: Optional[Dict[str, Any]] = None) -> Dict[str, int]:
@@ -1865,7 +1888,13 @@ def _normalize_dl_controls(raw: Optional[Dict[str, Any]] = None) -> Dict[str, An
     out = dict(_DEFAULT_DL_CONTROLS)
     for key in ("autonomyEnabled", "sandboxFirst", "requireEvaluation", "requireApproval", "showOnlyHighSignal"):
         if key in raw:
-            out[key] = bool(raw.get(key))
+            value = raw.get(key)
+            out[key] = value.strip().lower() in {'1', 'true', 'yes', 'on'} if isinstance(value, str) else value is True
+    # Source/UI configuration alone cannot grant autonomous model-training authority.
+    out['autonomyEnabled'] = False
+    out['sandboxFirst'] = True
+    out['requireApproval'] = True
+    out['requireEvaluation'] = True
     if "pollIntervalSec" in raw:
         try:
             out["pollIntervalSec"] = max(3, min(120, int(raw.get("pollIntervalSec") or 8)))
@@ -1941,12 +1970,24 @@ def _save_dlengine_state(state: Dict[str, Any]) -> Dict[str, Any]:
         state["last_updated_at"] = datetime.now().isoformat()
         try:
             os.makedirs(os.path.dirname(DL_ENGINE_STATE_PATH), exist_ok=True)
-            tmp = DL_ENGINE_STATE_PATH + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2, sort_keys=True)
-            os.replace(tmp, DL_ENGINE_STATE_PATH)
+            # Stage bytes before promotion; never truncate active state in place.
+            tmp = DL_ENGINE_STATE_PATH + '.tmp_' + hashlib.sha256(os.urandom(16)).hexdigest()[:16]
+            try:
+                with open(tmp, 'x', encoding='utf-8') as f:
+                    json.dump(state, f, indent=2, sort_keys=True)
+                    f.flush()
+                    os.fsync(f.fileno())
+                if os.path.islink(DL_ENGINE_STATE_PATH):
+                    raise RuntimeError('dl_state_symlink_denied')
+                os.replace(tmp, DL_ENGINE_STATE_PATH)
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+            state['persisted'] = True
         except Exception as exc:
-            logger.warning(f"DL Engine state save failed: {exc}")
+            logger.warning(f'DL Engine state save failed: {exc}')
+            state['persisted'] = False
+            state['persistence_error'] = 'state_write_failed'
         return state
 
 
@@ -1986,7 +2027,7 @@ def set_dlengine_mode(mode: Any = "auto", *, source: str = "api", payload: Optio
             except Exception:
                 state["weights"] = _normalize_model_weights(payload.get("weights"))
     state = _save_dlengine_state(state)
-    return {"ok": True, "saved": True, "mode": state["mode"], "state": state}
+    return {'ok': bool(state.get('persisted')), 'saved': bool(state.get('persisted')), 'mode': state['mode'], 'state': state}
 
 
 def set_dlengine_controls(controls: Optional[Dict[str, Any]] = None, *, source: str = "api") -> Dict[str, Any]:
@@ -1995,7 +2036,7 @@ def set_dlengine_controls(controls: Optional[Dict[str, Any]] = None, *, source: 
     state["controls"] = _normalize_dl_controls(controls or {})
     state["last_operator_source"] = str(source or "api")
     state = _save_dlengine_state(state)
-    return {"ok": True, "saved": True, "controls": state["controls"], "state": state}
+    return {'ok': bool(state.get('persisted')), 'saved': bool(state.get('persisted')), 'controls': state['controls'], 'state': state}
 
 
 def get_model_weight_profile(category: Any = "reasoning", model_id: Any = "", *, refresh_models: bool = False) -> Dict[str, Any]:
@@ -2058,7 +2099,7 @@ def set_dlengine_weights(
     state = _save_dlengine_state(state)
     return {
         "ok": True,
-        "saved": True,
+        'saved': bool(state.get('persisted')),
         "category": ctx.get("category"),
         "model_id": ctx.get("model_id"),
         "context": ctx,
@@ -2515,7 +2556,7 @@ def rem_deep_learning_consolidation_tick(snapshot: Optional[Dict[str, Any]] = No
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryDL',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Unknown',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -2533,22 +2574,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter present; runtime health not independently measured"],
     }
 
 
@@ -2558,7 +2599,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryDL',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

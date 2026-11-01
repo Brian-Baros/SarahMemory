@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryUISelfAware.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,8 +13,8 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ==============================================================================================
+
 --------
 Sandboxed UI self-observation and frontend solution generator.
 
@@ -57,7 +57,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -514,16 +514,20 @@ class SarahMemoryUISelfAware:
             p.mkdir(parents=True, exist_ok=True)
 
     def _clear_dir(self, path: Path) -> None:
-        if path.exists():
-            for item in path.iterdir():
-                if item.is_dir():
-                    shutil.rmtree(item, ignore_errors=True)
-                else:
-                    try:
-                        item.unlink()
-                    except Exception:
-                        pass
-        path.mkdir(parents=True, exist_ok=True)
+        """Clear only owned snapshot directories under the configured temporary tree."""
+        allowed = {p.resolve() for p in (self.snapshot_src_dir,self.snapshot_api_dir,
+            self.snapshot_backend_dir,self.solution_dir,self.audit_dir,self.promotion_dir)}
+        target=Path(path)
+        if target.is_symlink() or target.resolve() not in allowed or not target.resolve().is_relative_to(self.temp_root.resolve()):
+            raise PermissionError('UI snapshot cleanup outside owned workspace denied')
+        target.mkdir(parents=True,exist_ok=True)
+        for item in target.iterdir():
+            if item.is_symlink():
+                item.unlink()
+            elif item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
 
     def refresh_snapshot(self) -> Dict[str, int]:
         logger.info("Refreshing sandbox snapshots")
@@ -1627,22 +1631,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML registration confirmed; runtime measurements not performed"],
     }
 
 
@@ -1652,7 +1656,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryUISelfAware',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

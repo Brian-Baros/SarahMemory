@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryCanvasStudio.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-09-21
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 SarahMemory Canvas Studio -Art & Graphics Editing Engine
@@ -149,7 +148,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -158,6 +157,13 @@ from __future__ import annotations
 
 import os
 import sys
+import math
+import contextlib
+import functools
+import copy
+import tempfile
+import shutil
+import re
 
 # ARILE organ sentinel helper. This file reports local variance to the central
 # SarahMemoryARILE.py engine without owning ARILE authority.
@@ -239,7 +245,8 @@ DATA_DIR = str(getattr(SMG, "DATA_DIR", os.path.join(os.path.dirname(os.path.abs
 
 # Version information
 CANVAS_STUDIO_VERSION = "2.0.0"
-CANVAS_STUDIO_BUILD = "20251204"
+CANVAS_STUDIO_BUILD = "20251204"  # Internal project serialization build; preserved
+CANVAS_STUDIO_RELEASE = "9.1.0a"
 
 # Directory structure
 try:
@@ -282,6 +289,80 @@ SUPPORTED_IMPORT_FORMATS = ["PNG", "JPG", "JPEG", "WEBP", "TIFF", "BMP", "TGA", 
 DEFAULT_UNDO_HISTORY = 50
 DEFAULT_JPEG_QUALITY = 90
 DEFAULT_PNG_COMPRESSION = 6
+# V9.1.0a bounded local-first raster and persistence budgets. Override only
+# downward on constrained deployments through existing globals/environment.
+def _canvas_budget(name: str, default: int, maximum: int) -> int:
+    try:
+        return max(1, min(maximum, int(os.getenv(name, str(default)))))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+CANVAS_MAX_PIXELS = _canvas_budget("SARAH_CANVAS_MAX_PIXELS", 8_388_608, 16_777_216)
+CANVAS_MAX_LAYER_BYTES = _canvas_budget("SARAH_CANVAS_MAX_LAYER_BYTES", 128 * 1024 * 1024, 256 * 1024 * 1024)
+CANVAS_MAX_HISTORY_BYTES = _canvas_budget("SARAH_CANVAS_MAX_HISTORY_BYTES", 128 * 1024 * 1024, 256 * 1024 * 1024)
+CANVAS_MAX_LAYERS = _canvas_budget("SARAH_CANVAS_MAX_LAYERS", 32, 64)
+CANVAS_MAX_IMAGE_BYTES = _canvas_budget("SARAH_CANVAS_MAX_IMAGE_BYTES", 32 * 1024 * 1024, 64 * 1024 * 1024)
+CANVAS_MAX_MANIFEST_BYTES = 4 * 1024 * 1024
+CANVAS_MAX_PROJECT_BYTES = _canvas_budget("SARAH_CANVAS_MAX_PROJECT_BYTES", 256 * 1024 * 1024, 512 * 1024 * 1024)
+CANVAS_MAX_AVATAR_STREAMS = 4
+CANVAS_MAX_OCR_OBSERVATIONS = 256
+CANVAS_MAX_OCR_PASSES = 8
+CANVAS_OCR_DEADLINE_SECONDS = 10.0
+_CANVAS_PROJECT_IO_LOCK = threading.RLock()  # serialize local studio project I/O
+
+def _synchronized_project_io(fn):
+    @functools.wraps(fn)
+    def guarded(*args, **kwargs):
+        with _CANVAS_PROJECT_IO_LOCK:
+            return fn(*args, **kwargs)
+    return guarded
+
+def _strict_image_dimensions(width: Any, height: Any, *, depth: int = 8) -> Tuple[int, int]:
+    w, h = int(width), int(height)
+    if w <= 0 or h <= 0 or w > MAX_CANVAS_WIDTH or h > MAX_CANVAS_HEIGHT:
+        raise ValueError("invalid_canvas_dimensions")
+    if depth not in (COLOR_DEPTH_8BIT, COLOR_DEPTH_16BIT, COLOR_DEPTH_32BIT):
+        raise ValueError("unsupported_canvas_depth")
+    if w * h > CANVAS_MAX_PIXELS or w * h * 4 * (4 if depth == 32 else (2 if depth == 16 else 1)) > CANVAS_MAX_LAYER_BYTES:
+        raise ValueError("canvas_allocation_budget_exceeded")
+    return w, h
+
+def _validate_image_byte_count(data: bytes) -> None:
+    if not isinstance(data, (bytes, bytearray)) or not data or len(data) > CANVAS_MAX_IMAGE_BYTES:
+        raise ValueError("image_input_size_exceeded")
+
+def _check_image_header(raw: bytes) -> Tuple[int, int]:
+    """Require Pillow header inspection before any image decompression."""
+    _validate_image_byte_count(raw)
+    if not PIL_AVAILABLE or Image is None:
+        raise ValueError("image_header_inspector_unavailable")
+    with Image.open(BytesIO(raw)) as im:
+        w, h = im.size
+        _strict_image_dimensions(w, h)
+        if im.format not in {"PNG", "JPEG", "WEBP", "TIFF", "BMP", "GIF", "TGA"}:
+            raise ValueError("unsupported_image_encoding")
+        return int(w), int(h)
+
+def _bounded_image_file(path: str) -> bytes:
+    if os.path.islink(path) or not os.path.isfile(path):
+        raise ValueError("image_path_not_regular_file")
+    st = os.stat(path)
+    if st.st_size <= 0 or st.st_size > CANVAS_MAX_IMAGE_BYTES:
+        raise ValueError("image_input_size_exceeded")
+    with open(path, 'rb') as fh:
+        raw = fh.read(CANVAS_MAX_IMAGE_BYTES + 1)
+    _check_image_header(raw)
+    return raw
+
+def _depth_nbytes(width: int, height: int, depth: int) -> int:
+    return int(width) * int(height) * 4 * {8: 1, 16: 2, 32: 4}[depth]
+
+def _project_manifest_safe_path(filepath: str) -> str:
+    path = os.path.abspath(os.fspath(filepath))
+    if os.path.islink(path) or os.path.islink(_project_layer_dir(path)):
+        raise ValueError("project_symlink_not_allowed")
+    return path
+
 
 
 # ============================================================================
@@ -366,10 +447,8 @@ def ensure_canvas_directories():
 
 
 def validate_canvas_dimensions(width: int, height: int) -> Tuple[int, int]:
-    """Validate and clamp canvas dimensions to acceptable ranges"""
-    width = max(MIN_CANVAS_WIDTH, min(width, MAX_CANVAS_WIDTH))
-    height = max(MIN_CANVAS_HEIGHT, min(height, MAX_CANVAS_HEIGHT))
-    return width, height
+    """Bound raster dimensions by pixel/byte budgets; reject unsafe allocations."""
+    return _strict_image_dimensions(width, height)
 
 
 def generate_unique_id() -> str:
@@ -662,33 +741,18 @@ def _extract_expected_subjects(prompt: str) -> List[str]:
 
 
 def _decode_image_bytes_rgba(img_bytes: bytes, width: int, height: int) -> Optional[np.ndarray]:
-    if not img_bytes:
-        return None
+    """Inspect encoded dimensions and size before any decompression or resize."""
     try:
-        if PIL_AVAILABLE and Image is not None:
-            import io
-            im = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
-            if im.size != (int(width), int(height)):
-                im = im.resize((int(width), int(height)))
-            return np.array(im)
-    except Exception:
-        pass
-    try:
-        data = np.frombuffer(img_bytes, dtype=np.uint8)
-        decoded = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
-        if decoded is None:
-            return None
-        if decoded.ndim == 2:
-            rgba = cv2.cvtColor(decoded, cv2.COLOR_GRAY2RGBA)
-        elif decoded.shape[2] == 3:
-            rgba = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGBA)
-        else:
-            rgba = cv2.cvtColor(decoded, cv2.COLOR_BGRA2RGBA)
-        if rgba.shape[:2] != (int(height), int(width)):
-            rgba = cv2.resize(rgba, (int(width), int(height)), interpolation=cv2.INTER_LINEAR)
-        return rgba
+        width, height = _strict_image_dimensions(width, height)
+        _check_image_header(img_bytes)
+        with Image.open(BytesIO(img_bytes)) as im:
+            im.load()
+            im = im.convert("RGBA")
+            if im.size != (width, height):
+                im = im.resize((width, height), resample=Image.Resampling.BILINEAR)
+            return np.ascontiguousarray(np.asarray(im))
     except Exception as exc:
-        logging.error(f"[CanvasStudio] Failed to decode image bytes: {exc}")
+        logging.warning("[CanvasStudio] Rejected image input: %s", exc)
         return None
 
 
@@ -834,27 +898,31 @@ class LocalImageGenerationBackend:
 
     @staticmethod
     def _extract_bytes(result: Any) -> Tuple[Optional[bytes], Optional[str], Dict[str, Any]]:
+        """Accept bounded decoded images from existing provider contracts."""
         metadata: Dict[str, Any] = {}
-        if isinstance(result, (bytes, bytearray)):
-            return bytes(result), "image/png", metadata
-        if isinstance(result, dict):
-            metadata = {k: v for k, v in result.items() if k not in {"bytes", "image_bytes", "b64", "image_base64", "data"}}
-            b = result.get("bytes") or result.get("image_bytes") or result.get("data")
-            mime = result.get("mime") or result.get("content_type") or "image/png"
-            if isinstance(b, (bytes, bytearray)):
-                return bytes(b), str(mime), metadata
-            b64 = result.get("b64") or result.get("image_base64")
-            if isinstance(b64, str) and b64.strip():
-                try:
-                    return base64.b64decode(b64), str(mime), metadata
-                except Exception as exc:
-                    metadata["decode_error"] = str(exc)
-            path = result.get("path") or result.get("filepath") or result.get("file")
-            if isinstance(path, str) and os.path.isfile(path):
-                try:
-                    return Path(path).read_bytes(), str(mime), metadata
-                except Exception as exc:
-                    metadata["read_error"] = str(exc)
+        mime = "image/png"
+        value = None
+        try:
+            if isinstance(result, (bytes, bytearray)):
+                value = bytes(result)
+            elif isinstance(result, dict):
+                metadata = {k: v for k, v in result.items() if k not in {"bytes", "image_bytes", "b64", "image_base64", "data"}}
+                mime = str(result.get("mime") or result.get("content_type") or "image/png")
+                raw = result.get("bytes") or result.get("image_bytes") or result.get("data")
+                if isinstance(raw, (bytes, bytearray)):
+                    value = bytes(raw)
+                elif isinstance(result.get("b64") or result.get("image_base64"), str):
+                    token = result.get("b64") or result.get("image_base64")
+                    if len(token) > (CANVAS_MAX_IMAGE_BYTES * 4 // 3 + 256):
+                        raise ValueError("base64_input_size_exceeded")
+                    value = base64.b64decode(token, validate=True)
+                elif isinstance(result.get("path") or result.get("filepath") or result.get("file"), str):
+                    value = _bounded_image_file(result.get("path") or result.get("filepath") or result.get("file"))
+            if value is not None:
+                _check_image_header(value)
+                return value, mime, metadata
+        except Exception as exc:
+            metadata["read_error"] = str(exc)
         return None, None, metadata
 
     def generate(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
@@ -945,7 +1013,7 @@ class CanvasOutputVerifier:
     def _fuse_ocr_boxes(self, boxes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Fuse repeated OCR observations only when text and geometry agree."""
         fused: List[Dict[str, Any]] = []
-        for item in sorted(boxes, key=lambda row: float(row.get("confidence") or 0.0), reverse=True):
+        for item in sorted(boxes[:CANVAS_MAX_OCR_OBSERVATIONS], key=lambda row: float(row.get("confidence") or 0.0), reverse=True):
             text_key = self._normalize_ocr_text(item.get("text"))
             bbox = [int(v) for v in (item.get("bbox") or [])[:4]]
             if not text_key or len(bbox) != 4:
@@ -1033,7 +1101,11 @@ class CanvasOutputVerifier:
         last_error = ""
         original_h, original_w = bgr.shape[:2]
 
+        deadline = time.monotonic() + CANVAS_OCR_DEADLINE_SECONDS
+        passes = 0
         for variant in variants:
+            if passes >= CANVAS_MAX_OCR_PASSES or time.monotonic() >= deadline:
+                break
             name = str(variant.get("name") or "unknown")
             image = variant.get("image")
             if not isinstance(image, np.ndarray) or image.size == 0:
@@ -1048,14 +1120,19 @@ class CanvasOutputVerifier:
                 psm_modes = (11,)
 
             for psm in psm_modes:
+                if passes >= CANVAS_MAX_OCR_PASSES or time.monotonic() >= deadline or len(observations) >= CANVAS_MAX_OCR_OBSERVATIONS:
+                    break
+                passes += 1
                 cfg = f"--oem 3 --psm {psm} -c preserve_interword_spaces=1"
                 record = {"variant": name, "psm": int(psm), "ok": False, "word_count": 0}
                 try:
-                    data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT, config=cfg)
+                    data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT, config=cfg, timeout=min(2.0, max(0.1, deadline - time.monotonic())))
                     successful_passes += 1
-                    count = len(data.get("text", []))
+                    count = min(1_024, len(data.get("text", [])))
                     word_count = 0
                     for i in range(count):
+                        if len(observations) >= CANVAS_MAX_OCR_OBSERVATIONS:
+                            break
                         txt = str(data.get("text", [""])[i] or "").strip()
                         if not txt:
                             continue
@@ -1199,18 +1276,22 @@ class CanvasOutputVerifier:
 
     @staticmethod
     def _match_terms(expected: List[str], observed_values: List[str]) -> Tuple[List[str], List[str]]:
-        observed_blob = " ".join(str(x) for x in observed_values).lower()
-        observed_norm = _normalize_word(observed_blob)
-        matched: List[str] = []
-        missing: List[str] = []
+        """Match complete normalized words/phrases, never incidental substrings."""
+        words = set()
+        normalized_phrases = []
+        for value in observed_values or []:
+            tokens = re.findall(r'\w+', str(value).casefold(), flags=re.UNICODE)
+            words.update(tokens)
+            normalized_phrases.append(' '.join(tokens))
+        haystack = ' ' + ' '.join(normalized_phrases) + ' '
+        matched, missing = [], []
         for item in expected or []:
-            token = _normalize_word(str(item))
-            if not token:
+            text = str(item).strip()
+            tokens = re.findall(r'\w+', text.casefold(), flags=re.UNICODE)
+            if not tokens:
                 continue
-            if token in observed_norm or str(item).lower() in observed_blob:
-                matched.append(str(item))
-            else:
-                missing.append(str(item))
+            found = (tokens[0] in words) if len(tokens) == 1 else (' ' + ' '.join(tokens) + ' ') in haystack
+            (matched if found else missing).append(text)
         return matched, missing
 
     @staticmethod
@@ -1356,6 +1437,10 @@ class CanvasOutputVerifier:
         """Build a provider-neutral visual analysis packet from actual pixel evidence."""
         if rgba is None or not isinstance(rgba, np.ndarray) or rgba.ndim != 3 or rgba.shape[2] < 3:
             return {"schema": self.ANALYSIS_SCHEMA, "ok": False, "error": "rgba_image_required", "execution_authority": False}
+        try:
+            _strict_image_dimensions(rgba.shape[1], rgba.shape[0])
+        except Exception:
+            return {"schema": self.ANALYSIS_SCHEMA, "ok": False, "error": "image_budget_exceeded", "execution_authority": False}
         if rgba.shape[2] == 3:
             rgba = cv2.cvtColor(rgba, cv2.COLOR_RGB2RGBA)
         elif rgba.shape[2] > 4:
@@ -1414,7 +1499,8 @@ class CanvasOutputVerifier:
         detected_text = list(ocr.get("text") or [])
         detected_tags = list(objects.get("tags") or [])
         matched_text, missing_text = self._match_terms(expected_text, detected_text)
-        matched_subjects, missing_subjects = self._match_terms(expected_subjects, detected_tags + detected_text)
+        # Words printed on a picture do not prove that the depicted object exists.
+        matched_subjects, missing_subjects = self._match_terms(expected_subjects, detected_tags)
 
         checks: List[Dict[str, Any]] = []
         if expected_text:
@@ -1424,17 +1510,19 @@ class CanvasOutputVerifier:
         if artifact_type == ARTIFACT_PLACEHOLDER:
             checks.append({"name": "not_placeholder", "passed": False, "missing": ["real_image_backend"]})
         if not expected_text and not expected_subjects:
-            checks.append({"name": "verification_criteria", "passed": bool(ocr.get("available") or objects.get("available")), "note": "no explicit expected text/subjects supplied"})
+            checks.append({"name": "verification_criteria", "passed": False, "note": "insufficient_expected_content_for_semantic_verification"})
 
         total = max(1, len(checks))
         passed = sum(1 for c in checks if c.get("passed"))
         confidence = passed / total
         available_engines = [name for name, available in ((ocr.get("engine"), ocr.get("available")), (objects.get("engine"), objects.get("available"))) if available and name]
-        ok = confidence >= float(manifest.get("minimum_confidence", 0.75)) and artifact_type != ARTIFACT_PLACEHOLDER
+        ok = bool(expected_text or expected_subjects) and bool(available_engines) and confidence >= float(manifest.get("minimum_confidence", 0.75)) and artifact_type != ARTIFACT_PLACEHOLDER
         if artifact_type == ARTIFACT_PLACEHOLDER:
             status = "placeholder_rejected"
         elif ok:
             status = "verified"
+        elif not expected_text and not expected_subjects:
+            status = "verification_criteria_missing"
         elif available_engines:
             status = "verification_failed"
         else:
@@ -1507,6 +1595,7 @@ class CanvasLayer:
         """
         self.id = generate_unique_id()
         self.name = name
+        width, height = _strict_image_dimensions(width, height, depth=depth)
         self.width = width
         self.height = height
         self.depth = depth
@@ -1538,24 +1627,32 @@ class CanvasLayer:
     
     def fill_color(self, color: Tuple[int, int, int, int] = None):
         """Fill the entire layer with a solid RGBA color using depth-safe scaling."""
+        if self.locked:
+            raise PermissionError("layer_locked")
         self.data[:] = _coerce_rgba_color_for_depth(color, self.depth)
         self.modified_at = datetime.now()
         logging.debug(f"[CanvasStudio] Filled layer '{self.name}' with color {color}")
 
     def clear(self):
         """Clear the layer (make it fully transparent)"""
+        if self.locked:
+            raise PermissionError("layer_locked")
         self.data[:] = 0
         self.modified_at = datetime.now()
         logging.debug(f"[CanvasStudio] Cleared layer '{self.name}'")
     
     def apply_opacity(self, opacity: int):
         """Set layer opacity (0-100)"""
+        if self.locked:
+            raise PermissionError("layer_locked")
         self.opacity = max(0, min(100, opacity))
         self.modified_at = datetime.now()
         logging.debug(f"[CanvasStudio] Set opacity of layer '{self.name}' to {self.opacity}%")
     
     def set_blend_mode(self, mode: BlendMode):
         """Set the blend mode for this layer"""
+        if self.locked:
+            raise PermissionError("layer_locked")
         self.blend_mode = mode
         self.modified_at = datetime.now()
         logging.debug(f"[CanvasStudio] Set blend mode of layer '{self.name}' to {mode.value}")
@@ -1567,6 +1664,8 @@ class CanvasLayer:
         Supported gradient types: linear, radial, angular, reflected, diamond.
         Unknown gradient types raise ValueError instead of reporting false success.
         """
+        if self.locked:
+            raise PermissionError("layer_locked")
         if not colors:
             raise ValueError("gradient_requires_at_least_one_color")
         if center is None:
@@ -1681,7 +1780,7 @@ class Canvas:
         """
         self.id = generate_unique_id()
         self.name = name
-        self.width, self.height = validate_canvas_dimensions(width, height)
+        self.width, self.height = _strict_image_dimensions(width, height, depth=depth)
         self.depth = depth
         
         # Initialize layers
@@ -1704,6 +1803,7 @@ class Canvas:
         # Undo/redo history
         self.history = []
         self.history_index = -1
+        self._redo_history = []
         self.max_history = DEFAULT_UNDO_HISTORY
         
         logging.info(f"[CanvasStudio] Created canvas '{name}' ({width}x{height}, {depth}-bit)")
@@ -1719,6 +1819,10 @@ class Canvas:
         Returns:
             The newly created layer
         """
+        if len(self.layers) >= CANVAS_MAX_LAYERS:
+            raise ValueError("canvas_layer_limit_exceeded")
+        if _depth_nbytes(self.width, self.height, self.depth) * (len(self.layers) + 1) > CANVAS_MAX_PROJECT_BYTES:
+            raise ValueError("canvas_total_layer_budget_exceeded")
         self.push_history("add_layer")
         layer = CanvasLayer(name, self.width, self.height, self.depth)
         
@@ -1737,6 +1841,8 @@ class Canvas:
     def remove_layer(self, layer_index: int) -> bool:
         """Remove a layer from the canvas."""
         if 0 <= layer_index < len(self.layers):
+            if self.layers[layer_index].locked:
+                return False
             if len(self.layers) > 1:
                 self.push_history("remove_layer")
                 removed_layer = self.layers.pop(layer_index)
@@ -1828,48 +1934,61 @@ class Canvas:
         self.active_layer_index = max(0, min(self.active_layer_index, len(self.layers) - 1))
 
     def push_history(self, label: str = "edit") -> None:
-        """Capture a bounded undo snapshot."""
+        """Bound undo snapshot retention by both count and aggregate bytes."""
+        if self.max_history <= 0:
+            return
+        needed = sum(int(layer.data.nbytes) for layer in self.layers)
+        if needed > CANVAS_MAX_HISTORY_BYTES:
+            logging.warning("[CanvasStudio] Undo snapshot skipped: allocation budget")
+            self.history.clear()
+            self._redo_history.clear()
+            self.history_index = -1
+            return
         try:
-            if self.max_history <= 0:
-                return
-            # Drop redo branch.
-            if self.history_index < len(self.history) - 1:
-                self.history = self.history[:self.history_index + 1]
             snap = self._history_snapshot()
-            snap["label"] = label
+            snap["label"] = str(label)[:80]
             self.history.append(snap)
-            if len(self.history) > self.max_history:
+            self._redo_history.clear()
+            budget = max(1, CANVAS_MAX_HISTORY_BYTES)
+            def memory(items):
+                return sum(layer["data"].nbytes for entry in items for layer in entry.get("layers", []))
+            while self.history and (len(self.history) > self.max_history or memory(self.history) > budget):
                 self.history.pop(0)
             self.history_index = len(self.history) - 1
         except Exception as exc:
-            logging.warning(f"[CanvasStudio] Failed to push history snapshot: {exc}")
+            logging.warning("[CanvasStudio] Failed to push history snapshot: %s", exc)
 
     def undo(self) -> bool:
-        """Restore the previous canvas state when available."""
-        if self.history_index < 0 or not self.history:
+        """Restore the previous state, retaining the current state for redo."""
+        if not self.history:
             return False
         current = self._history_snapshot()
-        snapshot = self.history[self.history_index]
-        self._restore_history_snapshot(snapshot)
-        self.history_index -= 1
-        if self.history_index == len(self.history) - 2:
-            self.history.append(current)
+        previous = self.history.pop()
+        self._redo_history.append(current)
+        self._restore_history_snapshot(previous)
+        self.history_index = len(self.history) - 1
         return True
 
     def redo(self) -> bool:
-        """Restore a redone state when available."""
-        next_index = self.history_index + 1
-        if not (0 <= next_index < len(self.history)):
+        """Reapply a single undone state, without losing the redo chain."""
+        if not self._redo_history:
             return False
-        self._restore_history_snapshot(self.history[next_index])
-        self.history_index = next_index
+        current = self._history_snapshot()
+        future = self._redo_history.pop()
+        self.history.append(current)
+        self._restore_history_snapshot(future)
+        self.history_index = len(self.history) - 1
         return True
 
     def resize(self, width: int, height: int) -> bool:
         """Resize the canvas and every layer."""
-        width, height = validate_canvas_dimensions(int(width), int(height))
+        width, height = _strict_image_dimensions(width, height, depth=self.depth)
+        if any(layer.locked for layer in self.layers):
+            return False
         if width == self.width and height == self.height:
             return True
+        if _depth_nbytes(width, height, self.depth) * len(self.layers) > CANVAS_MAX_PROJECT_BYTES:
+            return False
         self.push_history("resize")
         for layer in self.layers:
             interp = cv2.INTER_AREA if width < layer.width or height < layer.height else cv2.INTER_LINEAR
@@ -1914,7 +2033,21 @@ class Canvas:
             return np.abs(b - t)
         if mode_value == BlendMode.EXCLUSION.value:
             return b + t - 2.0 * b * t
-        # Hue/saturation/color/luminosity need perceptual color-space handling; keep them safe.
+        # HSL color-space blending for the four documented non-separable modes.
+        if mode_value in {BlendMode.HUE.value, BlendMode.SATURATION.value, BlendMode.COLOR.value, BlendMode.LUMINOSITY.value}:
+            # HLS conversion at uint8 precision is explicit rather than silent normal blend.
+            bb = cv2.cvtColor(np.round(b * 255).astype(np.uint8), cv2.COLOR_RGB2HLS)
+            tt = cv2.cvtColor(np.round(t * 255).astype(np.uint8), cv2.COLOR_RGB2HLS)
+            if mode_value == BlendMode.HUE.value:
+                bb[..., 0] = tt[..., 0]
+            elif mode_value == BlendMode.SATURATION.value:
+                bb[..., 2] = tt[..., 2]
+            elif mode_value == BlendMode.COLOR.value:
+                bb[..., 0] = tt[..., 0]
+                bb[..., 2] = tt[..., 2]
+            else:
+                bb[..., 1] = tt[..., 1]
+            return cv2.cvtColor(bb, cv2.COLOR_HLS2RGB).astype(np.float32) / 255.0
         return t
 
     def _transformed_layer_rgba(self, layer: CanvasLayer) -> np.ndarray:
@@ -1963,6 +2096,8 @@ class Canvas:
         """Merge layer2 onto layer1 using the same compositor as flatten."""
         if not (0 <= layer1_index < len(self.layers) and 0 <= layer2_index < len(self.layers) and layer1_index != layer2_index):
             return False
+        if self.layers[layer1_index].locked or self.layers[layer2_index].locked:
+            return False
         self.push_history("merge_layers")
         layer1 = self.layers[layer1_index]
         layer2 = self.layers[layer2_index]
@@ -1983,8 +2118,7 @@ class Canvas:
     def apply_effect(self, effect_type: str, **kwargs) -> bool:
         """Apply an effect to the active layer. Returns False for unsupported effects."""
         layer = self.get_active_layer()
-        if not layer:
-            logging.warning("[CanvasStudio] No active layer to apply effect")
+        if not layer or layer.locked:
             return False
         effect_type = str(effect_type or "").lower()
         rgb, alpha = _rgb_uint8_from_layer(layer)
@@ -2090,7 +2224,7 @@ class Canvas:
     def color_correct(self, brightness: int = 0, contrast: int = 0, saturation: int = 0) -> bool:
         """Apply RGB-only color correction to the active layer while preserving alpha."""
         layer = self.get_active_layer()
-        if not layer:
+        if not layer or layer.locked:
             return False
         try:
             rgb, alpha = _rgb_uint8_from_layer(layer)
@@ -2269,7 +2403,10 @@ class NeRFRenderer:
         width: int,
         height: int,
     ) -> Dict[str, Any]:
-        width, height = validate_canvas_dimensions(int(width), int(height))
+        try:
+            width, height = _strict_image_dimensions(width, height)
+        except Exception:
+            return self._governed_metadata(ok=False, status="invalid_request", width=0, height=0, scene_packet=scene_packet, camera_packet=camera_packet, error="render_budget_exceeded")
 
         if not isinstance(scene_packet, dict) or not scene_packet:
             return self._governed_metadata(
@@ -2519,7 +2656,8 @@ class CanvasStudio:
                     if isinstance(cached, np.ndarray):
                         return cached, path
 
-                bgr = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+                raw_bytes = _bounded_image_file(path)
+                bgr = cv2.imdecode(np.frombuffer(raw_bytes, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
                 if bgr is None:
                     continue
                 if bgr.ndim == 2:
@@ -2701,7 +2839,7 @@ class CanvasStudio:
         if reference_rgba is not None:
             try:
                 source = self._coerce_live_avatar_rgba(reference_rgba, width, height)
-                source_id = "caller_rgba"
+                source_id = "caller_rgba:" + _sha256_ndarray(source)[:16]
             except Exception as exc:
                 return {"ok": False, "error": f"invalid_reference_rgba:{exc}", "execution_authority": False, "pixel_authority": True}
         else:
@@ -2731,6 +2869,8 @@ class CanvasStudio:
 
         stream_key = (str(source_id), int(width), int(height))
         with self._live_avatar_lock:
+            if stream_key not in self._live_avatar_streams and len(self._live_avatar_streams) >= CANVAS_MAX_AVATAR_STREAMS:
+                self._live_avatar_streams.pop(next(iter(self._live_avatar_streams)))
             stream = self._live_avatar_streams.setdefault(stream_key, {"history": None, "landmarks": {}, "parameters": {}, "frame_id": 0, "last_health": {}})
             quality_level = int((stream.get("last_health") or {}).get("quality_level") or 0)
 
@@ -2804,18 +2944,25 @@ class CanvasStudio:
         }
 
     def live_avatar_renderer_self_test(self) -> Dict[str, Any]:
-        """In-memory renderer smoke test; touches no files, network, or devices."""
+        """Use an isolated in-memory renderer; never alter the live stream histories."""
+        probe = object.__new__(CanvasStudio)
+        probe._live_avatar_lock = threading.RLock()
+        probe._live_avatar_streams = {}
+        probe._live_avatar_frame_id = 0
+        probe._live_avatar_last_health = {}
+        probe._live_avatar_reference_cache = {}
+        probe._live_avatar_reference_cache_max = 4
         synthetic = np.zeros((256, 256, 4), dtype=np.uint8)
         synthetic[:, :, 3] = 255
         cv2.circle(synthetic, (128, 92), 58, (85, 110, 145, 255), -1, lineType=cv2.LINE_AA)
         cv2.rectangle(synthetic, (70, 145), (186, 255), (45, 65, 90, 255), -1)
         packet = {"parameters": {"breath": 0.5, "jaw_open": 0.25, "blink_left": 0.1, "blink_right": 0.1, "gaze_x": 0.1, "neon_intensity": 0.4, "neon_wave": 0.2}}
-        out = self.render_live_avatar_frame(packet, width=256, height=256, reference_rgba=synthetic, use_temporal_history=True)
-        second = self.render_live_avatar_frame(packet, width=256, height=256, reference_rgba=synthetic, use_temporal_history=True)
+        out = probe.render_live_avatar_frame(packet, width=256, height=256, reference_rgba=synthetic)
+        second = probe.render_live_avatar_frame(packet, width=256, height=256, reference_rgba=synthetic)
         frame = out.get("frame_rgba")
         checks = [
             {"name": "render_ok", "passed": bool(out.get("ok"))},
-            {"name": "rgba_shape", "passed": isinstance(frame, np.ndarray) and tuple(frame.shape) == (256, 256, 4)},
+            {"name": "rgba_shape", "passed": isinstance(frame, np.ndarray) and frame.shape == (256, 256, 4)},
             {"name": "persistent_frame_id", "passed": int(second.get("frame_id") or 0) > int(out.get("frame_id") or 0)},
             {"name": "temporal_metadata", "passed": "history_weight" in (second.get("render_health") or {})},
             {"name": "no_execution_authority", "passed": out.get("execution_authority") is False},
@@ -2855,106 +3002,211 @@ class CanvasStudio:
             canvas_id = self.active_canvas_id
         return self.canvases.get(canvas_id)
     
+    @_synchronized_project_io
     def save_canvas(self, canvas: Canvas, filepath: str = None) -> bool:
-        """Save canvas project file (.scp format) with lossless layer payloads."""
+        """Transactionally persist the existing .scp + _layers project format.
+
+        All data is written and verified in a sibling stage directory before existing
+        project files are touched. Any promotion failure restores both legacy paths.
+        """
+        stage = None
+        retain_stage = False
         try:
+            if not isinstance(canvas, Canvas) or not 1 <= len(canvas.layers) <= CANVAS_MAX_LAYERS:
+                raise ValueError("invalid_canvas_layer_count")
+            _strict_image_dimensions(canvas.width, canvas.height, depth=canvas.depth)
+            total = sum(int(layer.data.nbytes) for layer in canvas.layers)
+            if total > CANVAS_MAX_PROJECT_BYTES:
+                raise ValueError("canvas_total_layer_budget_exceeded")
+            for layer in canvas.layers:
+                _strict_image_dimensions(layer.width, layer.height, depth=layer.depth)
+                expected = (canvas.height, canvas.width, 4)
+                if layer.data.shape != expected or layer.data.dtype != _depth_dtype(layer.depth):
+                    raise ValueError("invalid_layer_shape_or_dtype")
             if filepath is None:
                 filename = f"{canvas.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.scp"
                 filepath = os.path.join(CANVAS_PROJECTS_DIR, filename)
-            if not filepath.lower().endswith(".scp"):
+            if not str(filepath).lower().endswith(".scp"):
                 filepath = f"{filepath}.scp"
-            os.makedirs(os.path.dirname(os.path.abspath(filepath)) or ".", exist_ok=True)
-            project_data = {
-                "canvas": canvas.to_dict(),
-                "studio_version": CANVAS_STUDIO_VERSION,
-                "saved_at": datetime.now().isoformat(),
-                "layer_storage": "npy_lossless_rgba",
-            }
-            layer_dir = _project_layer_dir(filepath)
-            os.makedirs(layer_dir, exist_ok=True)
+            path = _project_manifest_safe_path(filepath)
+            parent = os.path.dirname(path)
+            os.makedirs(parent, exist_ok=True)
+            layers_path = _project_layer_dir(path)
+            stage = tempfile.mkdtemp(prefix='.canvas-stage-', dir=parent)
+            staged_layers = os.path.join(stage, 'new_layers')
+            staged_manifest = os.path.join(stage, 'new_project.scp')
+            backup_layers = os.path.join(stage, 'old_layers')
+            backup_manifest = os.path.join(stage, 'old_project.scp')
+            os.mkdir(staged_layers)
+            checksums = {}
             for i, layer in enumerate(canvas.layers):
-                np.save(os.path.join(layer_dir, f"layer_{i:03d}.npy"), layer.data)
+                name = f'layer_{i:03d}.npy'
+                output = os.path.join(staged_layers, name)
+                with open(output, 'wb') as stream:
+                    np.save(stream, layer.data, allow_pickle=False)
+                with open(output, 'rb') as stream:
+                    checksums[name] = hashlib.file_digest(stream, 'sha256').hexdigest()
                 preview = _rgba_to_uint8(layer.data, layer.depth)
-                preview_bgra = cv2.cvtColor(preview, cv2.COLOR_RGBA2BGRA)
-                if not _safe_imwrite(os.path.join(layer_dir, f"layer_{i:03d}.png"), preview_bgra):
-                    logging.warning(f"[CanvasStudio] Preview PNG write failed for layer {i}; lossless NPY was written")
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(project_data, f, indent=2)
-            ok = os.path.isfile(filepath) and os.path.getsize(filepath) > 0
-            logging.info(f"[CanvasStudio] Saved canvas '{canvas.name}' to {filepath}")
-            return bool(ok)
-        except Exception as e:
-            logging.error(f"[CanvasStudio] Failed to save canvas: {e}")
-            traceback.print_exc()
+                _safe_imwrite(os.path.join(staged_layers, f'layer_{i:03d}.png'), cv2.cvtColor(preview, cv2.COLOR_RGBA2BGRA))
+            data = {"canvas": canvas.to_dict(), "studio_version": CANVAS_STUDIO_VERSION,
+                    "saved_at": datetime.now().isoformat(), "layer_storage": "npy_lossless_rgba",
+                    "layer_sha256": checksums}
+            raw = json.dumps(data, indent=2, ensure_ascii=False).encode('utf-8')
+            if len(raw) > CANVAS_MAX_MANIFEST_BYTES:
+                raise ValueError("manifest_size_limit_exceeded")
+            with open(staged_manifest, 'wb') as stream:
+                stream.write(raw)
+            if not os.path.isfile(staged_manifest) or not all(os.path.isfile(os.path.join(staged_layers, n)) for n in checksums):
+                raise OSError("stage_verification_failed")
+
+            old_layers = False
+            old_manifest = False
+            new_layers = False
+            new_manifest = False
+            try:
+                if os.path.exists(layers_path):
+                    os.replace(layers_path, backup_layers)
+                    old_layers = True
+                if os.path.exists(path):
+                    os.replace(path, backup_manifest)
+                    old_manifest = True
+                os.replace(staged_layers, layers_path)
+                new_layers = True
+                os.replace(staged_manifest, path)
+                new_manifest = True
+            except Exception as promotion_error:
+                # Preserve staged backups if any rollback step itself fails.
+                failures = []
+                if new_manifest and os.path.isfile(path):
+                    try:
+                        os.remove(path)
+                    except OSError as exc:
+                        failures.append(str(exc))
+                if new_layers and os.path.isdir(layers_path):
+                    try:
+                        shutil.rmtree(layers_path)
+                    except OSError as exc:
+                        failures.append(str(exc))
+                if old_manifest:
+                    try:
+                        os.replace(backup_manifest, path)
+                    except OSError as exc:
+                        failures.append(str(exc))
+                if old_layers:
+                    try:
+                        os.replace(backup_layers, layers_path)
+                    except OSError as exc:
+                        failures.append(str(exc))
+                if failures:
+                    retain_stage = True
+                    logging.critical("[CanvasStudio] Rollback incomplete; operator recovery files retained at %s: %s", stage, failures)
+                raise promotion_error
+            logging.info("[CanvasStudio] Verified transactional project save: %s", path)
+            return True
+        except Exception as exc:
+            logging.error("[CanvasStudio] Project save failed: %s; rollback recovery retained=%s", exc, retain_stage)
             return False
+        finally:
+            if not retain_stage and stage and os.path.isdir(stage):
+                shutil.rmtree(stage, ignore_errors=True)
     
+    @_synchronized_project_io
     def load_canvas(self, filepath: str) -> Optional[Canvas]:
-        """Load canvas project file (.scp format), restoring IDs, transforms, and layer state."""
+        """Load bounded legacy .scp projects, verifying layer arrays before allocation."""
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                project_data = json.load(f)
-            canvas_data = project_data['canvas']
-            canvas = Canvas(
-                name=canvas_data.get('name', 'Canvas'),
-                width=int(canvas_data.get('width', DEFAULT_CANVAS_WIDTH)),
-                height=int(canvas_data.get('height', DEFAULT_CANVAS_HEIGHT)),
-                depth=int(canvas_data.get('depth', COLOR_DEPTH_8BIT)),
-                background_color=(0, 0, 0, 0),
-            )
-            canvas.id = canvas_data.get('id', canvas.id)
-            canvas.created_at = _parse_dt(canvas_data.get('created_at'), canvas.created_at)
-            canvas.modified_at = _parse_dt(canvas_data.get('modified_at'), canvas.modified_at)
-            canvas.author = canvas_data.get('author', canvas.author)
-            canvas.layers.clear()
-            layer_dir = _project_layer_dir(filepath)
-            legacy_layer_dir = filepath.replace('.scp', '_layers')
-            if not os.path.isdir(layer_dir) and os.path.isdir(legacy_layer_dir):
-                layer_dir = legacy_layer_dir
-            for index, layer_data in enumerate(canvas_data.get('layers', [])):
-                layer = CanvasLayer(
-                    layer_data.get('name', f'Layer {index}'),
-                    int(layer_data.get('width', canvas.width)),
-                    int(layer_data.get('height', canvas.height)),
-                    int(layer_data.get('depth', canvas.depth)),
-                )
-                layer.id = layer_data.get('id', layer.id)
-                layer.opacity = int(layer_data.get('opacity', 100))
+            path = _project_manifest_safe_path(filepath)
+            if not os.path.isfile(path) or os.path.getsize(path) > CANVAS_MAX_MANIFEST_BYTES:
+                raise ValueError("missing_or_oversized_project_manifest")
+            with open(path, 'r', encoding='utf-8') as stream:
+                project_data = json.load(stream)
+            data = project_data['canvas']
+            if not isinstance(data, dict):
+                raise ValueError("invalid_canvas_manifest")
+            width = int(data.get('width', DEFAULT_CANVAS_WIDTH))
+            height = int(data.get('height', DEFAULT_CANVAS_HEIGHT))
+            depth = int(data.get('depth', COLOR_DEPTH_8BIT))
+            _strict_image_dimensions(width, height, depth=depth)
+            layer_list = data.get('layers')
+            if not isinstance(layer_list, list) or not 1 <= len(layer_list) <= CANVAS_MAX_LAYERS:
+                raise ValueError("invalid_canvas_layer_count")
+            if _depth_nbytes(width, height, depth) * len(layer_list) > CANVAS_MAX_PROJECT_BYTES:
+                raise ValueError("canvas_total_layer_budget_exceeded")
+            layer_dir = _project_layer_dir(path)
+            legacy_dir = path.replace('.scp', '_layers')
+            if not os.path.isdir(layer_dir) and os.path.isdir(legacy_dir):
+                layer_dir = legacy_dir
+            if os.path.islink(layer_dir):
+                raise ValueError("project_layer_symlink_not_allowed")
+            checksums = project_data.get('layer_sha256') or {}
+            if not isinstance(checksums, dict):
+                raise ValueError("invalid_layer_integrity_record")
+            loaded_layers = []
+            for index, info in enumerate(layer_list):
+                if not isinstance(info, dict):
+                    raise ValueError("invalid_layer_record")
+                w, h, d = int(info.get('width', width)), int(info.get('height', height)), int(info.get('depth', depth))
+                if (w, h, d) != (width, height, depth):
+                    raise ValueError("inconsistent_layer_dimensions")
+                npy = os.path.join(layer_dir, f'layer_{index:03d}.npy')
+                png = os.path.join(layer_dir, f'layer_{index:03d}.png')
+                if os.path.islink(npy) or os.path.islink(png):
+                    raise ValueError("layer_symlink_not_allowed")
+                if os.path.isfile(npy):
+                    if os.stat(npy).st_size > _depth_nbytes(w, h, d) + 1_048_576:
+                        raise ValueError("oversized_layer_file")
+                    with contextlib.nullcontext(np.load(npy, allow_pickle=False, mmap_mode='r')) as mapped:
+                        if mapped.shape != (h, w, 4) or mapped.dtype != _depth_dtype(d):
+                            raise ValueError("invalid_layer_shape_or_dtype")
+                        if checksums.get(os.path.basename(npy)):
+                            with open(npy, 'rb') as stream:
+                                digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+                            if digest != checksums[os.path.basename(npy)]:
+                                raise ValueError("layer_integrity_mismatch")
+                        pixels = np.array(mapped, copy=True)
+                elif os.path.isfile(png):
+                    encoded = _bounded_image_file(png)
+                    pixels8 = _decode_image_bytes_rgba(encoded, w, h)
+                    if pixels8 is None:
+                        raise ValueError("invalid_layer_preview")
+                    pixels = _float01_to_rgba_depth(pixels8.astype(np.float32) / 255.0, d)
+                else:
+                    raise ValueError("layer_data_missing")
+                layer = CanvasLayer(str(info.get('name', f'Layer {index}'))[:160], w, h, d)
+                layer.id = str(info.get('id') or layer.id)[:160]
+                layer.opacity = max(0, min(100, int(info.get('opacity', 100))))
                 try:
-                    layer.blend_mode = BlendMode(layer_data.get('blend_mode', BlendMode.NORMAL.value))
-                except Exception:
+                    layer.blend_mode = BlendMode(info.get('blend_mode', BlendMode.NORMAL.value))
+                except ValueError:
                     layer.blend_mode = BlendMode.NORMAL
-                layer.visible = bool(layer_data.get('visible', True))
-                layer.locked = bool(layer_data.get('locked', False))
-                layer.position = tuple(layer_data.get('position', (0, 0)))
-                layer.rotation = float(layer_data.get('rotation', 0))
-                layer.scale = tuple(layer_data.get('scale', (1.0, 1.0)))
-                layer.created_at = _parse_dt(layer_data.get('created_at'), layer.created_at)
-                layer.modified_at = _parse_dt(layer_data.get('modified_at'), layer.modified_at)
-                npy_file = os.path.join(layer_dir, f"layer_{index:03d}.npy")
-                png_file = os.path.join(layer_dir, f"layer_{index:03d}.png")
-                if os.path.exists(npy_file):
-                    layer.data = np.load(npy_file, allow_pickle=False)
-                elif os.path.exists(png_file):
-                    raw = cv2.imread(png_file, cv2.IMREAD_UNCHANGED)
-                    if raw is not None:
-                        if raw.ndim == 2:
-                            raw = cv2.cvtColor(raw, cv2.COLOR_GRAY2RGBA)
-                        elif raw.shape[2] == 3:
-                            raw = cv2.cvtColor(raw, cv2.COLOR_BGR2RGBA)
-                        else:
-                            raw = cv2.cvtColor(raw, cv2.COLOR_BGRA2RGBA)
-                        layer.data = _float01_to_rgba_depth(raw.astype(np.float32) / 255.0, layer.depth)
-                canvas.layers.append(layer)
-            if not canvas.layers:
-                canvas.layers.append(CanvasLayer("Background", canvas.width, canvas.height, canvas.depth))
-            canvas.active_layer_index = max(0, min(int(canvas_data.get('active_layer_index', 0)), len(canvas.layers) - 1))
+                layer.visible = info.get('visible') is True if isinstance(info.get('visible'), bool) else str(info.get('visible', True)).lower() not in ('false', '0', 'no')
+                layer.locked = info.get('locked') is True if isinstance(info.get('locked'), bool) else str(info.get('locked', False)).lower() in ('true', '1', 'yes')
+                for attr, fallback in (("position", (0.0, 0.0)), ("scale", (1.0, 1.0))):
+                    raw = info.get(attr, fallback)
+                    values = tuple(raw) if isinstance(raw, (list, tuple)) and len(raw) == 2 else fallback
+                    values = tuple(float(v) for v in values)
+                    if not all(math.isfinite(v) and abs(v) <= 10_000 for v in values):
+                        raise ValueError("invalid_layer_transform")
+                    setattr(layer, attr, values)
+                layer.rotation = float(info.get('rotation', 0))
+                if not math.isfinite(layer.rotation):
+                    raise ValueError("invalid_layer_rotation")
+                layer.created_at = _parse_dt(info.get('created_at'), layer.created_at)
+                layer.modified_at = _parse_dt(info.get('modified_at'), layer.modified_at)
+                layer.data = pixels
+                loaded_layers.append(layer)
+            canvas = Canvas(str(data.get('name', 'Canvas'))[:160], width, height, depth, (0, 0, 0, 0))
+            canvas.id = str(data.get('id') or canvas.id)[:160]
+            canvas.author = str(data.get('author', canvas.author))[:160]
+            canvas.created_at = _parse_dt(data.get('created_at'), canvas.created_at)
+            canvas.modified_at = _parse_dt(data.get('modified_at'), canvas.modified_at)
+            canvas.layers = loaded_layers
+            canvas.active_layer_index = max(0, min(int(data.get('active_layer_index', 0)), len(loaded_layers) - 1))
             self.canvases[canvas.id] = canvas
             self.active_canvas_id = canvas.id
-            logging.info(f"[CanvasStudio] Loaded canvas '{canvas.name}' from {filepath}")
+            logging.info("[CanvasStudio] Validated project load: %s", path)
             return canvas
-        except Exception as e:
-            logging.error(f"[CanvasStudio] Failed to load canvas: {e}")
-            traceback.print_exc()
+        except Exception as exc:
+            logging.error("[CanvasStudio] Project load rejected: %s", exc)
             return None
     
     def _export_uint8_rgba(self, canvas: Canvas, flatten: bool = True) -> np.ndarray:
@@ -2969,65 +3221,89 @@ class CanvasStudio:
             depth = layer.depth
         return _rgba_to_uint8(image_data, depth)
 
-    def export_canvas(self, canvas: Canvas, filepath: str, 
-                     format: str = "PNG", quality: int = 90, flatten: bool = True) -> bool:
-        """Export canvas to an image/PDF/SVG file and report actual write success."""
+    def export_canvas(self, canvas: Canvas, filepath: str, format: str = "PNG", quality: int = 90, flatten: bool = True) -> bool:
+        """Stage/verify exports before replacing a previously valid output."""
+        stage = ''
         try:
             fmt = _normalize_export_format(format)
-            if fmt not in [_normalize_export_format(x) for x in SUPPORTED_EXPORT_FORMATS]:
-                logging.error(f"[CanvasStudio] Unsupported format: {fmt}")
+            if fmt not in {_normalize_export_format(x) for x in SUPPORTED_EXPORT_FORMATS}:
                 return False
-            extension = "jpg" if fmt == "JPEG" else fmt.lower()
-            if not filepath.lower().endswith(f".{extension}"):
-                filepath = f"{filepath}.{extension}"
+            extension = 'jpg' if fmt == 'JPEG' else fmt.lower()
+            path = os.path.abspath(os.fspath(filepath))
+            if not path.lower().endswith('.' + extension):
+                path += '.' + extension
+            if os.path.islink(path):
+                raise ValueError('export_symlink_not_allowed')
+            parent = os.path.dirname(path)
+            os.makedirs(parent, exist_ok=True)
             rgba8 = self._export_uint8_rgba(canvas, flatten=flatten)
-            quality = int(max(0, min(100, quality)))
-            if fmt in ("PNG", "BMP", "TGA", "TIFF", "WEBP"):
-                if fmt in ("PNG", "WEBP", "TIFF"):
-                    out = cv2.cvtColor(rgba8, cv2.COLOR_RGBA2BGRA)
+            _strict_image_dimensions(rgba8.shape[1], rgba8.shape[0])
+            quality = max(0, min(100, int(quality)))
+            fd, stage = tempfile.mkstemp(prefix='.canvas-export-', suffix='.' + extension, dir=parent)
+            os.close(fd)
+            if fmt in ('PNG', 'BMP', 'WEBP', 'TIFF', 'TGA'):
+                if fmt == 'TGA':
+                    if not PIL_AVAILABLE or Image is None:
+                        raise ValueError('tga_encoder_unavailable')
+                    Image.fromarray(rgba8, 'RGBA').save(stage, 'TGA')
+                    ok = True
                 else:
-                    out = cv2.cvtColor(rgba8, cv2.COLOR_RGBA2BGR)
-                params: List[int] = []
-                if fmt == "WEBP":
-                    params = [cv2.IMWRITE_WEBP_QUALITY, quality]
-                elif fmt == "PNG":
-                    params = [cv2.IMWRITE_PNG_COMPRESSION, DEFAULT_PNG_COMPRESSION]
-                elif fmt == "TIFF":
-                    params = [cv2.IMWRITE_TIFF_COMPRESSION, 1]
-                ok = _safe_imwrite(filepath, out, params)
-            elif fmt == "JPEG":
-                bgr = cv2.cvtColor(rgba8, cv2.COLOR_RGBA2BGR)
-                ok = _safe_imwrite(filepath, bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
-            elif fmt == "PDF":
+                    out = cv2.cvtColor(rgba8, cv2.COLOR_RGBA2BGRA if fmt in ('PNG', 'WEBP', 'TIFF') else cv2.COLOR_RGBA2BGR)
+                    params = []
+                    if fmt == 'WEBP':
+                        params = [cv2.IMWRITE_WEBP_QUALITY, quality]
+                    elif fmt == 'PNG':
+                        params = [cv2.IMWRITE_PNG_COMPRESSION, DEFAULT_PNG_COMPRESSION]
+                    elif fmt == 'TIFF':
+                        params = [cv2.IMWRITE_TIFF_COMPRESSION, 1]
+                    ok = _safe_imwrite(stage, out, params)
+            elif fmt == 'JPEG':
+                out = cv2.cvtColor(rgba8, cv2.COLOR_RGBA2BGR)
+                ok = _safe_imwrite(stage, out, [cv2.IMWRITE_JPEG_QUALITY, quality])
+            elif fmt == 'PDF':
                 if not PIL_AVAILABLE or Image is None:
-                    logging.error("[CanvasStudio] PDF export requires Pillow")
                     return False
-                rgb = Image.fromarray(rgba8[:, :, :3], mode="RGB")
-                os.makedirs(os.path.dirname(os.path.abspath(filepath)) or ".", exist_ok=True)
-                rgb.save(filepath, "PDF", resolution=100.0)
-                ok = os.path.isfile(filepath) and os.path.getsize(filepath) > 0
-            elif fmt == "SVG":
-                import base64 as _b64
-                ok_png, encoded = cv2.imencode('.png', cv2.cvtColor(rgba8, cv2.COLOR_RGBA2BGRA))
-                if not ok_png:
+                Image.fromarray(rgba8[:, :, :3], 'RGB').save(stage, 'PDF', resolution=100.0)
+                ok = True
+            elif fmt == 'SVG':
+                encoded_ok, encoded = cv2.imencode('.png', cv2.cvtColor(rgba8, cv2.COLOR_RGBA2BGRA))
+                if not encoded_ok:
                     return False
-                payload = _b64.b64encode(encoded.tobytes()).decode('ascii')
-                svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="{canvas.width}" height="{canvas.height}" viewBox="0 0 {canvas.width} {canvas.height}"><image width="{canvas.width}" height="{canvas.height}" href="data:image/png;base64,{payload}"/></svg>'
-                os.makedirs(os.path.dirname(os.path.abspath(filepath)) or ".", exist_ok=True)
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    f.write(svg)
-                ok = os.path.isfile(filepath) and os.path.getsize(filepath) > 0
+                payload = base64.b64encode(encoded.tobytes()).decode('ascii')
+                markup = f'<svg xmlns="http://www.w3.org/2000/svg" width="{canvas.width}" height="{canvas.height}" viewBox="0 0 {canvas.width} {canvas.height}"><image width="{canvas.width}" height="{canvas.height}" href="data:image/png;base64,{payload}"/></svg>'
+                with open(stage, 'w', encoding='utf-8') as stream:
+                    stream.write(markup)
+                ok = True
             else:
                 ok = False
-            if ok:
-                logging.info(f"[CanvasStudio] Exported canvas '{canvas.name}' to {filepath}")
+            if not ok or not os.path.isfile(stage) or os.path.getsize(stage) <= 0:
+                raise ValueError('export_stage_empty')
+            if fmt in ('PNG', 'JPEG', 'WEBP', 'TIFF', 'BMP', 'TGA'):
+                with Image.open(stage) as check:
+                    if check.size != (canvas.width, canvas.height):
+                        raise ValueError('export_dimension_mismatch')
+                    check.verify()
+            elif fmt == 'PDF':
+                with open(stage, 'rb') as stream:
+                    if stream.read(4) != b'%PDF':
+                        raise ValueError('invalid_pdf_header')
             else:
-                logging.error(f"[CanvasStudio] Export failed for canvas '{canvas.name}' to {filepath}")
-            return bool(ok)
-        except Exception as e:
-            logging.error(f"[CanvasStudio] Failed to export canvas: {e}")
-            traceback.print_exc()
+                with open(stage, 'rb') as stream:
+                    if b'<svg ' not in stream.read(512):
+                        raise ValueError('invalid_svg_header')
+            os.replace(stage, path)
+            stage = ''
+            logging.info("[CanvasStudio] Verified image export: %s", path)
+            return True
+        except Exception as exc:
+            logging.error("[CanvasStudio] Export failed without replacing previous output: %s", exc)
             return False
+        finally:
+            if stage and os.path.exists(stage):
+                try:
+                    os.unlink(stage)
+                except OSError:
+                    pass
 
     def build_generation_manifest(
         self,
@@ -3147,6 +3423,10 @@ class CanvasStudio:
             minimum_confidence=minimum_confidence,
         )
         prompt_text = str(manifest.get("prompt") or "").strip()
+        if len(prompt_text) > 8_192:
+            result = {"ok": False, "status": "prompt_size_exceeded", "artifact_type": ARTIFACT_FAILED, "canvas": None, "verification": None, "execution_authority": False}
+            self.last_generation_result = result
+            return result
         if not prompt_text:
             result = {
                 "ok": False,
@@ -3270,17 +3550,17 @@ class CanvasStudio:
             status = "placeholder_preview_only"
             ok = bool(allow_placeholder_preview)
             accepted = bool(allow_placeholder_preview)
-        elif verification_required and verification.get("ok"):
+        elif verification_required and verification.get("ok") and verification.get("checks") and all(c.get("passed") for c in verification["checks"]):
             status = ARTIFACT_VERIFIED
             ok = True
             accepted = True
             artifact_type = ARTIFACT_VERIFIED
-        elif generation.get("ok") and artifact_type != ARTIFACT_FAILED:
-            status = ARTIFACT_UNVERIFIED if not verification.get("ok") else ARTIFACT_VERIFIED
+        elif generation.get("ok") and artifact_type != ARTIFACT_FAILED and not verification_required:
+            status = ARTIFACT_UNVERIFIED
             ok = True
             accepted = True
-            if artifact_type not in (ARTIFACT_VERIFIED, ARTIFACT_UNVERIFIED):
-                artifact_type = ARTIFACT_UNVERIFIED
+            # Skipped verification cannot inherit a provider-asserted verified label.
+            artifact_type = ARTIFACT_UNVERIFIED
         else:
             status = ARTIFACT_FAILED
             ok = False
@@ -3411,7 +3691,7 @@ class CanvasStudio:
             except Exception:
                 font = ImageFont.load_default() if ImageFont else None
                 small = font
-            pad = max(18, min(w, h) // 32)
+            pad = min(max(2, min(w, h) // 32), max(1, min(w, h) // 4))
             text = prompt if len(prompt) <= 220 else (prompt[:217] + "...")
             d.rectangle((pad - 8, pad - 8, w - pad + 8, pad + 70), fill=(110, 52, 0, 210))
             if font:
@@ -3500,10 +3780,11 @@ class CanvasStudio:
     ) -> Dict[str, Any]:
         """Read an explicitly supplied image file without scanning for other files."""
         path = os.path.abspath(os.fspath(image_path))
-        if not os.path.isfile(path):
+        if not os.path.isfile(path) or os.path.islink(path):
             return {"ok": False, "error": "image_file_not_found", "source": path, "execution_authority": False}
         try:
-            raw = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+            encoded = _bounded_image_file(path)
+            raw = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
             if raw is None:
                 raise ValueError("image_decode_failed")
             if raw.ndim == 2:
@@ -3603,8 +3884,9 @@ class CanvasStudio:
                 elif operation == "color_correct":
                     results.append(bool(canvas.color_correct(**kwargs)))
                 elif operation == "apply_effect":
-                    effect = kwargs.pop("effect_type", kwargs.pop("effect", None))
-                    results.append(bool(canvas.apply_effect(effect, **kwargs)))
+                    effect = kwargs.get("effect_type", kwargs.get("effect"))
+                    options = {k: v for k, v in kwargs.items() if k not in ("effect_type", "effect")}
+                    results.append(bool(canvas.apply_effect(effect, **options)))
                 elif operation == "export":
                     results.append(bool(self.export_canvas(canvas, **kwargs)))
                 else:
@@ -3621,6 +3903,7 @@ class CanvasStudio:
         """Get Canvas Studio system information."""
         return {
             "version": CANVAS_STUDIO_VERSION,
+            "release": CANVAS_STUDIO_RELEASE,
             "build": CANVAS_STUDIO_BUILD,
             "engine": "SarahMemoryCanvasStudio",
             "local_first": True,
@@ -3647,6 +3930,10 @@ class CanvasStudio:
             },
             "supported_formats": list(SUPPORTED_EXPORT_FORMATS),
             "implemented_blend_modes": [mode.value for mode in BlendMode],
+            "native_16bit_export_verified": False,
+            "svg_vector_editing": False,
+            "nerf_model_inference": False,
+            "gpu_raster_acceleration_verified": False,
             "implemented_filters": [item.value for item in FilterType],
             "implemented_gradients": [item.value for item in GradientType],
             "max_canvas_size": (MAX_CANVAS_WIDTH, MAX_CANVAS_HEIGHT),
@@ -3854,7 +4141,7 @@ if __name__ == "__main__":
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryCanvasStudio',
-    "version": "v9.0.0-alpha-sml-0.3",
+    "version": "v9.1.0a-enterprise-sml-0.3",
     "category": 'CreativeRendering',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -3873,32 +4160,23 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
-    capabilities = get_canvas_studio_capabilities()
-    dependency_score = 1.0
-    notes = ["SML adapter present", "execution_authority=False"]
-    if not capabilities.get("pil_available"):
-        dependency_score -= 0.15
-        notes.append("Pillow unavailable: PDF/text overlay paths limited")
-    if not capabilities.get("opencv_available"):
-        dependency_score -= 0.45
-        notes.append("OpenCV unavailable: raster engine unavailable")
-    dependency_score = max(0.0, dependency_score)
+    """Report observed importability; unmeasured performance is not certified."""
+    available = bool(np is not None and cv2 is not None)
+    notes = ["SML adapter present", "execution_authority=False", "reliability/performance/stability/latency have not been measured"]
+    if not PIL_AVAILABLE:
+        notes.append("Pillow unavailable: image header inspection and PDF export disabled")
+    if not SCIPY_AVAILABLE:
+        notes.append("SciPy optional filters unavailable")
     return {
-        "status": "Healthy" if dependency_score >= 0.75 else "Degraded",
-        "availability": dependency_score,
-        "integrity": 1.0,
-        "performance": 0.85,
-        "reliability": 0.85,
-        "confidence": 0.86,
-        "latency_ms": 0.0,
-        "stability": 0.90,
-        "compatibility": 0.90,
-        "execution_authority": False,
+        "status": "Healthy" if available else "Degraded",
+        "availability": 1.0 if available else 0.0,
+        "integrity": 0.0, "performance": 0.0, "reliability": 0.0,
+        "confidence": 0.0, "latency_ms": 0.0, "stability": 0.0,
+        "compatibility": 0.0, "execution_authority": False,
         "notes": notes,
     }
 
@@ -3909,7 +4187,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryCanvasStudio',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": copy.deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
         "capabilities": get_canvas_studio_capabilities(),
     }
@@ -3919,7 +4197,7 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     """Receive/update an SML packet through the canonical protocol without direct execution."""
     try:
         from SarahMemorySMLProtocol import register_sml_organ, sml_touch_packet
-        register_sml_organ(SML_ORGAN_METADATA)
+        register_sml_organ(copy.deepcopy(SML_ORGAN_METADATA))
         return sml_touch_packet(packet, organ='SarahMemoryCanvasStudio', action=action, note=note or "creative rendering organ observed packet", updates=updates)
     except Exception:
         return packet

@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryUIupdater.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 SarahMemoryUIupdater.py
@@ -63,7 +62,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -108,7 +107,7 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 # Default repo URL if not overridden via env
 if GITHUB_TOKEN:
     DEFAULT_REPO_URL = (
-        f"https://{GITHUB_TOKEN}@github.com/Brian-Baros/sarah-s-dashboard.git"
+        "https://github.com/Brian-Baros/sarah-s-dashboard.git"
     )
 else:
     # Works if repo is public; private needs token
@@ -179,20 +178,8 @@ def _mask_token(url: str) -> str:
         return url
 
 def run_cmd(cmd: str, cwd: Path | None = None, check: bool = True) -> int:
-    """
-    Run a shell command and stream output to console.
-    Raises CalledProcessError if check=True and command fails.
-    """
-    print(f"\n[CMD] {cmd} (cwd={cwd})")
-    result = subprocess.run(
-        cmd,
-        shell=True,
-        cwd=str(cwd) if cwd else None,
-        text=True
-    )
-    if check and result.returncode != 0:
-        raise subprocess.CalledProcessError(result.returncode, cmd)
-    return result.returncode
+    """Legacy shell-string runner is disabled; command execution is not authorized here."""
+    raise PermissionError('UI updater shell execution requires governed build executor')
 
 
 def ensure_base_dirs() -> None:
@@ -209,39 +196,8 @@ def ensure_base_dirs() -> None:
 
 
 def ensure_repo() -> None:
-    """
-    Ensure the frontend repo exists inside SRC_DIR.
-    - If not present, git clone it into SRC_DIR.
-    - If present, git pull latest from origin main/master.
-    """
-    git_dir = REPO_DIR / ".git"
-
-    if not git_dir.exists():
-        print(f"[INFO] Frontend repo not found at {REPO_DIR}. Cloning...")
-        # If directory exists but isn't a git repo (partial/corrupt), clear it first to allow clone.
-        if REPO_DIR.exists() and any(REPO_DIR.iterdir()):
-            print(f"[WARN] {REPO_DIR} exists but is not a git repo. Clearing directory before re-clone...")
-            for item in REPO_DIR.iterdir():
-                try:
-                    if item.is_dir():
-                        shutil.rmtree(item)
-                    else:
-                        item.unlink()
-                except Exception as e:
-                    print(f"[WARN] Failed to remove {item}: {e}")
-        REPO_DIR.mkdir(parents=True, exist_ok=True)
-        run_cmd(f"git clone {REPO_URL} {REPO_DIR}")
-    else:
-        print(f"[INFO] Frontend repo found at {REPO_DIR}. Pulling latest...")
-        run_cmd("git fetch --all", cwd=REPO_DIR)
-        # Try main first, fallback to master
-        try:
-            run_cmd("git pull origin main", cwd=REPO_DIR)
-        except subprocess.CalledProcessError:
-            print("[WARN] 'main' branch pull failed, trying 'master'...")
-            run_cmd("git pull origin master", cwd=REPO_DIR)
-
-    print("[INFO] Repository sync complete.")
+    """Review-only entry: never replace an existing checkout automatically."""
+    raise PermissionError('Repository mutation requires reviewed, authenticated checkout workflow')
 
 
 def ensure_node_modules(skip_install: bool = False) -> None:
@@ -388,61 +344,18 @@ def backup_existing_target(skip_backup: bool = False) -> None:
 
 
 def clear_target_dir() -> None:
-    """
-    Delete all files and directories in TARGET_DIR (but keep the directory itself).
-    """
-    TARGET_DIR.mkdir(parents=True, exist_ok=True)
-
-    print(f"[INFO] Clearing existing contents in {TARGET_DIR}...")
-    for item in TARGET_DIR.iterdir():
-        try:
-            if item.is_dir():
-                shutil.rmtree(item)
-            else:
-                item.unlink()
-        except Exception as e:
-            print(f"[WARN] Failed to delete {item}: {e}")
-    print("[INFO] Target directory cleared.")
+    """Reject destructive direct deployment until promotion transaction exists."""
+    raise PermissionError('Live UI deletion requires verified OperatorCore promotion')
 
 
 def deploy_build(build_dir: Path) -> None:
-    """
-    Copy built files from build_dir into TARGET_DIR.
-    """
-    print(f"[INFO] Deploying build from {build_dir} to {TARGET_DIR}...")
-    TARGET_DIR.mkdir(parents=True, exist_ok=True)
-
-    for item in build_dir.iterdir():
-        dest = TARGET_DIR / item.name
-        if item.is_dir():
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(item, dest)
-        else:
-            shutil.copy2(item, dest)
-
-    print("[INFO] Deployment complete.")
-    print(f"[INFO] Web UI is now updated at: {TARGET_DIR}")
+    """Stage build outputs separately; never alter the active UI without a receipt."""
+    raise PermissionError('Live deployment requires validated artifacts and authenticated promotion')
 
 
 def clear_src_dir() -> None:
-    """
-    Optional option to delete all files and directories in SRC_DIR (V9_ui_src) to save space,
-    but keep the SRC_DIR folder itself so future runs can re-clone as needed.
-    This is especially helpful on constrained environments like PythonAnywhere.
-    Notice This OPTION is CURRENTLY DISABLED AND ENABLED USED a '#" on LINE 475
-    """
-    SRC_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"[INFO] Clearing source checkout in {SRC_DIR}...")
-    for item in SRC_DIR.iterdir():
-        try:
-            if item.is_dir():
-                shutil.rmtree(item)
-            else:
-                item.unlink()
-        except Exception as e:
-            print(f"[WARN] Failed to delete {item}: {e}")
-    print("[INFO] Source directory cleared.")
+    """Never destroy source checkout as an automatic cleanup step."""
+    raise PermissionError('Source checkout deletion disabled')
 
 
 # ---------------------------------------------------------------------------
@@ -551,22 +464,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML registration confirmed; runtime measurements not performed"],
     }
 
 
@@ -576,7 +489,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryUIupdater',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

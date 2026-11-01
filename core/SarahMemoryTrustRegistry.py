@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryTrustRegistry.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 - Canonical trust, subject, and capability registry for SarahMemory AiOS / SMGET.
@@ -62,12 +61,13 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "SMGET canonical subject trust and capability registry. Tracks callers, trust tiers, scoped grants, manifests, quarantine state, and registry-backed authority boundaries."
 # --- SARAHMETA END ---
+# v9.1.0a enterprise source hardening: original interfaces preserved; state-changing legacy paths require governed authorization.
 
 import json
 import logging
@@ -934,6 +934,14 @@ def register_subject(
     trust_tier = _safe_str(trust_tier or TRUST_TIER_UNKNOWN) or TRUST_TIER_UNKNOWN
     status = _safe_str(status or STATUS_PENDING) or STATUS_PENDING
     caller_id = _subject_id(caller_id, subject_kind, module_name)
+    # Registration is not an approval decision. Public callers cannot grant trust.
+    if trust_tier in {TRUST_TIER_CORE, TRUST_TIER_FIRST_PARTY, TRUST_TIER_VERIFIED_THIRD_PARTY}:
+        trust_tier = TRUST_TIER_UNVERIFIED
+        status = STATUS_PENDING
+        trusted = False
+        approved = False
+        exposed = False
+        permissions = []
     quarantined = (trust_tier == TRUST_TIER_QUARANTINED) or (status == STATUS_QUARANTINED)
     record = SubjectRecord(
         subject_id=caller_id,
@@ -951,7 +959,8 @@ def register_subject(
         approved=_safe_bool(approved, trust_tier in {TRUST_TIER_CORE, TRUST_TIER_FIRST_PARTY, TRUST_TIER_VERIFIED_THIRD_PARTY}),
         exposed=_safe_bool(exposed),
         quarantined=quarantined,
-        permissions=sorted(set(_default_permissions(subject_kind, trust_tier) + _safe_list(permissions))),
+        permissions=([] if subject_kind == SUBJECT_KIND_CORE and trust_tier != TRUST_TIER_CORE
+                     else sorted(set(_default_permissions(subject_kind, trust_tier)))),
         capabilities=sorted(set(_safe_list(capabilities))),
         metadata=dict(metadata or {}),
     )
@@ -1065,28 +1074,18 @@ def resolve_subject_trust(
     # 1) explicit subject record wins
     rec = lookup_subject(sid)
     if rec:
-        return rec
+        kind = _safe_str(caller_kind).lower()
+        if (_safe_str(rec.get("subject_kind")).lower() == kind and
+                _safe_str(rec.get("trust_tier")).lower() not in {TRUST_TIER_CORE, TRUST_TIER_FIRST_PARTY, TRUST_TIER_VERIFIED_THIRD_PARTY}):
+            return rec
+        # A saved privileged registration proves registration only, not caller identity.
+        # Do not overwrite that authoritative record with an unverified resolver entry.
+        return {"subject_id": sid, "subject_kind": kind, "trust_tier": TRUST_TIER_UNKNOWN,
+                "trusted": False, "approved": False, "exposed": False,
+                "permissions": [], "capabilities": [], "source": "identity_not_authenticated"}
 
-    # 2) core module approval from Globals yields core trust
+    # Unresolved callers cannot be promoted solely by a claimed module name.
     module_name = _safe_str(module_name)
-    if module_name and _is_core_module_approved(module_name):
-        rec = register_subject(
-            caller_id=sid,
-            caller_kind=SUBJECT_KIND_CORE,
-            display_name=module_name,
-            trust_tier=TRUST_TIER_CORE,
-            status=STATUS_ACTIVE,
-            publisher="SarahMemory Core",
-            module_name=module_name,
-            surface=surface or "core",
-            registry_source="globals_core_registry",
-            capabilities=_safe_list((action_contract or {}).get("capability_name")),
-            permissions=_default_permissions(SUBJECT_KIND_CORE, TRUST_TIER_CORE),
-            trusted=True,
-            approved=True,
-            exposed=True,
-        )
-        return rec
 
     # 3) kind-based bounded fallback
     normalized_kind = _safe_str(caller_kind or SUBJECT_KIND_UNKNOWN).lower() or SUBJECT_KIND_UNKNOWN
@@ -1206,40 +1205,40 @@ def _passport_secret_path() -> str:
 
 
 def _passport_secret() -> bytes:
-    """Return a local signing key without exposing it through registry APIs."""
+    """Load or provision an installation-bound secret; never derive a public fallback."""
     for name in ("SARAH_AGENT_PASSPORT_SECRET", "MESH_SHARED_SECRET"):
-        try:
-            value = os.getenv(name) or (getattr(config, name, None) if config is not None else None)
-            if value:
-                return hashlib.sha256(str(value).encode("utf-8", "ignore")).digest()
-        except Exception:
-            pass
+        value = os.getenv(name) or (getattr(config, name, None) if config is not None else None)
+        if isinstance(value, str) and len(value) >= 32:
+            return hashlib.sha256(value.encode("utf-8")).digest()
     _ensure_dirs()
     path = _passport_secret_path()
+    if os.path.islink(path):
+        raise PermissionError("passport_secret_symlink_denied")
     try:
-        if os.path.exists(path):
-            raw = Path(path).read_bytes()
-            if len(raw) >= 32:
-                return hashlib.sha256(raw).digest()
-        raw = secrets.token_bytes(48)
-        tmp = path + ".tmp"
-        with open(tmp, "wb") as fh:
-            fh.write(raw)
-            fh.flush()
-            try:
-                os.fsync(fh.fileno())
-            except Exception:
-                pass
-        os.replace(tmp, path)
-        try:
-            os.chmod(path, 0o600)
-        except Exception:
-            pass
+        with open(path, "rb") as fh:
+            raw = fh.read(128)
+        if len(raw) < 32:
+            raise PermissionError("passport_secret_invalid")
         return hashlib.sha256(raw).digest()
-    except Exception:
-        # Fail-soft integrity fallback for read-only/test environments. It never
-        # authorizes execution and is intentionally tied to this installation.
-        return hashlib.sha256((_base_dir() + "|agent-passport-v1").encode("utf-8", "ignore")).digest()
+    except FileNotFoundError:
+        raw = secrets.token_bytes(48)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            with open(path, "rb") as fh:
+                existing = fh.read(128)
+            if len(existing) < 32:
+                raise PermissionError("passport_secret_invalid")
+            return hashlib.sha256(existing).digest()
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(raw)
+                fh.flush()
+                os.fsync(fh.fileno())
+        except Exception:
+            raise
+        return hashlib.sha256(raw).digest()
+    # Any other I/O or permission failure propagates; passport cannot be signed.
 
 
 def _passport_signature(passport_id: str, agent_id: str, task_id: str, return_nonce: str) -> str:
@@ -1343,7 +1342,7 @@ def _agent_passport_auto_issue_enabled(default: bool = False) -> bool:
 
 def _metadata_requests_managed_auto_passport(metadata: Optional[Dict[str, Any]]) -> bool:
     meta = metadata if isinstance(metadata, dict) else {}
-    return bool(meta.get("managed_passport") or meta.get("auto_injected") or meta.get("auto_passport"))
+    return any(_safe_bool(meta.get(key), False) for key in ("managed_passport", "auto_injected", "auto_passport"))
 
 
 def issue_agent_passport(
@@ -1375,6 +1374,8 @@ def issue_agent_passport(
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Issue a bounded identity/scope passport. No execution is launched here."""
+    # A caller-supplied Boolean is never an authenticated human approval receipt.
+    user_approved = False
     if config is not None and not bool(getattr(config, "SARAH_AGENT_PASSPORTS_ENABLED", True)):
         return {"ok": False, "error": "agent_passports_disabled"}
     if _metadata_requests_managed_auto_passport(metadata) and not _agent_passport_auto_issue_enabled(False):
@@ -2311,6 +2312,7 @@ def get_capability_registry_snapshot() -> Dict[str, Any]:
 # ====================================================================
 
 # --- SML ORGAN ADAPTER START ---
+import copy as _sml_copy
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryTrustRegistry',
@@ -2332,22 +2334,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return _sml_copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter registered; runtime quality not measured"],
     }
 
 
@@ -2357,7 +2359,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryTrustRegistry',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": _sml_copy.deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

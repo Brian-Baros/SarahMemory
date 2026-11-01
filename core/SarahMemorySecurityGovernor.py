@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemorySecurityGovernor.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 - Core sovereignty, trust, and runtime security governor for SarahMemory AiOS / SMGET.
@@ -61,7 +60,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -121,7 +120,7 @@ logger.propagate = False
 # Constants
 # ---------------------------------------------------------------------------
 MODULE_NAME = "SarahMemorySecurityGovernor"
-MODULE_VERSION = "9.0.0"
+MODULE_VERSION = "9.1.0a"
 _DB_NAME = "security_governor.db"
 
 DECISION_ALLOW = "ALLOW"
@@ -335,7 +334,14 @@ class SecurityReview:
 # ---------------------------------------------------------------------------
 def _flag(name: str, default: bool = False) -> bool:
     try:
-        return bool(getattr(config, name, default))
+        value = getattr(config, name, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value == 1
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return default
     except Exception:
         return default
 
@@ -439,12 +445,12 @@ def _get_trust_record(identity: CallerIdentity, action_contract: Dict[str, Any])
                         module_name=identity.module_name,
                         action_contract=action_contract,
                     )
-                    if isinstance(out, dict):
+                    if isinstance(out, dict) and out.get("caller_authenticated") is True and out.get("attestation_verified") is True:
                         return out
             except TypeError:
                 try:
                     out = fn(identity.caller_id)
-                    if isinstance(out, dict):
+                    if isinstance(out, dict) and out.get("caller_authenticated") is True and out.get("attestation_verified") is True:
                         return out
                 except Exception:
                     pass
@@ -454,7 +460,10 @@ def _get_trust_record(identity: CallerIdentity, action_contract: Dict[str, Any])
     registered = _registered_modules()
     entry = registered.get(identity.module_name) if identity.module_name else None
     approved = bool(entry.get("status") == "approved" and entry.get("exposed", False)) if isinstance(entry, dict) else False
-    if identity.module_name and _is_core_module_approved(identity.module_name):
+    # An action contract supplies module_name; an external surface cannot claim
+    # a CORE registry credential merely by naming a CORE file.
+    internal_verified = False  # Caller identity is action-supplied, not cryptographically bound.
+    if internal_verified and identity.module_name and _is_core_module_approved(identity.module_name):
         return {
             "subject_id": identity.caller_id,
             "subject_kind": identity.caller_kind,
@@ -464,7 +473,7 @@ def _get_trust_record(identity: CallerIdentity, action_contract: Dict[str, Any])
             "module_name": identity.module_name,
             "approved": True,
         }
-    if approved:
+    if approved and internal_verified:
         return {
             "subject_id": identity.caller_id,
             "subject_kind": identity.caller_kind,
@@ -509,10 +518,10 @@ def _safe_lower(value: Any) -> str:
 
 
 def _normalize_risk_level(value: Any) -> str:
-    v = str(value or RISK_TIER_0).strip().upper()
+    v = str(value or RISK_TIER_4).strip().upper()
     if v in {RISK_TIER_0, RISK_TIER_1, RISK_TIER_2, RISK_TIER_3, RISK_TIER_4}:
         return v
-    return RISK_TIER_0
+    return RISK_TIER_4
 
 
 def _risk_weight(risk_level: str) -> int:
@@ -574,18 +583,8 @@ def _caller_identity(action_contract: Dict[str, Any]) -> CallerIdentity:
 # Rule helpers
 # ---------------------------------------------------------------------------
 def _has_confirmation(action_contract: Dict[str, Any], governance: Dict[str, Any]) -> bool:
-    meta = dict(action_contract.get("metadata") or {})
-    indicators = [
-        action_contract.get("confirmed"),
-        action_contract.get("user_confirmed"),
-        action_contract.get("confirmation_granted"),
-        meta.get("confirmed"),
-        meta.get("user_confirmed"),
-        meta.get("approval_granted"),
-        meta.get("step_up_confirmed"),
-        governance.get("user_confirmed") if isinstance(governance, dict) else None,
-    ]
-    return any(bool(x) for x in indicators)
+    """Legacy gate has no authenticated consent verifier; self-claims cannot pass."""
+    return False
 
 
 def _rollback_present(action_contract: Dict[str, Any]) -> bool:
@@ -1129,22 +1128,23 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    import copy
+    return copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter present; runtime health and integration not independently measured"],
     }
 
 
@@ -1154,7 +1154,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemorySecurityGovernor',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": sml_get_metadata(),
         "health": sml_health(),
     }
 

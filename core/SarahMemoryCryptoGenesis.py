@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryCryptoGenesis.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v9.0.0
-Date: 2026-07-11
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -75,35 +75,34 @@ DECIMALS = 8  # Can divide into 0.00000001 units
 
 # --- Wallet Generator ---
 def create_genesis_wallet():
-    if not os.path.exists("wallet"):
-        os.makedirs("wallet")
-
+    """Create author-only genesis wallet if seed custody is available."""
     if os.path.exists(WALLET_PATH):
         return load_wallet()
-
-    seed_phrase = hashlib.sha256(os.urandom(256)).hexdigest()
-    public_key = hashlib.sha256(seed_phrase.encode()).hexdigest()
-
-    wallet = {
-        "address": public_key[:32],
-        "balance": GENESIS_SUPPLY,
-        "seed": seed_phrase,
-        "timestamp": time.time()
-    }
-
-    with open(WALLET_PATH, 'w') as f:
-        json.dump(wallet, f, indent=4)
-
+    import secrets
+    seed_phrase = secrets.token_hex(32)
+    address = hashlib.sha256(seed_phrase.encode('ascii')).hexdigest()[:32]
+    # No plaintext wallet seed. Creation fails closed without verifiable Vault custody.
     try:
-        _persist_genesis_to_vault(seed_phrase, wallet['address'])
-    except Exception:
-        pass
+        import SarahMemoryVault as _vault
+        if not _vault.add_item('genesis_seed', seed_phrase) or _vault.get_item('genesis_seed') != seed_phrase:
+            raise RuntimeError('secure vault unavailable')
+        if not _vault.add_item('genesis_address', address):
+            raise RuntimeError('secure address custody unavailable')
+    except Exception as exc:
+        raise RuntimeError('Genesis creation refused: secure vault custody required') from exc
+    wallet = {'address':address,'balance':GENESIS_SUPPLY,'timestamp':time.time(),'seed_custody':'SarahMemoryVault'}
+    os.makedirs(os.path.dirname(WALLET_PATH) or '.',exist_ok=True)
+    with os.fdopen(os.open(WALLET_PATH,os.O_WRONLY | os.O_CREAT | os.O_EXCL,0o600),'w',encoding='utf-8') as out:
+        json.dump(wallet,out,indent=4);out.flush();os.fsync(out.fileno())
     return wallet
 
 
 def load_wallet():
-    with open(WALLET_PATH, 'r') as f:
-        return json.load(f)
+    """Read wallet without exposing legacy plaintext private material."""
+    with open(WALLET_PATH,'r',encoding='utf-8') as f:
+        data=json.load(f)
+    if not isinstance(data,dict): raise ValueError('Invalid wallet record')
+    return {k:v for k,v in data.items() if k not in {'seed','private_key','mnemonic'}}
 
 
 # --- Transaction Record Keeper ---
@@ -118,47 +117,31 @@ def init_ledger():
 
 
 def record_transaction(from_addr, to_addr, amount):
-    with open(LEDGER_PATH, 'r') as f:
-        ledger = json.load(f)
-
-    tx = {
-        "from": from_addr,
-        "to": to_addr,
-        "amount": amount,
-        "timestamp": datetime.utcnow().isoformat()
-    }
-
-    ledger["transactions"].append(tx)
-
-    with open(LEDGER_PATH, 'w') as f:
-        json.dump(ledger, f, indent=4)
+    """Legacy unauthenticated transfer journaling is restricted."""
+    return False
 
 
 # --- SRH Token System Manager ---
 def get_balance(address):
-    wallet = load_wallet()
-    if wallet["address"] == address:
-        try:
-            _persist_genesis_to_vault(wallet.get("seed", ""), wallet['address'])
-        except Exception:
-            pass
-        return wallet["balance"]
-    return 0
+    """Read only; never rewrite Vault with a redacted legacy seed."""
+    wallet=load_wallet()
+    return wallet.get('balance', 0) if wallet.get('address') == address else 0
 
 
 def transfer_tokens(to_address, amount):
-    wallet = load_wallet()
-    balance = wallet["balance"]
+    """Legacy settlement is unavailable without atomic ledger authorization.
 
-    if amount > balance:
+    This author-only experimental module does not implement a durable, authenticated
+    two-phase wallet+ledger transaction. Do not claim an executed transfer.
+    """
+    try:
+        from decimal import Decimal
+        units=Decimal(str(amount))
+        if not units.is_finite() or units <= 0 or (units * (10 ** DECIMALS)) % 1:
+            return False
+    except Exception:
         return False
-
-    wallet["balance"] -= amount
-    record_transaction(wallet["address"], to_address, amount)
-
-    with open(WALLET_PATH, 'w') as f:
-        json.dump(wallet, f, indent=4)
-    return True
+    return False
 
 
 if __name__ == '__main__':
@@ -193,22 +176,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML registration confirmed; runtime measurements not performed"],
     }
 
 
@@ -218,7 +201,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryCryptoGenesis',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

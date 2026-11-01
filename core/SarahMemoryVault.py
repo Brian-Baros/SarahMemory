@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryVault.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 """
 
@@ -38,7 +37,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -84,29 +83,40 @@ os.makedirs(config.VAULT_DIR, exist_ok=True)
 # Back-compat Random-Key Vault (existing API preserved)
 # -----------------------------------------------------------------------------
 def generate_vault_key() -> bytes:
-    """Generate and persist a random Fernet key (back-compat behavior)."""
+    """Create a vault key once; never replace a key holding existing data."""
     try:
+        if os.path.lexists(VAULT_KEY_FILE):
+            with open(VAULT_KEY_FILE, 'rb') as f:
+                key = f.read()
+            Fernet(key)
+            return key
+        if os.path.lexists(VAULT_FILE):
+            logger.error('Encrypted vault exists but its key is missing; refusing regeneration')
+            return None
         key = Fernet.generate_key()
-        with open(VAULT_KEY_FILE, 'wb') as f:
+        fd = os.open(VAULT_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'wb') as f:
             f.write(key)
-        logger.info("Vault key generated and saved.")
+            f.flush()
+            os.fsync(f.fileno())
         return key
-    except Exception as e:
-        logger.error(f"Error generating vault key: {e}")
+    except FileExistsError:
+        return load_vault_key()
+    except Exception as exc:
+        logger.error('Vault key creation denied: %s', exc)
         return None
 
 def load_vault_key() -> bytes | None:
-    """Load the persisted random Fernet key; generate if missing."""
+    """Load a valid key; only initialize a genuinely empty vault."""
     try:
-        if not os.path.exists(VAULT_KEY_FILE):
-            logger.warning("Vault key file not found. Generating a new key.")
-            return generate_vault_key()
+        if not os.path.isfile(VAULT_KEY_FILE):
+            return generate_vault_key() if not os.path.lexists(VAULT_FILE) else None
         with open(VAULT_KEY_FILE, 'rb') as f:
             key = f.read()
-        logger.info("Vault key loaded successfully.")
+        Fernet(key)
         return key
-    except Exception as e:
-        logger.error(f"Error loading vault key: {e}")
+    except Exception as exc:
+        logger.error('Vault key unavailable: %s', exc)
         return None
 
 def _fernet_from_random_key() -> Fernet | None:
@@ -136,29 +146,46 @@ def load_vault() -> dict:
         return {}
 
 def save_vault(vault_data: dict) -> bool:
-    """Encrypt and save the random-key vault JSON map."""
+    """Write encrypted data atomically, refusing missing/corrupt key custody."""
     try:
-        fernet = _fernet_from_random_key()
-        if not fernet:
+        if not isinstance(vault_data, dict):
             return False
-        data_str = json.dumps(vault_data)
-        encrypted_data = fernet.encrypt(data_str.encode())
-        with open(VAULT_FILE, 'wb') as f:
-            f.write(encrypted_data)
-        logger.info("Vault data encrypted and saved successfully.")
+        fernet = _fernet_from_random_key()
+        if fernet is None:
+            return False
+        # Existing vault MUST decrypt with the current key before any overwrite.
+        if os.path.lexists(VAULT_FILE):
+            with open(VAULT_FILE, 'rb') as old:
+                fernet.decrypt(old.read())
+        encrypted = fernet.encrypt(json.dumps(vault_data, ensure_ascii=False).encode('utf-8'))
+        import tempfile
+        fd, temp = tempfile.mkstemp(prefix='.vault-', dir=os.path.dirname(VAULT_FILE))
+        try:
+            with os.fdopen(fd, 'wb') as out:
+                out.write(encrypted); out.flush(); os.fsync(out.fileno())
+            os.replace(temp, VAULT_FILE)
+        finally:
+            if os.path.exists(temp): os.unlink(temp)
         return True
-    except Exception as e:
-        logger.error(f"Error saving vault: {e}")
+    except Exception as exc:
+        logger.error('Vault update denied (existing ciphertext preserved): %s', exc)
         return False
 
 def add_item(key: str, value) -> bool:
-    """Add/update a key in the random-key vault map."""
+    """Never silently replace an unreadable existing vault."""
     try:
+        if os.path.lexists(VAULT_FILE) and _fernet_from_random_key() is None:
+            return False
         vault = load_vault()
+        if os.path.lexists(VAULT_FILE) and not vault:
+            # An empty readable vault is valid, but verify decryptability explicitly.
+            fernet = _fernet_from_random_key()
+            if fernet is None: return False
+            with open(VAULT_FILE,'rb') as f: fernet.decrypt(f.read())
         vault[key] = value
         return save_vault(vault)
-    except Exception as e:
-        logger.error(f"Error adding item '{key}' to vault: {e}")
+    except Exception as exc:
+        logger.error('Vault mutation refused: %s',exc)
         return False
 
 def get_item(key: str):
@@ -210,30 +237,27 @@ def _load_or_create_salt() -> bytes:
     return salt
 
 def initialize_secure_config(password: str, seed_data: dict) -> bool:
-    """
-    Initialize the passphrase-based secure configuration.
-    Writes:
-      - VAULT_SALT_FILE (random salt)
-      - VAULT_CONFIG_FILE (Fernet token of JSON seed_data)
-    NOTE: We NEVER persist the derived key.
-    """
+    """Initialise once; missing salt and existing ciphertext must fail closed."""
     try:
-        salt = _load_or_create_salt()
-        key = _derive_key_from_password(password, salt)
-        fernet = Fernet(key)
-        token = fernet.encrypt(json.dumps(seed_data).encode('utf-8')).decode('utf-8')
-        payload = {
-            "created": datetime.utcnow().isoformat(),
-            "kdf": "PBKDF2HMAC-SHA256",
-            "kdf_iterations": KDF_ITERATIONS,
-            "data": token,
-        }
-        with open(VAULT_CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, indent=2)
-        logger.info("[Vault] Secure config initialized.")
+        if not isinstance(password, str) or len(password) < 1 or not isinstance(seed_data, dict):
+            return False
+        if os.path.lexists(VAULT_CONFIG_FILE):
+            # Never overwrite an existing passphrase vault, even with the same password.
+            return False
+        if os.path.lexists(VAULT_SALT_FILE):
+            with open(VAULT_SALT_FILE, 'rb') as salt_file:
+                salt = salt_file.read()
+            if len(salt) != 16: return False
+        else:
+            salt = _load_or_create_salt()
+        if len(salt) != 16: return False
+        token = Fernet(_derive_key_from_password(password, salt)).encrypt(json.dumps(seed_data).encode('utf-8')).decode('utf-8')
+        payload = {'created':datetime.utcnow().isoformat(), 'kdf':'PBKDF2HMAC-SHA256', 'kdf_iterations':KDF_ITERATIONS, 'data':token}
+        with os.fdopen(os.open(VAULT_CONFIG_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600),'w',encoding='utf-8') as out:
+            json.dump(payload,out,indent=2);out.flush();os.fsync(out.fileno())
         return True
-    except Exception as e:
-        logger.error(f"[Vault] initialize_secure_config error: {e}")
+    except Exception as exc:
+        logger.error('Secure config initialization denied: %s',exc)
         return False
 
 def unlock_vault_config(password: str) -> dict | None:
@@ -358,22 +382,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML registration confirmed; runtime measurements not performed"],
     }
 
 
@@ -383,7 +407,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryVault',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

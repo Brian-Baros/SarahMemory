@@ -1,11 +1,20 @@
 """--==The SarahMemory Project==--
 File: SarahMemorySMUGCC.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-09-16
-Author: Brian Lee Baros / SOFTDEV0 LLC
-
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
+
 SarahMemory Universal Governed Cognitive Contract (SMUGCC)
 
 SMUGCC is a public, vendor-neutral cognitive ABI for external systems that want
@@ -641,6 +650,20 @@ def validate_smugcc_envelope(envelope: Mapping[str, Any]) -> Dict[str, Any]:
     payload = envelope.get("payload") if isinstance(envelope.get("payload"), Mapping) else {}
     return_contract = envelope.get("return_contract") if isinstance(envelope.get("return_contract"), Mapping) else {}
 
+    boolean_sections = {
+        "authority": ("execution_authority", "requires_user_approval"),
+        "resources": ("filesystem_allowed", "network_allowed", "memory_allowed", "device_allowed", "shell_allowed"),
+        "passport": ("required", "one_time_use", "return_nonce_required"),
+        "governance": ("safety_required", "security_required", "assurance_required", "compare_required", "compass_required", "operatorcore_required", "ledger_required"),
+        "return_contract": ("evidence_required", "signature_required", "hash_required", "receipt_required"),
+    }
+    for section_name, keys in boolean_sections.items():
+        section = envelope.get(section_name)
+        if isinstance(section, Mapping):
+            for field in keys:
+                if field not in section or not isinstance(section[field], bool):
+                    _add_error(errors, "boolean_type_required", f"{section_name}.{field}", "Boolean authority fields must be explicit JSON booleans.", MODULE_NAME)
+
     for field in ("subject_id", "provider", "origin"):
         if not _text(identity.get(field)):
             _add_error(errors, f"missing_identity_{field}", f"identity.{field}", f"Identity requires {field}.", "SarahMemoryTrustRegistry")
@@ -651,9 +674,9 @@ def validate_smugcc_envelope(envelope: Mapping[str, Any]) -> Dict[str, Any]:
         if not _text(mission.get(field)):
             _add_error(errors, f"missing_mission_{field}", f"mission.{field}", f"Mission requires {field}.", "SarahMemoryTerminal")
 
-    if bool(authority.get("execution_authority")):
+    if authority.get("execution_authority") is not False:
         _add_error(errors, "execution_authority_self_grant_denied", "authority.execution_authority", "SMUGCC cannot self-grant execution authority.", "SarahMemoryOperatorCore")
-    if not bool(authority.get("requires_user_approval", True)):
+    if authority.get("requires_user_approval") is not True:
         _add_error(errors, "user_approval_required", "authority.requires_user_approval", "External contracts require user approval by default.", "SarahMemoryOperatorCore")
 
     allowed_sources = [str(x).strip() for x in _as_list(resources.get("allowed_sources"))]
@@ -668,9 +691,9 @@ def validate_smugcc_envelope(envelope: Mapping[str, Any]) -> Dict[str, Any]:
         if method not in {"GET", "HEAD", "OPTIONS"}:
             _add_error(errors, "mutating_method_denied_by_default", f"resources.allowed_methods[{idx}]", "SMUGCC defaults to read-only methods.", "SarahMemorySecurityGovernor")
 
-    if bool(resources.get("shell_allowed")):
+    if resources.get("shell_allowed") is not False:
         _add_error(errors, "shell_authority_denied_by_default", "resources.shell_allowed", "Shell access is denied by default.", "SarahMemorySecurityGovernor")
-    if bool(resources.get("filesystem_allowed")):
+    if resources.get("filesystem_allowed") is not False:
         _add_error(errors, "filesystem_write_authority_denied_by_default", "resources.filesystem_allowed", "Filesystem authority is denied by default.", "SarahMemorySecurityGovernor")
     if bool(resources.get("memory_allowed")) and not bool(governance.get("memory_governed")):
         _add_error(errors, "memory_authority_requires_governance", "resources.memory_allowed", "Memory access requires explicit existing governance.", "SarahMemoryTrustRegistry")
@@ -697,14 +720,14 @@ def validate_smugcc_envelope(envelope: Mapping[str, Any]) -> Dict[str, Any]:
         "ledger_required": "SarahMemoryLedger",
     }
     for key, owner in governance_required.items():
-        if not bool(governance.get(key, True)):
+        if governance.get(key) is not True:
             _add_error(errors, f"governance_{key}_required", f"governance.{key}", f"{owner} cannot be bypassed.", owner)
 
-    if not bool(return_contract.get("evidence_required", True)):
+    if return_contract.get("evidence_required") is not True:
         _add_error(errors, "return_evidence_required", "return_contract.evidence_required", "Return contracts require evidence.", "SarahMemoryCompare")
-    if not bool(return_contract.get("hash_required", True)):
+    if return_contract.get("hash_required") is not True:
         _add_error(errors, "return_hash_required", "return_contract.hash_required", "Return contracts require hashes.", "SarahMemoryCompare")
-    if not bool(return_contract.get("receipt_required", True)):
+    if return_contract.get("receipt_required") is not True:
         _add_error(errors, "return_receipt_required", "return_contract.receipt_required", "Return contracts require ledger receipts.", "SarahMemoryLedger")
 
     if payload.get("vendor_payload_hash") and not re.fullmatch(r"[A-Fa-f0-9]{64}", _text(payload.get("vendor_payload_hash"))):

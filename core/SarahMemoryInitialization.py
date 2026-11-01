@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryInitialization.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,8 +13,8 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
+
 SarahMemory v9.0 - Initialization & System Checks
 Bootup Sequence with Enhanced Status Reporting
 ===============================================================================
@@ -41,7 +41,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -251,7 +251,7 @@ def _boot_dataset_embedding_mode() -> str:
         return "background"
     if mode in ("eager", "boot", "startup", "true", "1"):
         return "eager"
-    return "smart"
+    return "manual"
 
 
 def _background_thread_alive(task_name: str) -> bool:
@@ -313,7 +313,10 @@ def run_initial_checks():
     try:
         if callable(start_arile_runtime):
             arile_status = start_arile_runtime(reason="initialization.run_initial_checks")
-            print_status_line("ARILE Reality Watchdog", "✓", "Adaptive Reality Intelligence Layer online")
+            if isinstance(arile_status, dict) and arile_status.get("ok") is True:
+                print_status_line("ARILE Reality Watchdog", "✓", "Watchdog readiness confirmed")
+            else:
+                print_status_line("ARILE Reality Watchdog", "⚠", "Startup returned without verified readiness")
             logger.info(f"[v9.0][ARILE] ARILE runtime online: {arile_status}")
         if callable(verify_arile_source_integrity):
             integrity = verify_arile_source_integrity()
@@ -389,12 +392,17 @@ def run_initial_checks():
             else:
                 print_status_line("Local Data Runtime", "⚠", "readiness function unavailable")
 
-            if _cfg_bool("BOOT_RUN_VECTORING_ON_STARTUP", True):
+            if _cfg_bool("BOOT_RUN_VECTORING_ON_STARTUP", False):
                 if callable(run_vectoring_with_status_bars):
                     print_status_line("Vector Database", "⏳", "Checking datasets/indexes without forced rebuild...")
-                    run_vectoring_with_status_bars(force=_cfg_bool("BOOT_FORCE_VECTOR_REBUILD", False))
-                    print_status_line("Vector Database", "✓", "Vector check completed")
-                    logger.info("[v9.0][VECTOR] Dataset vector check completed")
+                    vector_result = run_vectoring_with_status_bars(force=_cfg_bool("BOOT_FORCE_VECTOR_REBUILD", False))
+                    vector_ok = isinstance(vector_result, dict) and vector_result.get("ok") is True
+                    if vector_ok:
+                        print_status_line("Vector Database", "✓", "Vector check completed")
+                        logger.info("[v9.0][VECTOR] Dataset vector check completed")
+                    else:
+                        print_status_line("Vector Database", "⚠", "Vector check not independently verified")
+                        logger.warning("[v9.0][VECTOR] Unverified vector result: %s", vector_result)
                 else:
                     print_status_line("Vector Database", "⚠", "Vectoring function unavailable")
                     logger.warning("[v9.0][VECTOR] run_vectoring_with_status_bars not available")
@@ -495,6 +503,7 @@ def run_initial_checks():
 
         dirs_created = 0
         dirs_verified = 0
+        dirs_failed = 0
         
         for directory in required_dirs:
             try:
@@ -506,10 +515,14 @@ def run_initial_checks():
                     logger.info(f"[v9.0][DIR] Created: {directory}")
             
             except Exception as mkerr:
+                dirs_failed += 1
                 logger.error(f"[v9.0][DIR] Failed to create '{directory}': {mkerr}")
 
-        print_status_line("Directory Verification", "✓", 
-                         f"{dirs_verified} verified, {dirs_created} created")
+        print_status_line("Directory Verification", "✗" if dirs_failed else "✓",
+                         f"{dirs_verified} verified, {dirs_created} created, {dirs_failed} failed")
+        if dirs_failed:
+            logger.error("Critical directory preflight failed; refusing successful boot status")
+            return False
         logger.info(f"[v9.0][DIR] {dirs_verified} directories verified, {dirs_created} created")
 
         # =====================================================================
@@ -1274,7 +1287,7 @@ if __name__ == "__main__":
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryInitialization',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Infrastructure',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -1292,22 +1305,16 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Report only observed SML registration state; no fabricated performance scores."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "unverified_runtime", "availability": None,
+        "integrity": None, "performance": None, "reliability": None,
+        "confidence": 0.0, "latency_ms": None, "stability": None,
+        "compatibility": None, "notes": ["SML registration present; runtime health not measured"],
     }
 
 
@@ -1317,7 +1324,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryInitialization',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

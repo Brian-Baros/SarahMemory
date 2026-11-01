@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryBlenderAvatarBootstrap.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,6 +13,7 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 
 =========================================================
 Creates a fully 3D model representation for interactive visual use.
@@ -71,11 +72,23 @@ import textwrap
 import time
 import threading
 import queue
+import hashlib
+import copy
+import tempfile
+import uuid
+import stat
+import struct
+import contextlib
+import signal
 from typing import Dict, Optional, Tuple
 
 
 MODULE_NAME = "SarahMemoryBlenderAvatarBootstrap"
-MODULE_VERSION = "9.0.15-goldstandard-embodied-entity"
+MODULE_VERSION = "9.1.0a"
+_VALID_QUALITIES = frozenset(("preview", "balanced", "high", "ultra", "cinematic_2m", "goldstandard_entity"))
+_RUNTIME_LOCK = threading.local()
+_BUILD_METRICS = {"attempts": 0, "verified": 0, "failures": 0, "last_error": "", "last_result": "NOT_VERIFIED"}
+_METRICS_LOCK = threading.RLock()
 
 
 def _normalize_base_dir(candidate: str) -> str:
@@ -164,139 +177,358 @@ def _default_blender_path() -> str:
 
 
 def _resolve_blender_executable(blender_path: str) -> Tuple[str, str]:
-    """
-    Resolve a real Blender binary.
-
-    Important Windows behavior:
-    - blender-launcher.exe may spawn another process and keep this bootstrap waiting.
-    - background CLI builds must use blender.exe directly whenever possible.
-
-    Returns:
-        (resolved_path, warning_message)
-    """
+    """Resolve a Blender executable with bounded, non-recursive discovery."""
     path = os.path.abspath(os.path.expanduser(blender_path or _default_blender_path()))
-    base = os.path.basename(path).lower()
-    if base == "blender-launcher.exe":
-        same_dir = os.path.join(os.path.dirname(path), "blender.exe")
-        if os.path.exists(same_dir):
-            return os.path.abspath(same_dir), (
-                "blender-launcher.exe was replaced with sibling blender.exe for background CLI execution."
-            )
-        parent = os.path.dirname(os.path.dirname(path))
-        for root, _dirs, files in os.walk(parent):
-            if "blender.exe" in [f.lower() for f in files]:
-                candidate = os.path.join(root, "blender.exe")
-                if os.path.exists(candidate):
-                    return os.path.abspath(candidate), (
-                        "blender-launcher.exe was replaced with discovered blender.exe for background CLI execution."
-                    )
-        return path, (
-            "WARNING: blender-launcher.exe was supplied, but blender.exe was not found. "
-            "This may hang. Install or pass the real blender.exe path."
-        )
+    if os.path.basename(path).lower() == "blender-launcher.exe":
+        sibling = os.path.join(os.path.dirname(path), "blender.exe")
+        if os.path.isfile(sibling):
+            return sibling, "Resolved blender-launcher.exe to adjacent blender.exe"
+        return path, "Blender launcher refused; supply a real blender.exe"
     return path, ""
 
 
+def _bound_int(value, default: int, lower: int, upper: int) -> int:
+    try:
+        n = int(value)
+    except (ValueError, TypeError, OverflowError):
+        n = default
+    return min(upper, max(lower, n))
+
+
+def _record_build(ok: bool, reason: str = "") -> None:
+    with _METRICS_LOCK:
+        _BUILD_METRICS["attempts"] += 1
+        _BUILD_METRICS["verified"] += int(ok)
+        _BUILD_METRICS["failures"] += int(not ok)
+        _BUILD_METRICS["last_result"] = "VERIFIED_ASSET" if ok else "FAILED"
+        _BUILD_METRICS["last_error"] = str(reason)[:240]
+
+
+def _file_hash(path: str) -> str:
+    sha = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
+
+
+def _approved_child(path: str, root: str, *, allow_missing: bool = True) -> str:
+    root_real = os.path.realpath(root)
+    absolute = os.path.abspath(path)
+    if not allow_missing and not os.path.isfile(absolute):
+        raise ValueError("required asset is missing")
+    if os.path.commonpath([root_real, os.path.realpath(absolute)]) != root_real:
+        raise ValueError("asset escapes authorized output directory")
+    if os.path.islink(absolute):
+        raise ValueError("symlinked asset path is forbidden")
+    return absolute
+
+
+def _validate_reference_image(path: str) -> Tuple[bool, str]:
+    """Bounded content check; do not decode image data unless Pillow is present."""
+    if not path or not os.path.isfile(path) or os.path.islink(path):
+        return False, "reference_missing_or_symlink"
+    try:
+        limit = _bound_int(os.getenv("SARAH_BOOTSTRAP_MAX_REFERENCE_BYTES"), 40 * 1024 * 1024, 1024, 128 * 1024 * 1024)
+        if os.path.getsize(path) <= 0 or os.path.getsize(path) > limit:
+            return False, "reference_size_out_of_bounds"
+        with open(path, "rb") as fh:
+            magic = fh.read(12)
+        if not (magic.startswith(b"\x89PNG\r\n\x1a\n") or magic.startswith(b"\xff\xd8\xff") or magic[:4] in (b"RIFF", b"GIF8")):
+            return False, "unsupported_reference_signature"
+        from PIL import Image
+        with Image.open(path) as img:
+            w, h = img.size
+            if w <= 0 or h <= 0 or w > 8192 or h > 8192 or w * h > 24_000_000:
+                return False, "reference_pixel_budget_exceeded"
+            img.verify()
+        return True, "verified_image"
+    except Exception as exc:
+        return False, "reference_not_verified:" + type(exc).__name__
+
+
+def _blender_binary_plausible(path: str) -> bool:
+    if not os.path.isfile(path) or os.path.islink(path):
+        return False
+    if os.path.basename(path).lower() not in {"blender", "blender.exe"}:
+        return False
+    try:
+        if os.name != "nt" and not os.access(path, os.X_OK):
+            return False
+        with open(path, "rb") as fh:
+            magic = fh.read(4)
+        return magic.startswith((b"MZ", b"\x7fELF", b"#!"))
+    except OSError:
+        return False
+
+
+def _read_validated_glb(path: str) -> Dict[str, object]:
+    """Reuse existing AvatarBuilder validator; fail closed if unavailable."""
+    try:
+        from SarahMemoryAvatarBuilder import _read_glb_header
+        proof = _read_glb_header(path)
+        return dict(proof) if isinstance(proof, dict) else {"error": "validator_invalid_response"}
+    except Exception as exc:
+        return {"error": "AvatarBuilder_validator_unavailable:" + type(exc).__name__, "valid_glb_structure": False, "has_mesh": False}
+
+
+def _glb_scene_profile(path: str) -> Dict[str, object]:
+    """Bounded JSON glTF scene inspection; does not claim actual GPU behavior."""
+    with open(path, "rb") as fh:
+        head = fh.read(20)
+        if len(head) < 20 or head[:4] != b"glTF":
+            raise ValueError("not_glb")
+        chunk_size, chunk_type = struct.unpack_from("<I4s", head, 12)
+        if chunk_type != b"JSON" or chunk_size > 16 * 1024 * 1024:
+            raise ValueError("invalid_json_chunk")
+        raw = fh.read(chunk_size)
+    data = json.loads(raw.decode("utf-8").rstrip("\x00 \t\r\n"))
+    if not isinstance(data, dict):
+        raise ValueError("glTF document not an object")
+    nodes = data.get("nodes") if isinstance(data.get("nodes"), list) else []
+    accessors = data.get("accessors") if isinstance(data.get("accessors"), list) else []
+    skins = data.get("skins") if isinstance(data.get("skins"), list) else []
+    animations = data.get("animations") if isinstance(data.get("animations"), list) else []
+    valid_skins = sum(1 for skin in skins if isinstance(skin, dict) and isinstance(skin.get("joints"), list)
+        and skin["joints"] and all(type(j) is int and 0 <= j < len(nodes) for j in skin["joints"]))
+    valid_animations = 0
+    for action in animations:
+        if not isinstance(action, dict):
+            continue
+        channels, samplers = action.get("channels"), action.get("samplers")
+        if not isinstance(channels, list) or not channels or not isinstance(samplers, list) or not samplers:
+            continue
+        if any(isinstance(ch, dict) and type(ch.get("sampler")) is int and 0 <= ch["sampler"] < len(samplers)
+            and isinstance(ch.get("target"), dict) and type(ch["target"].get("node")) is int
+            and 0 <= ch["target"]["node"] < len(nodes)
+            and ch["target"].get("path") in ("translation", "rotation", "scale", "weights")
+            and isinstance(samplers[ch["sampler"]], dict)
+            and type(samplers[ch["sampler"]].get("input")) is int
+            and 0 <= samplers[ch["sampler"]]["input"] < len(accessors)
+            and type(samplers[ch["sampler"]].get("output")) is int
+            and 0 <= samplers[ch["sampler"]]["output"] < len(accessors) for ch in channels):
+            valid_animations += 1
+    return {"skins": valid_skins, "animations": valid_animations, "animation_definitions": len(animations),
+        "nodes": len(nodes), "meshes": len(data.get("meshes") or []),
+        "morph_targets": sum(len(p.get("targets") or []) for m in (data.get("meshes") or []) if isinstance(m, dict) for p in (m.get("primitives") or []) if isinstance(p, dict))}
+
+
+def _authorize_build(blender_path: str, target: str, quality: str, consented: bool, opted_in: bool) -> Dict[str, object]:
+    if not (consented and opted_in):
+        raise PermissionError("explicit local build opt-in and user consent are required")
+    try:
+        from SarahMemoryOperatorCore import authorize_external_domain_action
+        result = authorize_external_domain_action(
+            "Build a verified visual-only SarahMemory Blender avatar",
+            origin=MODULE_NAME,
+            proposed_action={
+                "action_type": "avatar_asset_build", "capability_name": "avatar.asset.build",
+                "target": target, "target_ref": target, "blender_binary": blender_path,
+                "required_permissions": ["FilesystemWrite", "ProcessExecute"],
+                "risk_level": "TIER_2_BOUNDED_LOCAL_OPERATION",
+                "verification_checks": [{"name": "glb_structure_and_rig", "required": True}],
+                "expected_result": "fresh structurally valid rigged GLB promoted with rollback",
+                "preconditions": ["user consent", "bounded Blender process", "isolated staging"],
+                "rollback_plan": [{"name": "preserve_previous_assets"}],
+                "touches_filesystem": True, "touches_network": False, "apply": True,
+            },
+            meta={"local_only": True, "execution_authority": False, "quality": quality},
+            user_consented=True,
+        )
+    except Exception as exc:
+        raise PermissionError("OperatorCore authorization unavailable") from exc
+    if not isinstance(result, dict) or result.get("decision") != "ALLOW" or result.get("allow") is not True or result.get("domain_execution_authorized") is not True:
+        raise PermissionError("OperatorCore did not authorize Blender build")
+    return result
+
+
+def _record_outcome(review: Dict[str, object], ok: bool, error: str = "", artifact: str = "") -> None:
+    try:
+        from SarahMemoryOperatorCore import record_external_domain_action_result
+        record_external_domain_action_result(review, {"ok": bool(ok), "artifact": os.path.basename(artifact), "error": str(error)[:200], "execution_authority": False}, verified=bool(ok), origin=MODULE_NAME)
+    except Exception:
+        print("[WARN] OperatorCore result audit receipt unavailable; completion is not governance-certified")
+
+
 def _terminate_process_tree(proc: subprocess.Popen) -> None:
-    """Terminate Blender and any child process without leaving a background build alive."""
     try:
         if os.name == "nt":
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
         else:
-            proc.kill()
+            os.killpg(proc.pid, signal.SIGKILL)
     except Exception:
         try:
             proc.kill()
         except Exception:
             pass
+    try:
+        proc.wait(timeout=8)
+    except Exception:
+        pass
 
 
 def _run_streaming_blender(cmd, timeout_seconds: int, log_path: str) -> int:
-    """
-    Run Blender with live console output and a hard timeout.
-
-    The old implementation used subprocess.run(capture_output=True), which made a
-    long Blender job look frozen for hours and provided no timeout.  This version
-    streams Blender output to the terminal and to a build log.
-    """
-    timeout_seconds = int(timeout_seconds or 0)
-    started = time.monotonic()
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    creationflags = 0
-    if os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
-
-    with open(log_path, "w", encoding="utf-8", errors="replace") as log_fh:
-        log_fh.write("SarahMemory Blender Avatar Bootstrap Build Log\n")
-        log_fh.write("Command: " + " ".join(cmd) + "\n")
-        log_fh.write("TimeoutSeconds: " + str(timeout_seconds) + "\n\n")
-        log_fh.flush()
-
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            universal_newlines=True,
-            creationflags=creationflags,
-        )
-
-        output_queue = queue.Queue()
-
-        def _reader() -> None:
+    """Authorized, bounded Blender worker; direct unapproved invocation fails closed."""
+    if not getattr(_RUNTIME_LOCK, "authorized", False):
+        raise PermissionError("Blender execution requires approved local build context")
+    seconds = _bound_int(timeout_seconds, 7200, 1, 14400)
+    max_bytes = _bound_int(os.getenv("SARAH_BOOTSTRAP_MAX_LOG_BYTES"), 2 * 1024 * 1024, 8192, 16 * 1024 * 1024)
+    max_line = 4096
+    reader_done = threading.Event()
+    lines: queue.Queue = queue.Queue(maxsize=256)
+    dropped = [0]
+    os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
+    proc = None
+    written = 0
+    console_bytes = 0
+    start = time.monotonic()
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                errors="replace", bufsize=1,
+                                creationflags=(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0),
+                                start_new_session=(os.name != "nt"))
+        def read_lines():
             try:
                 assert proc.stdout is not None
-                for line in proc.stdout:
-                    output_queue.put(line)
-            except Exception as exc:
-                output_queue.put(f"[SarahMemoryBlenderBootstrap] output reader stopped: {exc}\n")
-
-        reader = threading.Thread(target=_reader, daemon=True)
-        reader.start()
-
-        last_heartbeat = started
-        while proc.poll() is None:
-            try:
-                line = output_queue.get(timeout=0.5)
-                print(line, end="")
-                log_fh.write(line)
-                log_fh.flush()
-            except queue.Empty:
-                pass
-
-            now = time.monotonic()
-            if now - last_heartbeat >= 30:
-                elapsed = int(now - started)
-                msg = f"[INFO] Blender still running... elapsed={elapsed}s timeout={timeout_seconds or 'disabled'}s\n"
-                print(msg, end="")
-                log_fh.write(msg)
-                log_fh.flush()
-                last_heartbeat = now
-
-            if timeout_seconds > 0 and (now - started) > timeout_seconds:
-                msg = f"[ERROR] Blender build timeout after {timeout_seconds} seconds. Terminating process tree.\n"
-                print(msg, end="")
-                log_fh.write(msg)
-                log_fh.flush()
-                _terminate_process_tree(proc)
-                return 124
-
-        # Drain any buffered output.
-        while True:
-            try:
-                line = output_queue.get_nowait()
-            except queue.Empty:
-                break
-            print(line, end="")
-            log_fh.write(line)
-
+                while True:
+                    line = proc.stdout.readline(max_line)
+                    if not line:
+                        break
+                    try:
+                        lines.put_nowait(line[:max_line])
+                    except queue.Full:
+                        dropped[0] += 1
+            finally:
+                reader_done.set()
+        threading.Thread(target=read_lines, daemon=True).start()
+        with open(log_path, "w", encoding="utf-8") as log:
+            while proc.poll() is None or not reader_done.is_set() or not lines.empty():
+                if time.monotonic() - start > seconds:
+                    _terminate_process_tree(proc)
+                    log.write("[ERROR] Blender build exceeded bounded timeout\n")
+                    return 124
+                try:
+                    line = lines.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                data = line.encode("utf-8", errors="replace")
+                if written + len(data) <= max_bytes:
+                    log.write(line)
+                    written += len(data)
+                    if console_bytes + len(data) <= 32768:
+                        print(line, end="")
+                        console_bytes += len(data)
+                else:
+                    dropped[0] += 1
+            if dropped[0]:
+                log.write(f"\n[WARN] Bounded output: {dropped[0]} log fragments omitted\n")
+            if written > console_bytes:
+                print("[INFO] Further Blender console output retained in bounded build log")
         return int(proc.returncode or 0)
+    finally:
+        if proc is not None and proc.poll() is None:
+            _terminate_process_tree(proc)
+
+
+@contextlib.contextmanager
+def _exclusive_build_lock(root: str):
+    """Cross-platform advisory filesystem lock; no wait and no scan."""
+    path = os.path.join(root, ".SarahMemoryAvatar_RigBootstrap.lock")
+    with open(path, "a+b") as fh:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(0)
+            if os.path.getsize(path) == 0:
+                fh.write(b"0")
+                fh.flush()
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            try:
+                yield
+            finally:
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def _promote_build(stage: str, outdir: str, *, include_fbx: bool = False, include_preview: bool = False, reference_sources: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Validate new staged outputs before committing any active asset."""
+    stem = "SarahMemoryAvatar_RigBootstrap"
+    names = [stem + ".glb", stem + ".blend", stem + ".json"]
+    if include_fbx:
+        names.append(stem + ".fbx")
+    if include_preview:
+        names.append(stem + "_preview.png")
+    for name in names:
+        source = _approved_child(os.path.join(stage, name), stage, allow_missing=False)
+        if not os.path.isfile(source) or os.path.getsize(source) <= 0:
+            raise ValueError("missing new build artifact: " + name)
+        _approved_child(os.path.join(outdir, name), outdir)
+    proof = _read_validated_glb(os.path.join(stage, stem + ".glb"))
+    if proof.get("valid_glb_structure") is not True or proof.get("has_mesh") is not True:
+        raise ValueError("new GLB failed AvatarBuilder structural validation")
+    profile = _glb_scene_profile(os.path.join(stage, stem + ".glb"))
+    if profile["skins"] < 1 or profile["animations"] < 1:
+        raise ValueError("GLB missing skinned rig or usable animation definitions")
+    with open(os.path.join(stage, stem + ".json"), "r", encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    if not isinstance(manifest, dict) or manifest.get("ok") is not True or not manifest.get("glb"):
+        raise ValueError("Blender manifest did not certify export success")
+    if include_preview:
+        with open(os.path.join(stage, stem + "_preview.png"), "rb") as fh:
+            if fh.read(8) != b"\x89PNG\r\n\x1a\n":
+                raise ValueError("preview output invalid")
+    evidence = {name: {"sha256": _file_hash(os.path.join(stage, name)), "bytes": os.path.getsize(os.path.join(stage, name))} for name in names if name.endswith((".glb", ".blend", ".fbx", ".png"))}
+    for k, name in (("glb", stem + ".glb"), ("blend", stem + ".blend"), ("fbx", stem + ".fbx")):
+        manifest[k] = os.path.join(outdir, name) if name in names else ""
+    if isinstance(manifest.get("avatar_panel_contract"), dict):
+        manifest["avatar_panel_contract"]["primary_runtime_asset"] = os.path.join(outdir, stem + ".glb")
+    if reference_sources:
+        for role in ("front", "side", "back", "blueprint"):
+            manifest[role + "_reference"] = str(reference_sources.get(role) or "")
+    manifest["version"] = MODULE_VERSION
+    manifest["ok"] = True
+    manifest["verified_glb_structure"] = True
+    manifest["runtime_asset_measured_profile"] = profile
+    manifest["artifact_evidence"] = evidence
+    manifest["validation_boundary"] = "GLB structural, rig and animation evidence verified; Blender UI/WebGL and physics not tested"
+    manifest_temp = os.path.join(stage, stem + ".json")
+    with open(manifest_temp, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2, allow_nan=False)
+    backups = {}
+    promoted = []
+    rollback_limit = _bound_int(os.getenv("SARAH_BOOTSTRAP_MAX_ROLLBACKS"), 3, 1, 20)
+    for name in names:
+        dest = os.path.join(outdir, name)
+        if os.path.lexists(dest):
+            prior = [p for p in os.listdir(outdir) if p.startswith(name + ".rollback.")]
+            if len(prior) >= rollback_limit:
+                raise RuntimeError("rollback budget exhausted for " + name)
+    try:
+        for name in names:
+            dest = os.path.join(outdir, name)
+            if os.path.lexists(dest):
+                backup = dest + ".rollback." + uuid.uuid4().hex[:12]
+                os.replace(dest, backup)
+                backups[name] = backup
+            os.replace(os.path.join(stage, name), dest)
+            promoted.append(name)
+    except BaseException:
+        for name in reversed(promoted):
+            dest = os.path.join(outdir, name)
+            if os.path.lexists(dest):
+                os.replace(dest, os.path.join(stage, name))
+        for name, backup in backups.items():
+            if os.path.lexists(backup):
+                os.replace(backup, os.path.join(outdir, name))
+        raise
+    return {"glb": os.path.join(outdir, stem + ".glb"), "backup_count": str(len(backups)), "sha256": evidence[stem + ".glb"]["sha256"]}
 
 
 def _resolve_candidate(*paths: str) -> str:
@@ -394,6 +626,7 @@ HEIGHT_METERS = 1.68
 QUALITY = __QUALITY__
 EXPORT_FBX_ENABLED = __EXPORT_FBX_ENABLED__
 PREVIEW_RENDER_ENABLED = __PREVIEW_RENDER_ENABLED__
+PREVIEW_PATH = os.path.splitext(OUT_GLB)[0] + "_preview.png"
 
 # SarahMemory Avatar Organ runtime doctrine:
 # - Blender is the asset forge, not the live runtime.
@@ -741,6 +974,12 @@ def create_reference_image(name, image_path, location=(0.0, 0.0, 0.0), rotation=
         log(f"Reference missing: {image_path}")
         return None
     img = bpy.data.images.load(image_path, check_existing=True)
+    # Reference normalization lives in isolated build staging. Pack these images
+    # into the authoring .blend so rollback-safe cleanup cannot break the scene.
+    try:
+        img.pack()
+    except Exception as exc:
+        raise RuntimeError('Could not pack authoring reference image') from exc
     bpy.ops.object.empty_add(type='IMAGE', location=location, rotation=rotation)
     obj = bpy.context.active_object
     obj.name = name
@@ -2447,6 +2686,8 @@ def configure_rig_controls(arm):
     arm['CTRL_Smile'] = 0.0
     arm['CTRL_Frown'] = 0.0
     arm['CTRL_BrowsUp'] = 0.0
+    for key in ('CTRL_BlinkBoth', 'CTRL_Squint_L', 'CTRL_Squint_R', 'CTRL_MouthWide', 'CTRL_MouthNarrow'):
+        arm[key] = 0.0
 
     for prop_name, description in (
         ('CTRL_Blink_L', 'Left eyelid blink'),
@@ -2455,6 +2696,11 @@ def configure_rig_controls(arm):
         ('CTRL_Smile', 'Smile driver'),
         ('CTRL_Frown', 'Frown driver'),
         ('CTRL_BrowsUp', 'Brows up driver'),
+        ('CTRL_BlinkBoth', 'Both eyelids blink'),
+        ('CTRL_Squint_L', 'Left eye squint'),
+        ('CTRL_Squint_R', 'Right eye squint'),
+        ('CTRL_MouthWide', 'Widen mouth'),
+        ('CTRL_MouthNarrow', 'Narrow mouth'),
     ):
         try:
             ui = arm.id_properties_ui(prop_name)
@@ -2693,6 +2939,7 @@ def create_demo_action(arm):
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.mode_set(mode='POSE')
     action = bpy.data.actions.new(name='Sarah_Avatar_Demo')
+    action.use_fake_user = True
     arm.animation_data_create()
     arm.animation_data.action = action
 
@@ -2827,6 +3074,7 @@ def create_goldstandard_entity_actions(arm):
 
         def new_action(name):
             act = bpy.data.actions.new(name=name)
+            act.use_fake_user = True
             arm.animation_data_create()
             arm.animation_data.action = act
             created.append(act)
@@ -3142,7 +3390,7 @@ def save_and_export(all_objects, rig_obj, shape_keys):
         action_names = []
 
     manifest = {
-        'ok': True,
+        'ok': bool(glb_ok and os.path.isfile(OUT_GLB) and os.path.getsize(OUT_GLB) > 20),
         'module': 'SarahMemoryBlenderAvatarBootstrap',
         'version': '9.0.15-goldstandard-embodied-entity',
         'quality': QUALITY,
@@ -3187,8 +3435,9 @@ def save_and_export(all_objects, rig_obj, shape_keys):
         'runtime_export_selected_objects': selected_runtime_names,
         'appearance_slot_contract': _appearance_slot_contract(),
         'blend': OUT_BLEND,
-        'glb': OUT_GLB if glb_ok else '',
-        'fbx': OUT_FBX if fbx_ok else '',
+        'glb': OUT_GLB if glb_ok and os.path.isfile(OUT_GLB) else '',
+        'fbx': OUT_FBX if fbx_ok and os.path.isfile(OUT_FBX) else '',
+        'preview': PREVIEW_PATH if PREVIEW_RENDER_ENABLED and os.path.isfile(PREVIEW_PATH) else '',
         'front_reference': FRONT_IMAGE if os.path.isfile(FRONT_IMAGE) else '',
         'side_reference': SIDE_IMAGE if os.path.isfile(SIDE_IMAGE) else '',
         'back_reference': BACK_IMAGE if os.path.isfile(BACK_IMAGE) else '',
@@ -3231,6 +3480,21 @@ def save_and_export(all_objects, rig_obj, shape_keys):
         },
     }
 
+    if PREVIEW_RENDER_ENABLED:
+        try:
+            bpy.context.scene.render.resolution_x = 1024
+            bpy.context.scene.render.resolution_y = 1024
+            bpy.context.scene.render.filepath = PREVIEW_PATH
+            bpy.context.scene.render.image_settings.file_format = 'PNG'
+            if hasattr(bpy.context.scene, 'cycles'):
+                bpy.context.scene.cycles.samples = min(32, bpy.context.scene.cycles.samples)
+            bpy.ops.render.render(write_still=True)
+            manifest['preview'] = PREVIEW_PATH if os.path.isfile(PREVIEW_PATH) else ''
+        except Exception as exc:
+            manifest['ok'] = False
+            manifest['preview_error'] = str(exc)[:200]
+    if PREVIEW_RENDER_ENABLED and not manifest.get('preview'):
+        manifest['ok'] = False
     with open(MANIFEST, 'w', encoding='utf-8') as fh:
         json.dump(manifest, fh, indent=2)
 
@@ -3347,16 +3611,20 @@ def _normalize_reference_image(src: str, dst: str, role: str) -> str:
     normalizer splits obvious duplicate panels and keeps the strongest single panel.
     The original file is never modified.
     """
-    if not src or not os.path.exists(src):
+    if not src:
         return ""
+    verified, reason = _validate_reference_image(src)
+    if not verified:
+        raise ValueError("reference rejected: " + reason)
     try:
         from PIL import Image, ImageOps
     except Exception:
-        return os.path.abspath(src)
+        raise RuntimeError("Pillow required to normalize verified reference")
 
     try:
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        img = Image.open(src).convert("RGBA")
+        with Image.open(src) as source:
+            img = source.convert("RGBA")
         w, h = img.size
         candidates = [("full", img)]
         # Wide comparison sheets commonly contain two duplicate avatars side by side.
@@ -3383,7 +3651,7 @@ def _normalize_reference_image(src: str, dst: str, role: str) -> str:
         return os.path.abspath(dst)
     except Exception as exc:
         print(f"[SarahMemoryBlenderBootstrap] reference normalization failed for {role}: {exc}")
-        return os.path.abspath(src)
+        raise RuntimeError("reference normalization failed")
 
 
 def _prepare_reference_set(outdir: str, front: str, side: str, back: str, blueprint: str) -> Dict[str, str]:
@@ -3455,19 +3723,25 @@ def blender_bootstrap_preflight(
         "blueprint": os.path.abspath(blueprint or defaults.get("blueprint", "")) if (blueprint or defaults.get("blueprint")) else "",
     }
     reference_status = {
-        role: {"path": path, "exists": bool(path and os.path.isfile(path)), "size_bytes": int(os.path.getsize(path)) if path and os.path.isfile(path) else 0}
+        role: {"path": path, "exists": bool(path and os.path.isfile(path)), "size_bytes": int(os.path.getsize(path)) if path and os.path.isfile(path) else 0, "validated": _validate_reference_image(path)[0] if path else False}
         for role, path in references.items()
     }
     target_dir = os.path.abspath(outdir or defaults.get("outdir", ""))
     errors = []
-    if not os.path.isfile(resolved):
-        errors.append(f"Blender executable not found: {resolved}")
+    if not _blender_binary_plausible(resolved):
+        errors.append(f"Blender executable not verified: {resolved}")
     if os.path.basename(resolved).lower() == "blender-launcher.exe":
         errors.append("blender-launcher.exe is not permitted for background builds; use blender.exe")
+    if quality_name not in _VALID_QUALITIES:
+        errors.append("Unsupported quality preset")
     if heavy and not allow_heavy_build:
         errors.append("Heavy authoring tier requires explicit --allow-heavy-build approval")
-    if not any(item["exists"] for item in reference_status.values()):
-        errors.append("No avatar reference image was found")
+    if not any(item["validated"] for item in reference_status.values()):
+        errors.append("No validated avatar reference image was found")
+    if any((references[role] and not item["validated"]) for role, item in reference_status.items()):
+        errors.append("One or more supplied reference images are missing or failed validation")
+    if os.path.islink(target_dir):
+        errors.append("Symlinked build output root is not allowed")
     return {
         "ok": not errors,
         "schema": "SARAHMEMORY_BLENDER_AVATAR_PREFLIGHT_V1",
@@ -3500,26 +3774,31 @@ def inspect_bootstrap_outputs(outdir: str = "") -> Dict[str, object]:
         "manifest": os.path.join(root, "SarahMemoryAvatar_RigBootstrap.json"),
         "build_log": os.path.join(root, "SarahMemoryAvatar_RigBootstrap_build.log"),
     }
-    files = {
-        name: {"path": path, "exists": os.path.isfile(path), "size_bytes": int(os.path.getsize(path)) if os.path.isfile(path) else 0}
-        for name, path in paths.items()
-    }
+    files = {}
+    for name, path in paths.items():
+        allowed = not os.path.islink(path) and os.path.realpath(path) == os.path.join(os.path.realpath(root), os.path.basename(path))
+        exists = bool(allowed and os.path.isfile(path))
+        files[name] = {"path": path, "exists": exists, "size_bytes": int(os.path.getsize(path)) if exists else 0}
     manifest_data: Dict[str, object] = {}
     manifest_error = ""
     if files["manifest"]["exists"]:
         try:
+            if files["manifest"]["size_bytes"] > 1024 * 1024:
+                raise ValueError("manifest_size_budget_exceeded")
             with open(paths["manifest"], "r", encoding="utf-8") as fh:
                 loaded = json.load(fh)
             manifest_data = loaded if isinstance(loaded, dict) else {}
         except Exception as exc:
             manifest_error = str(exc)
-    glb_valid = False
-    if files["glb"]["exists"] and files["glb"]["size_bytes"] >= 20:
-        try:
-            with open(paths["glb"], "rb") as fh:
-                glb_valid = fh.read(4) == b"glTF"
-        except Exception:
-            glb_valid = False
+    glb_proof = _read_validated_glb(paths["glb"]) if files["glb"]["exists"] else {}
+    glb_valid = glb_proof.get("valid_glb_structure") is True and glb_proof.get("has_mesh") is True
+    manifest_valid = bool(manifest_data.get("ok") is True and manifest_data.get("glb") and not manifest_error)
+    recorded = manifest_data.get("artifact_evidence") if isinstance(manifest_data.get("artifact_evidence"), dict) else {}
+    glb_evidence = recorded.get("SarahMemoryAvatar_RigBootstrap.glb") if isinstance(recorded, dict) else None
+    digest_ok = False
+    if isinstance(glb_evidence, dict) and files["glb"]["exists"]:
+        digest_ok = glb_evidence.get("sha256") == _file_hash(paths["glb"])
+    runtime_ready = bool(glb_valid and manifest_valid and digest_ok)
     return {
         "ok": True,
         "schema": "SARAHMEMORY_BLENDER_AVATAR_OUTPUT_STATUS_V1",
@@ -3528,10 +3807,12 @@ def inspect_bootstrap_outputs(outdir: str = "") -> Dict[str, object]:
         "manifest_loaded": bool(manifest_data),
         "manifest_error": manifest_error,
         "manifest": manifest_data,
-        "glb_header_valid": glb_valid,
-        "runtime_ready": bool(glb_valid and files["manifest"]["exists"]),
+        "glb_header_valid": bool(glb_proof.get("valid_glb_header")),
+        "glb_structure_valid": glb_valid,
+        "glb_evidence_verified": digest_ok,
+        "runtime_ready": runtime_ready,
         "execution_authority": False,
-        "validation_boundary": "file/header/manifest inspection only; Blender and WebGL were not executed",
+        "validation_boundary": "GLB structure and SHA-256 evidence only; Blender/Qt/WebGL not executed",
     }
 
 
@@ -3576,6 +3857,8 @@ def main() -> int:
     parser.add_argument("--no-timeout", action="store_true", help="Disable the Blender build timeout only with explicit operator intent; the governed default remains a bounded timeout.")
     parser.add_argument("--keep-script", action="store_true", help="Keep generated temporary Blender script.")
     parser.add_argument("--allow-heavy-build", action="store_true", help="Explicitly approve ultra/cinematic/goldstandard authoring tiers.")
+    parser.add_argument("--authorize-build", action="store_true", help="Explicitly opt into governed local Blender execution.")
+    parser.add_argument("--user-consented", action="store_true", help="Confirm that the local user requested this build; OperatorCore still must authorize.")
     parser.add_argument("--preflight-only", action="store_true", help="Print governed readiness and exit without launching Blender.")
     parser.add_argument("--inspect-runtime", action="store_true", help="Inspect existing runtime outputs and exit without launching Blender.")
     args = parser.parse_args()
@@ -3598,6 +3881,12 @@ def main() -> int:
 
     blender_exe, blender_warning = _resolve_blender_executable(args.blender)
     outdir = os.path.abspath(args.outdir)
+    try:
+        review = _authorize_build(blender_exe, outdir, args.quality, args.user_consented, args.authorize_build)
+    except PermissionError as exc:
+        print("[DENY] " + str(exc))
+        _record_build(False, str(exc))
+        return 3
     _ensure_dir(outdir)
 
     if blender_warning:
@@ -3612,75 +3901,73 @@ def main() -> int:
         print(r"[ERROR] Pass the real blender.exe path, usually C:\Blender51\blender.exe or the Blender install folder blender.exe.")
         return 2
 
-    out_blend = os.path.join(outdir, "SarahMemoryAvatar_RigBootstrap.blend")
-    out_glb = os.path.join(outdir, "SarahMemoryAvatar_RigBootstrap.glb")
-    out_fbx = os.path.join(outdir, "SarahMemoryAvatar_RigBootstrap.fbx")
-    manifest = os.path.join(outdir, "SarahMemoryAvatar_RigBootstrap.json")
-
-    sandbox_dir = defaults["sandbox_dir"]
-    _ensure_dir(sandbox_dir)
-    temp_script = os.path.join(sandbox_dir, "SarahMemoryAvatarBootstrap_blender.py")
-
-    normalized_refs = _prepare_reference_set(
-        outdir,
-        os.path.abspath(args.front) if args.front else "",
-        os.path.abspath(args.side) if args.side else "",
-        os.path.abspath(args.back) if args.back else "",
-        os.path.abspath(args.blueprint) if args.blueprint else "",
-    )
-
-    _write_blender_script(
-        script_path=temp_script,
-        front=normalized_refs.get("front", ""),
-        side=normalized_refs.get("side", ""),
-        back=normalized_refs.get("back", ""),
-        blueprint=normalized_refs.get("blueprint", ""),
-        out_blend=out_blend,
-        out_glb=out_glb,
-        out_fbx=out_fbx,
-        manifest_path=manifest,
-        quality=args.quality,
-        export_fbx=bool(args.export_fbx and not args.skip_fbx),
-        preview_render=args.preview_render,
-    )
-
-    cmd = [
-        blender_exe,
-        "--background",
-        "--factory-startup",
-        "--python",
-        temp_script,
-    ]
-
-    build_log = os.path.join(outdir, "SarahMemoryAvatar_RigBootstrap_build.log")
-    timeout_seconds = 0 if args.no_timeout else int(args.timeout_seconds or 0)
-
-    print("[INFO] Launching Blender rig bootstrap...")
-    print("[INFO] Blender:", blender_exe)
-    print("[INFO] Output :", outdir)
-    print("[INFO] Quality:", args.quality)
-    print("[INFO] FBX    :", "enabled" if args.export_fbx and not args.skip_fbx else "disabled")
-    print("[INFO] Timeout:", "disabled" if timeout_seconds <= 0 else f"{timeout_seconds}s")
-    print("[INFO] Log    :", build_log)
-    print("[INFO] Temp   :", temp_script)
-
-    returncode = _run_streaming_blender(cmd, timeout_seconds=timeout_seconds, log_path=build_log)
-
-    if returncode != 0:
-        print("[ERROR] Blender rig bootstrap failed.")
-        print("[ERROR] Review build log:", build_log)
-        _print_run_summary(blender_exe=blender_exe, outdir=outdir, manifest_path=manifest)
-        return returncode
-
-    if not args.keep_script:
-        try:
-            os.remove(temp_script)
-        except OSError:
-            pass
-
-    print("[OK] SarahMemory rig bootstrap completed.")
-    _print_run_summary(blender_exe=blender_exe, outdir=outdir, manifest_path=manifest)
-    return 0
+    try:
+        with _exclusive_build_lock(outdir):
+            staged = tempfile.mkdtemp(prefix=".sarah_blender_build_", dir=outdir)
+            try:
+                stem = "SarahMemoryAvatar_RigBootstrap"
+                out_blend = os.path.join(staged, stem + ".blend")
+                out_glb = os.path.join(staged, stem + ".glb")
+                out_fbx = os.path.join(staged, stem + ".fbx")
+                manifest = os.path.join(staged, stem + ".json")
+                temp_script = os.path.join(staged, "SarahMemoryAvatarBootstrap_blender.py")
+                normalized_refs = _prepare_reference_set(staged, args.front, args.side, args.back, args.blueprint)
+                _write_blender_script(
+                    script_path=temp_script, front=normalized_refs.get("front", ""), side=normalized_refs.get("side", ""),
+                    back=normalized_refs.get("back", ""), blueprint=normalized_refs.get("blueprint", ""),
+                    out_blend=out_blend, out_glb=out_glb, out_fbx=out_fbx, manifest_path=manifest,
+                    quality=args.quality, export_fbx=bool(args.export_fbx and not args.skip_fbx), preview_render=args.preview_render,
+                )
+                cmd = [blender_exe, "--background", "--factory-startup", "--python", temp_script]
+                build_log = os.path.join(staged, stem + "_build.log")
+                # --no-timeout is kept as an accepted legacy CLI option; release policy remains bounded.
+                timeout_seconds = _bound_int(args.timeout_seconds, 7200, 1, 14400)
+                _RUNTIME_LOCK.authorized = True
+                try:
+                    returncode = _run_streaming_blender(cmd, timeout_seconds=timeout_seconds, log_path=build_log)
+                finally:
+                    _RUNTIME_LOCK.authorized = False
+                if returncode != 0:
+                    raise RuntimeError("Blender returned status " + str(returncode))
+                result = _promote_build(staged, outdir,
+                    include_fbx=bool(args.export_fbx and not args.skip_fbx), include_preview=bool(args.preview_render),
+                    reference_sources={role: os.path.abspath(value) if value else "" for role, value in
+                                       (("front", args.front), ("side", args.side), ("back", args.back), ("blueprint", args.blueprint))})
+                if args.keep_script:
+                    copy_to = os.path.join(outdir, "SarahMemoryAvatarBootstrap_blender_" + uuid.uuid4().hex[:12] + ".py")
+                    shutil.copyfile(temp_script, copy_to)
+                final_log = os.path.join(outdir, stem + "_build.log")
+                if os.path.lexists(final_log):
+                    prior_logs = [n for n in os.listdir(outdir) if n.startswith(stem + "_build.log.rollback.")]
+                    if len(prior_logs) < _bound_int(os.getenv("SARAH_BOOTSTRAP_MAX_ROLLBACKS"), 3, 1, 20):
+                        os.replace(final_log, final_log + ".rollback." + uuid.uuid4().hex[:12])
+                    else:
+                        # The asset itself is already committed; retain old log rather than deleting it.
+                        final_log = os.path.join(outdir, stem + "_build_" + uuid.uuid4().hex[:12] + ".log")
+                os.replace(build_log, final_log)
+                _record_build(True)
+                _record_outcome(review, True, artifact=result["glb"])
+                print("[OK] Verified SarahMemory rig bootstrap completed:", result["sha256"])
+                _print_run_summary(blender_exe, outdir, os.path.join(outdir, stem + ".json"))
+                return 0
+            except Exception:
+                # Preserve bounded diagnostic evidence without overwriting active success logs.
+                failed_log = os.path.join(staged, "SarahMemoryAvatar_RigBootstrap_build.log")
+                if os.path.isfile(failed_log):
+                    failed_logs = [name for name in os.listdir(outdir) if name.startswith("SarahMemoryAvatar_RigBootstrap_build.failed.")]
+                    if len(failed_logs) < _bound_int(os.getenv("SARAH_BOOTSTRAP_MAX_ROLLBACKS"), 3, 1, 20):
+                        try:
+                            shutil.copyfile(failed_log, os.path.join(outdir, "SarahMemoryAvatar_RigBootstrap_build.failed." + uuid.uuid4().hex[:12] + ".log"))
+                        except OSError:
+                            pass
+                raise
+            finally:
+                shutil.rmtree(staged, ignore_errors=True)
+    except Exception as exc:
+        _record_build(False, str(exc))
+        _record_outcome(review, False, error=str(exc))
+        print("[ERROR] Blender bootstrap failed; existing assets retained:", str(exc))
+        return 1
 
 
 if __name__ == "__main__":
@@ -3694,7 +3981,7 @@ if __name__ == "__main__":
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryBlenderAvatarBootstrap',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a",
     "category": 'Execution',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -3712,22 +3999,20 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Evidence-based local health; an importable module is not a certified asset."""
+    with _METRICS_LOCK:
+        metrics = dict(_BUILD_METRICS)
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "DEGRADED" if metrics["failures"] else "UNVERIFIED",
+        "availability": None, "integrity": None, "performance": None,
+        "reliability": None, "confidence": 0.0, "latency_ms": None,
+        "stability": None, "compatibility": None,
+        "notes": ["Blender, GLB exports and WebGL runtime not continuously measured", "last_result=" + metrics["last_result"]],
+        "local_build_metrics": metrics,
     }
 
 
@@ -3737,7 +4022,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryBlenderAvatarBootstrap',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": sml_get_metadata(),
         "health": sml_health(),
     }
 

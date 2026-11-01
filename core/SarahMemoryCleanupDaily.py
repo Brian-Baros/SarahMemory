@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryCleanupDaily.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 DAILY CLEANUP MODULE v9.0.0
@@ -98,7 +97,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -112,6 +111,7 @@ import time
 import logging
 import json
 import psutil
+import stat, uuid, gzip, hashlib, copy, threading, contextlib
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
@@ -206,311 +206,358 @@ def _cfg_bool(name: str, default: bool = False) -> bool:
 
 
 def _safe_write_json(path: str, payload: Dict[str, Any]) -> None:
+    """Unique temporary path prevents multiple maintenance workers overwriting .tmp."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, indent=2, sort_keys=True, ensure_ascii=False, default=str)
-    os.replace(tmp, path)
+    temp = path + '.' + uuid.uuid4().hex + '.tmp'
+    try:
+        with open(temp, 'x', encoding='utf-8') as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.remove(temp)
 
 
-def cleanup_ticketing_system(archive_old: Optional[bool] = None, keep_days: int = 30) -> Dict[str, Any]:
-    """Inventory and optionally archive ticket/report clutter without deleting truth.
 
-    SARAHMEMORY_PATCH_NOTE 2026-06-28:
-    Daily ticket cleanup is audit-first.  Default behavior is inventory/report
-    only.  Moving old files requires SARAH_CLEANUP_TICKET_ARCHIVE_ENABLED=true.
-    No production ticket is deleted by this function.
-    """
-    if archive_old is None:
-        archive_old = _cfg_bool("SARAH_CLEANUP_TICKET_ARCHIVE_ENABLED", False)
-    data_dir = str(getattr(config, "DATA_DIR", os.path.join(os.getcwd(), "data")))
-    devbridge = os.path.join(data_dir, "devbridge")
-    audit_dir = os.path.join(data_dir, "audit")
-    report_dir = os.path.join(audit_dir, "summaries")
-    archive_dir = os.path.join(audit_dir, "archived_tickets")
-    os.makedirs(report_dir, exist_ok=True)
-    os.makedirs(archive_dir, exist_ok=True)
-    cutoff = time.time() - max(1, int(keep_days)) * 86400
-    stats: Dict[str, Any] = {"ok": True, "archive_old": bool(archive_old), "keep_days": keep_days, "scanned": 0, "archived": 0, "by_folder": {}, "errors": [], "deleted": 0}
-    watched = [devbridge, os.path.join(data_dir, "reports"), os.path.join(data_dir, "repair_outbox"), os.path.join(audit_dir, "reports"), os.path.join(audit_dir, "repair_outbox")]
-    for root in watched:
-        if not os.path.isdir(root):
-            continue
-        for dirpath, _dirnames, filenames in os.walk(root):
-            for name in filenames:
-                if not name.lower().endswith((".json", ".jsonl", ".txt", ".log")):
-                    continue
-                path = os.path.join(dirpath, name)
-                try:
-                    stats["scanned"] += 1
-                    rel_top = os.path.relpath(dirpath, data_dir).split(os.sep)[0]
-                    stats["by_folder"][rel_top] = int(stats["by_folder"].get(rel_top, 0)) + 1
-                    if archive_old and os.path.getmtime(path) < cutoff and "processed" in dirpath.lower():
-                        dest_dir = os.path.join(archive_dir, os.path.relpath(dirpath, data_dir))
-                        os.makedirs(dest_dir, exist_ok=True)
-                        shutil.move(path, os.path.join(dest_dir, name))
-                        stats["archived"] += 1
-                except Exception as exc:
-                    stats["errors"].append(f"{path}: {exc}")
-    stats["timestamp"] = datetime.now().isoformat()
-    _safe_write_json(os.path.join(report_dir, f"ticket_cleanup_inventory_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"), stats)
+
+# v9.1.0a conservative retention contract: daily scheduled calls inspect by
+# default; a human-triggered approved call may archive eligible artifacts.
+_DAILY_LOCK = threading.RLock()
+_MAX_FILES_PER_PASS = 300
+_MAX_DIRECT_FILE_BYTES = 64 * 1024 * 1024
+_MAX_WALK_DEPTH = 3
+_MIN_RETENTION_SECONDS = DEFAULT_TMP_RETENTION_HOURS * 3600
+_PROTECTED_LOG_TOKENS = ('audit', 'security', 'governance', 'operator', 'assurance', 'ledger', 'truth', 'memory', 'arile')
+
+
+def _safe_beneath(path: str, root: str, *, require_file: bool = False) -> str:
+    root = os.path.abspath(root)
+    path = os.path.abspath(path)
+    if path == root or os.path.commonpath((root, path)) != root:
+        raise PermissionError('maintenance_root_boundary_denied')
+    if os.path.islink(root):
+        raise PermissionError('maintenance_symlink_root_denied')
+    relative = os.path.relpath(path, root)
+    walk = root
+    for item in relative.split(os.sep):
+        walk = os.path.join(walk, item)
+        if os.path.islink(walk):
+            raise PermissionError('maintenance_symlink_denied')
+    if require_file:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink > 1:
+            raise PermissionError('maintenance_non_regular_file_denied')
+    return path
+
+
+def _authorize_daily(operation: str, target: str, *, user_consented: bool):
+    if not user_consented:
+        raise PermissionError('explicit_operator_confirmation_required')
+    try:
+        from SarahMemoryOperatorCore import authorize_external_domain_action
+        decision = authorize_external_domain_action(
+            'SarahMemory governed daily maintenance: ' + operation,
+            origin='SarahMemoryCleanupDaily',
+            proposed_action={'action_type': operation, 'target': target, 'target_ref': target, 'capability_name': 'filesystem_maintenance', 'required_permissions': ['filesystem_maintenance', 'operator_approval'], 'risk_level': 'high'},
+            meta={'scope': 'bounded_local_retention'}, user_consented=True,
+        )
+    except Exception as exc:
+        raise PermissionError('operator_core_authorization_unavailable') from exc
+    if not isinstance(decision, dict) or not (decision.get('ok') is True and decision.get('allow') is True and decision.get('domain_execution_authorized') is True and str(decision.get('decision')).upper() == 'ALLOW'):
+        raise PermissionError('operator_core_denied_maintenance')
+
+
+def _is_log_candidate(name: str) -> bool:
+    lowered = name.lower()
+    return (lowered.endswith(('.log', '.txt')) and not any(token in lowered for token in _PROTECTED_LOG_TOKENS) and not lowered.startswith('.'))
+
+
+def _file_hash(path: str) -> str:
+    dig = hashlib.sha256()
+    with open(path, 'rb') as src:
+        for block in iter(lambda: src.read(1024 * 1024), b''):
+            dig.update(block)
+    return dig.hexdigest()
+
+
+def _safe_archive_move(src: str, dst_dir: str, *, root: str) -> str:
+    """Recoverable same-filesystem archive; never overwrite another artifact."""
+    _safe_beneath(src, root, require_file=True)
+    os.makedirs(dst_dir, exist_ok=True)
+    _safe_beneath(dst_dir, root)
+    dst = os.path.join(dst_dir, Path(src).name + '.' + uuid.uuid4().hex[:12])
+    if os.path.lexists(dst):
+        raise FileExistsError('archive_destination_collision')
+    shutil.move(src, dst)
+    return dst
+
+
+def _daily_error_result(stats, error):
+    stats['errors'].append(str(error))
+    stats['ok'] = False
     return stats
+
+
+def _daily_tasks_ok(*items) -> bool:
+    for item in items:
+        if not isinstance(item, dict):
+            return False
+        if item.get('ok') is False or item.get('success') is False or item.get('errors') or item.get('error'):
+            return False
+    return True
+
+
+
+def cleanup_ticketing_system(archive_old: Optional[bool] = None, keep_days: int = 30, *, user_consented: bool = False) -> Dict[str, Any]:
+    """Bounded ticket inventory; archive only with independently approved consent."""
+    if archive_old is None:
+        archive_old = _cfg_bool('SARAH_CLEANUP_TICKET_ARCHIVE_ENABLED', False)
+    keep_days = max(1, min(3650, int(keep_days)))
+    data_dir = os.path.abspath(getattr(config, 'DATA_DIR', os.path.join(os.getcwd(), 'data')))
+    audit_dir = os.path.join(data_dir, 'audit')
+    stats = {'ok': True, 'archive_old': bool(archive_old), 'keep_days': keep_days, 'scanned': 0, 'archived': 0, 'by_folder': {}, 'errors': [], 'deleted': 0, 'safe_policy_skipped': not bool(archive_old), 'scan_limited': False}
+    if archive_old:
+        _authorize_daily('archive_tickets', data_dir, user_consented=user_consented)
+        from SarahMemoryCleanup import _require_audit_event
+        _require_audit_event('archive_tickets_authorized', {'root': data_dir})
+    watched = [os.path.join(data_dir, x) for x in ('devbridge', 'reports', 'repair_outbox', 'audit/reports', 'audit/repair_outbox')]
+    cutoff = time.time() - keep_days * 86400
+    budget = _MAX_FILES_PER_PASS
+    with _DAILY_LOCK:
+        for root in watched:
+            if not os.path.isdir(root):
+                continue
+            try:
+                _safe_beneath(root, data_dir)
+            except PermissionError as exc:
+                stats['errors'].append(str(exc))
+                continue
+            for current, dirs, names in os.walk(root, topdown=True, followlinks=False):
+                depth = len(Path(current).relative_to(root).parts)
+                dirs[:] = [d for d in sorted(dirs) if not os.path.islink(os.path.join(current, d)) and depth < _MAX_WALK_DEPTH][:24]
+                for name in sorted(names):
+                    if budget <= 0:
+                        stats['scan_limited'] = True
+                        break
+                    if not name.lower().endswith(('.json', '.jsonl', '.txt', '.log')):
+                        continue
+                    budget -= 1
+                    path = os.path.join(current, name)
+                    try:
+                        _safe_beneath(path, data_dir, require_file=True)
+                        stats['scanned'] += 1
+                        top = os.path.relpath(current, data_dir).split(os.sep)[0]
+                        stats['by_folder'][top] = stats['by_folder'].get(top, 0) + 1
+                        if archive_old and 'processed' in Path(current).parts and os.path.getmtime(path) < cutoff:
+                            _safe_archive_move(path, os.path.join(audit_dir, 'archived_tickets', top), root=data_dir)
+                            stats['archived'] += 1
+                    except Exception as exc:
+                        stats['errors'].append(f'{name}: {exc}')
+                if budget <= 0:
+                    break
+            if budget <= 0:
+                break
+    stats['timestamp'] = datetime.now().isoformat()
+    stats['ok'] = not stats['errors']
+    # One daily summary filename instead of a rapidly growing report storm.
+    if os.path.isdir(audit_dir):
+        try:
+            _safe_write_json(os.path.join(audit_dir, 'summaries', 'ticket_cleanup_inventory_' + datetime.now().strftime('%Y%m%d') + '.json'), stats)
+        except Exception as exc:
+            stats['errors'].append(str(exc))
+            stats['ok'] = False
+    return stats
+
 
 
 # ============================================================================
 # SEMANTIC QA CACHE HYGIENE - v9.0.0
 # ============================================================================
 def run_poison_cache_cleanup(*, quarantine: Optional[bool] = None, max_rows: int = 5000) -> Dict[str, Any]:
-    """Optional QA-cache poison hygiene for scheduled maintenance.
-
-    Default is read-only scan. Actual quarantine requires
-    SARAH_DAILY_CLEANUP_QUARANTINE_POISON_CACHE=true.
-    """
+    """Daily inspection only; never derive human consent from an environment flag."""
     if quarantine is None:
-        quarantine = _cfg_bool("SARAH_DAILY_CLEANUP_QUARANTINE_POISON_CACHE", False)
-    out: Dict[str, Any] = {
-        "ok": False,
-        "enabled": _cfg_bool("SARAH_DAILY_CLEANUP_ENABLE_POISON_SCAN", False) or bool(quarantine),
-        "quarantine": bool(quarantine),
-        "max_rows": int(max_rows),
-        "errors": [],
-    }
-    if not out["enabled"]:
-        out.update({"ok": True, "safe_policy_skipped": True, "reason": "poison cache scan disabled by default"})
+        quarantine = _cfg_bool('SARAH_DAILY_CLEANUP_QUARANTINE_POISON_CACHE', False)
+    enabled = _cfg_bool('SARAH_DAILY_CLEANUP_ENABLE_POISON_SCAN', False) or bool(quarantine)
+    out = {'ok': True, 'enabled': enabled, 'quarantine': bool(quarantine), 'max_rows': min(5000, max(0, int(max_rows))), 'errors': []}
+    if not enabled:
+        out.update({'safe_policy_skipped': True, 'reason': 'scan disabled by default'})
         return out
     try:
-        import SarahMemoryCleanup as _SMCleanup  # type: ignore
-        if bool(quarantine):
-            result = _SMCleanup.quarantine_poisoned_qa_cache(dry_run=False, max_rows=max_rows, backup=True)
-        else:
-            result = _SMCleanup.scan_poisoned_qa_cache(max_rows=max_rows)
-        out.update({"ok": True, "result": result})
+        import SarahMemoryCleanup as cleanup
+        result = cleanup.scan_poisoned_qa_cache(max_rows=out['max_rows'])
+        out['result'] = result
+        out['ok'] = bool(result.get('ok')) and not bool(result.get('errors'))
+        if quarantine:
+            # Do not report the requested quarantine as performed: scheduled
+            # invocation cannot establish an authenticated human approval.
+            out.update({'ok': False, 'quarantine_denied': True})
+            out['errors'].append('scheduled_quarantine_requires_operator_approval')
     except Exception as exc:
-        out["errors"].append(str(exc))
+        out['ok'] = False
+        out['errors'].append(str(exc))
     return out
+
 
 
 # ============================================================================
 # CORE CLEANUP FUNCTIONS (v8.0 Enhanced)
 # ============================================================================
 
-def vacuum_all() -> Dict[str, Any]:
-    """
-    Vacuum all SarahMemory databases with enhanced error handling and monitoring.
-    
-    Returns:
-        Dict containing vacuum statistics
-    """
-    start_time = time.time()
-    stats = {
-        "databases_processed": 0,
-        "databases_vacuumed": 0,
-        "databases_skipped": 0,
-        "databases_failed": 0,
-        "space_recovered_mb": 0.0,
-        "errors": []
-    }
-    
-    for db_path in DBS:
-        try:
-            if not os.path.exists(db_path):
-                logger.debug(f"Database not found, skipping: {db_path}")
-                stats["databases_skipped"] += 1
+def vacuum_all(*, user_consented: bool = False) -> Dict[str, Any]:
+    """Explicitly authorized bounded vacuum; preserve existing journal modes."""
+    stats = {'ok': True, 'databases_processed': 0, 'databases_vacuumed': 0, 'databases_skipped': 0, 'databases_failed': 0, 'space_recovered_mb': 0.0, 'errors': []}
+    if not user_consented:
+        stats.update({'safe_policy_skipped': True, 'reason': 'operator consent required', 'databases_skipped': len(DBS)})
+        return stats
+    _authorize_daily('vacuum_sqlite', config.DATASETS_DIR, user_consented=user_consented)
+    from SarahMemoryCleanup import _require_audit_event
+    _require_audit_event('vacuum_authorized', {'root': config.DATASETS_DIR})
+    start = time.monotonic()
+    with _DAILY_LOCK:
+        for path in DBS:
+            if time.monotonic() - start > 30:
+                stats['errors'].append('maintenance_time_budget_exceeded')
+                break
+            if not os.path.isfile(path):
+                stats['databases_skipped'] += 1
                 continue
-            
-            # Get initial size
-            initial_size = os.path.getsize(db_path)
-            
-            # Skip small databases
-            if initial_size < (VACUUM_SIZE_THRESHOLD_MB * 1024 * 1024):
-                logger.debug(f"Database too small to vacuum: {os.path.basename(db_path)}")
-                stats["databases_skipped"] += 1
-                continue
-            
-            # Check if database is in use
             try:
-                conn = sqlite3.connect(db_path, timeout=5.0)
-                
-                # Enable WAL mode for better concurrency
-                conn.execute("PRAGMA journal_mode=WAL")
-                
-                # Check integrity first
-                result = conn.execute("PRAGMA integrity_check").fetchone()
-                if result[0] != "ok":
-                    logger.warning(f"Database integrity check failed: {db_path}")
-                    stats["databases_failed"] += 1
-                    stats["errors"].append(f"{os.path.basename(db_path)}: Integrity check failed")
-                    conn.close()
+                _safe_beneath(path, config.DATASETS_DIR, require_file=True)
+                before = os.path.getsize(path)
+                if before < VACUUM_SIZE_THRESHOLD_MB * 1024**2:
+                    stats['databases_skipped'] += 1
                     continue
-                
-                # Perform vacuum
-                logger.info(f"Vacuuming database: {os.path.basename(db_path)}")
-                conn.execute("VACUUM")
-                
-                # Analyze for query optimization
-                conn.execute("ANALYZE")
-                
-                conn.close()
-                
-                # Calculate space recovered
-                final_size = os.path.getsize(db_path)
-                space_recovered = (initial_size - final_size) / (1024 * 1024)  # MB
-                
-                if space_recovered > 0:
-                    logger.info(f"✓ Vacuumed {os.path.basename(db_path)}: {space_recovered:.2f} MB recovered")
-                    stats["space_recovered_mb"] += space_recovered
-                
-                stats["databases_vacuumed"] += 1
-                stats["databases_processed"] += 1
-                
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e).lower():
-                    logger.warning(f"Database locked, skipping: {os.path.basename(db_path)}")
-                    stats["databases_skipped"] += 1
-                else:
-                    raise
-                
-        except Exception as e:
-            logger.error(f"VACUUM failed for {os.path.basename(db_path)}: {e}")
-            stats["databases_failed"] += 1
-            stats["errors"].append(f"{os.path.basename(db_path)}: {str(e)}")
-    
-    stats["execution_time_seconds"] = time.time() - start_time
-    
-    logger.info(f"Database vacuum complete: {stats['databases_vacuumed']} vacuumed, "
-               f"{stats['databases_skipped']} skipped, {stats['databases_failed']} failed, "
-               f"{stats['space_recovered_mb']:.2f} MB recovered")
-    
+                if shutil.disk_usage(config.DATA_DIR).free < max(before * 3, MIN_DISK_SPACE_GB * 1024**3):
+                    stats['databases_skipped'] += 1
+                    continue
+                from SarahMemoryCleanup import _backup_core
+                _backup_core(names=[os.path.basename(path)])
+                with sqlite3.connect(path, timeout=1.5) as con:
+                    con.execute('PRAGMA busy_timeout=1500')
+                    if con.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+                        raise ValueError('database_integrity_failed')
+                    con.execute('VACUUM')
+                    con.execute('PRAGMA optimize')
+                after = os.path.getsize(path)
+                stats['space_recovered_mb'] += max(0, before - after) / 1024**2
+                stats['databases_vacuumed'] += 1
+                stats['databases_processed'] += 1
+            except Exception as exc:
+                stats['databases_failed'] += 1
+                stats['errors'].append(f'{os.path.basename(path)}: {exc}')
+    stats['execution_time_seconds'] = time.monotonic() - start
+    stats['ok'] = not stats['errors']
     return stats
 
-def rotate_text_logs(keep_days: int = DEFAULT_LOG_RETENTION_DAYS) -> Dict[str, Any]:
-    """
-    Rotate and clean old text logs with enhanced management.
-    
-    Args:
-        keep_days: Number of days to retain logs
-        
-    Returns:
-        Dict containing rotation statistics
-    """
-    stats = {
-        "logs_checked": 0,
-        "logs_removed": 0,
-        "logs_compressed": 0,
-        "space_freed_mb": 0.0,
-        "errors": []
-    }
-    
+
+def rotate_text_logs(keep_days: int = DEFAULT_LOG_RETENTION_DAYS, *, user_consented: bool = False) -> Dict[str, Any]:
+    """Approved log-only retention, with reversible archival and no evidence deletion."""
+    stats = {'ok': True, 'logs_checked': 0, 'logs_removed': 0, 'logs_compressed': 0, 'space_freed_mb': 0.0, 'errors': [], 'archived': 0}
     try:
-        os.makedirs(config.LOGS_DIR, exist_ok=True)
-        cutoff = time.time() - (keep_days * 86400)
-        
-        for filename in os.listdir(config.LOGS_DIR):
-            file_path = os.path.join(config.LOGS_DIR, filename)
-            
+        days = int(keep_days)
+        if not 1 <= days <= 3650:
+            raise ValueError('invalid_log_retention_days')
+    except Exception as exc:
+        return _daily_error_result(stats, exc)
+    if not user_consented:
+        stats.update({'safe_policy_skipped': True, 'reason': 'scheduled retention cannot assume human approval'})
+        return stats
+    _authorize_daily('rotate_log_files', config.LOGS_DIR, user_consented=user_consented)
+    from SarahMemoryCleanup import _require_audit_event
+    _require_audit_event('log_rotation_authorized', {'root': config.LOGS_DIR, 'days': days})
+    if not os.path.isdir(config.LOGS_DIR):
+        return stats
+    cutoff = time.time() - days * 86400
+    archive_root = os.path.join(config.LOGS_DIR, '_retired')
+    with _DAILY_LOCK:
+        for name in sorted(os.listdir(config.LOGS_DIR))[:_MAX_FILES_PER_PASS]:
+            if not _is_log_candidate(name):
+                continue
+            source = os.path.join(config.LOGS_DIR, name)
             try:
-                if not os.path.isfile(file_path):
+                _safe_beneath(source, config.LOGS_DIR, require_file=True)
+                size = os.path.getsize(source)
+                stats['logs_checked'] += 1
+                if size > _MAX_DIRECT_FILE_BYTES:
+                    stats['errors'].append(f'{name}: oversized_log_requires_manual_review')
                     continue
-                
-                stats["logs_checked"] += 1
-                file_mtime = os.path.getmtime(file_path)
-                file_size = os.path.getsize(file_path)
-                
-                # Remove old logs
-                if file_mtime < cutoff:
-                    os.remove(file_path)
-                    stats["logs_removed"] += 1
-                    stats["space_freed_mb"] += file_size / (1024 * 1024)
-                    logger.debug(f"Removed old log: {filename}")
-                    
-                # Compress large recent logs
-                elif file_size > (1024 * 1024) and not filename.endswith('.gz'):  # > 1MB
-                    try:
-                        import gzip
-                        compressed_path = file_path + '.gz'
-                        
-                        with open(file_path, 'rb') as f_in:
-                            with gzip.open(compressed_path, 'wb') as f_out:
-                                shutil.copyfileobj(f_in, f_out)
-                        
-                        # Verify compressed file
-                        if os.path.exists(compressed_path):
-                            os.remove(file_path)
-                            stats["logs_compressed"] += 1
-                            compression_ratio = (file_size - os.path.getsize(compressed_path)) / file_size
-                            logger.debug(f"Compressed {filename}: {compression_ratio*100:.1f}% reduction")
-                            
-                    except Exception as e:
-                        logger.warning(f"Failed to compress {filename}: {e}")
-                
-            except Exception as e:
-                logger.warning(f"Error processing log {filename}: {e}")
-                stats["errors"].append(f"{filename}: {str(e)}")
-        
-        logger.info(f"Log rotation complete: {stats['logs_removed']} removed, "
-                   f"{stats['logs_compressed']} compressed, "
-                   f"{stats['space_freed_mb']:.2f} MB freed")
-        
-    except Exception as e:
-        logger.error(f"Log rotation failed: {e}")
-        stats["errors"].append(f"General error: {str(e)}")
-    
+                if os.path.getmtime(source) < cutoff:
+                    _safe_archive_move(source, archive_root, root=config.LOGS_DIR)
+                    stats['archived'] += 1
+                    stats['logs_removed'] += 1
+                elif size > 1024**2:
+                    archive_path = os.path.join(archive_root, name + '.' + uuid.uuid4().hex[:12] + '.gz')
+                    os.makedirs(archive_root, exist_ok=True)
+                    _safe_beneath(archive_path, config.LOGS_DIR)
+                    with open(source, 'rb') as src, gzip.open(archive_path, 'xb') as dst:
+                        shutil.copyfileobj(src, dst, length=1024**2)
+                    with gzip.open(archive_path, 'rb') as check:
+                        h = hashlib.sha256()
+                        for block in iter(lambda: check.read(1024**2), b''):
+                            h.update(block)
+                    if h.hexdigest() != _file_hash(source):
+                        os.remove(archive_path)
+                        raise ValueError('compressed_archive_integrity_failure')
+                    stats['logs_compressed'] += 1
+                    # Original remains in place; archive is additional recoverability.
+            except Exception as exc:
+                stats['errors'].append(f'{name}: {exc}')
+    stats['ok'] = not stats['errors']
     return stats
 
-def remove_tmp_dirs() -> Dict[str, Any]:
-    """
-    Remove temporary directories and files with enhanced safety.
-    
-    Returns:
-        Dict containing cleanup statistics
-    """
-    stats = {
-        "folders_checked": 0,
-        "folders_removed": 0,
-        "files_removed": 0,
-        "space_freed_mb": 0.0,
-        "errors": []
-    }
-    
-    for folder_name in TMP_FOLDERS:
-        folder_path = os.path.join(config.DATA_DIR, folder_name)
-        
-        if os.path.isdir(folder_path):
-            stats["folders_checked"] += 1
-            
+
+def remove_tmp_dirs(*, user_consented: bool = False) -> Dict[str, Any]:
+    """Bounded age-aware quarantine of temp files; never recursively rmtree."""
+    stats = {'ok': True, 'folders_checked': 0, 'folders_removed': 0, 'files_removed': 0, 'space_freed_mb': 0.0, 'errors': [], 'files_quarantined': 0, 'bytes_quarantined': 0}
+    if not user_consented:
+        stats.update({'safe_policy_skipped': True, 'reason': 'scheduled temporary cleanup cannot assume human approval'})
+        return stats
+    _authorize_daily('quarantine_expired_temp', config.DATA_DIR, user_consented=user_consented)
+    from SarahMemoryCleanup import _require_audit_event
+    _require_audit_event('temp_quarantine_authorized', {'root': config.DATA_DIR})
+    cutoff = time.time() - _MIN_RETENTION_SECONDS
+    dest_root = os.path.join(config.DATA_DIR, 'maintenance_quarantine', 'temp')
+    budget = _MAX_FILES_PER_PASS
+    with _DAILY_LOCK:
+        for folder in TMP_FOLDERS:
+            source_root = os.path.join(config.DATA_DIR, folder)
+            if not os.path.isdir(source_root):
+                continue
             try:
-                # Calculate size before removal
-                total_size = 0
-                file_count = 0
-                
-                for dirpath, dirnames, filenames in os.walk(folder_path):
-                    for filename in filenames:
-                        file_path = os.path.join(dirpath, filename)
-                        try:
-                            file_size = os.path.getsize(file_path)
-                            total_size += file_size
-                            file_count += 1
-                        except:
-                            pass
-                
-                # Remove directory
-                shutil.rmtree(folder_path, ignore_errors=True)
-                
-                if not os.path.exists(folder_path):
-                    stats["folders_removed"] += 1
-                    stats["files_removed"] += file_count
-                    stats["space_freed_mb"] += total_size / (1024 * 1024)
-                    logger.debug(f"Removed temp folder: {folder_name} ({file_count} files, {total_size/(1024*1024):.2f} MB)")
-                
-            except Exception as e:
-                logger.warning(f"Failed to remove temp folder {folder_name}: {e}")
-                stats["errors"].append(f"{folder_name}: {str(e)}")
-    
-    logger.info(f"Temp cleanup complete: {stats['folders_removed']} folders removed, "
-               f"{stats['files_removed']} files removed, "
-               f"{stats['space_freed_mb']:.2f} MB freed")
-    
+                _safe_beneath(source_root, config.DATA_DIR)
+            except Exception as exc:
+                stats['errors'].append(f'{folder}: {exc}')
+                continue
+            stats['folders_checked'] += 1
+            # Do not walk recursively: only one level of explicit temporary files.
+            for name in sorted(os.listdir(source_root)):
+                if budget <= 0:
+                    stats['scan_limited'] = True
+                    break
+                budget -= 1
+                path = os.path.join(source_root, name)
+                try:
+                    if not os.path.isfile(path) or os.path.islink(path):
+                        continue
+                    _safe_beneath(path, config.DATA_DIR, require_file=True)
+                    if name.lower().endswith(('.db', '.sqlite', '.db-wal', '.db-shm', '.jsonl', '.py', '.lock')):
+                        continue
+                    if os.path.getmtime(path) >= cutoff:
+                        continue
+                    bytes_moved = os.path.getsize(path)
+                    if bytes_moved > _MAX_DIRECT_FILE_BYTES:
+                        continue
+                    _safe_archive_move(path, dest_root, root=config.DATA_DIR)
+                    stats['files_removed'] += 1
+                    stats['files_quarantined'] += 1
+                    stats['bytes_quarantined'] += bytes_moved
+                except Exception as exc:
+                    stats['errors'].append(f'{name}: {exc}')
+            if budget <= 0:
+                break
+    stats['ok'] = not stats['errors']
     return stats
+
 
 # ============================================================================
 # ENHANCED CLEANUP FUNCTIONS (v8.0 New)
@@ -537,43 +584,34 @@ def check_disk_space() -> Dict[str, Any]:
         logger.error(f"Failed to check disk space: {e}")
         return {"error": str(e)}
 
-def optimize_databases() -> Dict[str, Any]:
-    """
-    Optimize database indexes and analyze query plans.
-    
-    Returns:
-        Dict containing optimization statistics
-    """
-    stats = {
-        "databases_optimized": 0,
-        "databases_failed": 0,
-        "errors": []
-    }
-    
-    for db_path in DBS:
-        try:
-            if not os.path.exists(db_path):
+def optimize_databases(*, user_consented: bool = False) -> Dict[str, Any]:
+    """Opt-in PRAGMA optimize; REINDEX is excluded from scheduled operations."""
+    stats = {'ok': True, 'databases_optimized': 0, 'databases_failed': 0, 'errors': []}
+    if not user_consented:
+        stats.update({'safe_policy_skipped': True, 'reason': 'operator consent required'})
+        return stats
+    _authorize_daily('optimize_sqlite', config.DATASETS_DIR, user_consented=user_consented)
+    from SarahMemoryCleanup import _require_audit_event
+    _require_audit_event('sqlite_optimize_authorized', {'root': config.DATASETS_DIR})
+    with _DAILY_LOCK:
+        for path in DBS:
+            if not os.path.isfile(path):
                 continue
-            
-            conn = sqlite3.connect(db_path, timeout=5.0)
-            
-            # Re-analyze statistics for query optimizer
-            conn.execute("ANALYZE")
-            
-            # Reindex all indexes
-            conn.execute("REINDEX")
-            
-            conn.close()
-            
-            stats["databases_optimized"] += 1
-            logger.debug(f"Optimized database: {os.path.basename(db_path)}")
-            
-        except Exception as e:
-            logger.warning(f"Failed to optimize {os.path.basename(db_path)}: {e}")
-            stats["databases_failed"] += 1
-            stats["errors"].append(f"{os.path.basename(db_path)}: {str(e)}")
-    
+            try:
+                _safe_beneath(path, config.DATASETS_DIR, require_file=True)
+                from SarahMemoryCleanup import _backup_core
+                _backup_core(names=[os.path.basename(path)])
+                with sqlite3.connect(path, timeout=1.5) as con:
+                    if con.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+                        raise sqlite3.DatabaseError('database_integrity_failed')
+                    con.execute('PRAGMA optimize')
+                stats['databases_optimized'] += 1
+            except Exception as exc:
+                stats['databases_failed'] += 1
+                stats['errors'].append(f'{os.path.basename(path)}: {exc}')
+    stats['ok'] = not stats['errors']
     return stats
+
 
 def get_cleanup_stats() -> Dict[str, Any]:
     """
@@ -614,119 +652,32 @@ def get_cleanup_stats() -> Dict[str, Any]:
 # ============================================================================
 
 def run_daily_cleanup() -> Dict[str, Any]:
-    """
-    Run comprehensive daily cleanup routine.
-    Maintains backward compatibility with v7.x calling convention.
-    
-    Returns:
-        Dict containing cleanup results
-    """
-    logger.info("="*70)
-    logger.info("Starting Daily Cleanup v8.0")
-    logger.info("="*70)
-    
-    start_time = time.time()
-    
-    # Check disk space first
-    disk_status = check_disk_space()
-    if disk_status.get("low_space_warning"):
-        logger.warning(f"⚠ Low disk space: {disk_status['free_gb']:.2f} GB free")
-    
-    # Run cleanup tasks
-    log_stats = rotate_text_logs(keep_days=DEFAULT_LOG_RETENTION_DAYS)
-    ticket_stats = cleanup_ticketing_system()
-    poison_cache_stats = run_poison_cache_cleanup(quarantine=None, max_rows=5000)
-    tmp_stats = remove_tmp_dirs()
-    # SARAHMEMORY_PATCH_NOTE 2026-06-28:
-    # Heavy VACUUM/REINDEX can thrash large SQLite files on mixed NVMe/HDD bodies.
-    # Keep daily cleanup safe by default; enable explicitly when maintenance window
-    # is available with SARAH_DAILY_CLEANUP_ENABLE_VACUUM=true.
-    if _cfg_bool("SARAH_DAILY_CLEANUP_ENABLE_VACUUM", False):
-        vacuum_stats = vacuum_all()
-        optimize_stats = optimize_databases()
-    else:
-        vacuum_stats = {"databases_processed": 0, "databases_vacuumed": 0, "databases_skipped": len(DBS), "databases_failed": 0, "space_recovered_mb": 0.0, "safe_policy_skipped": True, "reason": "daily vacuum disabled by local-first anti-thrash policy"}
-        optimize_stats = {"databases_optimized": 0, "databases_failed": 0, "safe_policy_skipped": True, "reason": "daily reindex disabled by local-first anti-thrash policy"}
-    
-    # Calculate total results
-    total_space_freed = (
-        log_stats.get("space_freed_mb", 0) +
-        tmp_stats.get("space_freed_mb", 0) +
-        vacuum_stats.get("space_recovered_mb", 0)
-    )
-    
-    execution_time = time.time() - start_time
-    
-    results = {
-        "success": True,
-        "execution_time_seconds": execution_time,
-        "total_space_freed_mb": total_space_freed,
-        "log_rotation": log_stats,
-        "tmp_cleanup": tmp_stats,
-        "database_vacuum": vacuum_stats,
-        "database_optimize": optimize_stats,
-        "ticket_cleanup": ticket_stats,
-        "poison_cache_cleanup": poison_cache_stats,
-        "disk_status": disk_status,
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    logger.info("="*70)
-    logger.info(f"✓ Daily Cleanup Completed in {execution_time:.2f}s")
-    logger.info(f"  Total Space Freed: {total_space_freed:.2f} MB")
-    logger.info(f"  Disk Free: {disk_status.get('free_gb', 0):.2f} GB")
-    logger.info("="*70)
-    
-    return results
+    """Non-destructive daily inventory. Never assumes unattended delete approval."""
+    start = time.monotonic()
+    disk = check_disk_space()
+    logs = rotate_text_logs(keep_days=DEFAULT_LOG_RETENTION_DAYS)
+    tickets = cleanup_ticketing_system(archive_old=False)
+    poison = run_poison_cache_cleanup(quarantine=False, max_rows=5000)
+    tmp = remove_tmp_dirs()
+    vacuum = vacuum_all()
+    optimize = optimize_databases()
+    ok = _daily_tasks_ok(disk, logs, tickets, poison, tmp, vacuum, optimize)
+    return {'success': ok, 'execution_time_seconds': time.monotonic() - start, 'total_space_freed_mb': 0.0, 'log_rotation': logs, 'tmp_cleanup': tmp, 'database_vacuum': vacuum, 'database_optimize': optimize, 'ticket_cleanup': tickets, 'poison_cache_cleanup': poison, 'disk_status': disk, 'timestamp': datetime.now().isoformat(), 'mode': 'scheduled_safe_inventory', 'destructive_actions_performed': False}
+
 
 def run_intelligent_cleanup() -> Dict[str, Any]:
-    """
-    Run intelligent cleanup with adaptive behavior based on system state.
-    New in v8.0 - provides smarter cleanup decisions.
-    
-    Returns:
-        Dict containing cleanup results
-    """
-    # Get current system state
-    disk_status = check_disk_space()
-    cleanup_stats = get_cleanup_stats()
-    
-    # Adaptive cleanup based on disk space
-    if disk_status.get("percent_used", 0) > 90:
-        logger.warning("Disk usage >90% - running aggressive cleanup")
-        keep_days = 7  # More aggressive log rotation
-    elif disk_status.get("percent_used", 0) > 80:
-        logger.info("Disk usage >80% - running standard cleanup")
-        keep_days = 14
-    else:
-        logger.info("Disk usage normal - running light cleanup")
-        keep_days = 30
-    
-    # Run cleanup with adaptive parameters
-    log_stats = rotate_text_logs(keep_days=keep_days)
-    tmp_stats = remove_tmp_dirs()
-    poison_cache_stats = run_poison_cache_cleanup(quarantine=None, max_rows=5000)
-    
-    # Heavy VACUUM/REINDEX remains opt-in even in intelligent mode. Large DBs on
-    # mixed NVMe/HDD bodies can thrash if compacted during active runtime.
-    if cleanup_stats["database_size_mb"] > 100 and _cfg_bool("SARAH_INTELLIGENT_CLEANUP_ENABLE_VACUUM", False):
-        vacuum_stats = vacuum_all()
-        optimize_stats = optimize_databases()
-    else:
-        vacuum_stats = {"databases_processed": 0, "message": "Skipped by anti-thrash policy or databases too small", "safe_policy_skipped": True}
-        optimize_stats = {"databases_optimized": 0, "message": "Skipped by anti-thrash policy or databases too small", "safe_policy_skipped": True}
-    
-    return {
-        "success": True,
-        "mode": "intelligent",
-        "log_retention_days": keep_days,
-        "log_rotation": log_stats,
-        "tmp_cleanup": tmp_stats,
-        "database_vacuum": vacuum_stats,
-        "database_optimize": optimize_stats,
-        "poison_cache_cleanup": poison_cache_stats,
-        "timestamp": datetime.now().isoformat()
-    }
+    """Resource-aware, non-destructive inventory; no aggressive silent retention."""
+    disk = check_disk_space()
+    stats = get_cleanup_stats()
+    used = float(disk.get('percent_used') or 0)
+    keep_days = 7 if used > 90 else 14 if used > 80 else 30
+    logs = rotate_text_logs(keep_days=keep_days)
+    tmp = remove_tmp_dirs()
+    poison = run_poison_cache_cleanup(quarantine=False, max_rows=5000)
+    vacuum = vacuum_all()
+    optimize = optimize_databases()
+    return {'success': _daily_tasks_ok(disk, stats, logs, tmp, poison, vacuum, optimize), 'mode': 'intelligent_safe_inventory', 'log_retention_days': keep_days, 'log_rotation': logs, 'tmp_cleanup': tmp, 'database_vacuum': vacuum, 'database_optimize': optimize, 'poison_cache_cleanup': poison, 'disk_status': disk, 'timestamp': datetime.now().isoformat(), 'destructive_actions_performed': False}
+
 
 # ============================================================================
 # MAIN ENTRY POINT (for testing)
@@ -763,7 +714,7 @@ if __name__ == "__main__":
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryCleanupDaily',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Diagnostics',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -781,22 +732,19 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Report inspected paths, not invented performance or reliability metrics."""
+    root_ok = os.path.isdir(config.DATA_DIR)
+    datasets_ok = os.path.isdir(config.DATASETS_DIR)
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        'status': 'Ready' if root_ok and datasets_ok else 'Degraded',
+        'availability': 1.0 if root_ok and datasets_ok else 0.0,
+        'integrity': None, 'performance': None, 'reliability': None,
+        'confidence': 0.5, 'latency_ms': None, 'stability': None, 'compatibility': None,
+        'notes': ['Scheduled maintenance is inventory-only without consent', 'Retained log and cache data are never silently deleted'],
     }
 
 
@@ -806,7 +754,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryCleanupDaily',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": copy.deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

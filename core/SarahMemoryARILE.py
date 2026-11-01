@@ -1,10 +1,19 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryARILE.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-06-09
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
+
 
 Adaptive Reality Intelligence Layer Engine (ARILE)
 =================================================
@@ -31,6 +40,7 @@ import atexit
 import collections
 import dataclasses
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -39,10 +49,10 @@ import re
 import threading
 import time
 import traceback
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Deque, Dict, Iterable, List, Optional, Tuple
 
-MODULE_VERSION = "9.0.0-arile-v1"
+MODULE_VERSION = "9.1.0a-arile-enterprise"
 ARILE_NAME = "Adaptive Reality Intelligence Layer Engine"
 
 # Protected source files.  These are allowed to be read, hash-verified, and
@@ -71,11 +81,31 @@ SEVERITY_DIAGNOSTIC_MIN = 0.50
 SEVERITY_GOVERNANCE_MIN = 0.75
 SEVERITY_EMERGENCY_MIN = 0.90
 
-DEFAULT_MAX_QUEUE = int(os.getenv("SARAH_ARILE_MAX_QUEUE", "2048") or 2048)
-DEFAULT_RING_SIZE = int(os.getenv("SARAH_ARILE_RING_SIZE", "512") or 512)
-DEFAULT_BATCH_SECONDS = float(os.getenv("SARAH_ARILE_BATCH_SECONDS", "30") or 30)
-DEFAULT_MIN_WRITE_SEVERITY = float(os.getenv("SARAH_ARILE_MIN_WRITE_SEVERITY", "0.75") or 0.75)
-DEFAULT_MAX_WRITES_PER_BATCH = int(os.getenv("SARAH_ARILE_MAX_WRITES_PER_BATCH", "50") or 50)
+def _env_int(key: str, default: int, low: int, high: int) -> int:
+    try:
+        return max(low, min(high, int(os.getenv(key, str(default)) or default)))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _env_float(key: str, default: float, low: float, high: float) -> float:
+    try:
+        number = float(os.getenv(key, str(default)) or default)
+        return max(low, min(high, number)) if math.isfinite(number) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+DEFAULT_MAX_QUEUE = _env_int("SARAH_ARILE_MAX_QUEUE", 2048, 16, 8192)
+DEFAULT_RING_SIZE = _env_int("SARAH_ARILE_RING_SIZE", 512, 32, 4096)
+DEFAULT_BATCH_SECONDS = _env_float("SARAH_ARILE_BATCH_SECONDS", 30, 0.5, 300)
+DEFAULT_MIN_WRITE_SEVERITY = _env_float("SARAH_ARILE_MIN_WRITE_SEVERITY", 0.75, 0.0, 1.0)
+DEFAULT_MAX_WRITES_PER_BATCH = _env_int("SARAH_ARILE_MAX_WRITES_PER_BATCH", 50, 1, 200)
+DEFAULT_MAX_PENDING_AUDIT = _env_int("SARAH_ARILE_MAX_PENDING_AUDIT", 1024, 16, 8192)
+DEFAULT_URGENT_FLUSH_SECONDS = _env_float("SARAH_ARILE_URGENT_FLUSH_SECONDS", 1.5, 0.5, 30)
+DEFAULT_AUDIT_MAX_BYTES = _env_int("SARAH_ARILE_AUDIT_MAX_BYTES", 16 * 1024 * 1024, 65536, 256 * 1024 * 1024)
+DEFAULT_MAX_HEALTH_SOURCES = _env_int("SARAH_ARILE_MAX_HEALTH_SOURCES", 512, 16, 4096)
+
 
 
 def _now() -> float:
@@ -89,7 +119,7 @@ def _iso(ts: Optional[float] = None) -> str:
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         v = float(value)
-        if v != v:  # NaN
+        if not math.isfinite(v):
             return default
         return max(0.0, min(1.0, v))
     except Exception:
@@ -114,6 +144,57 @@ def _safe_text(value: Any, limit: int = 1000) -> str:
     if len(text) > limit:
         return text[:limit] + "…"
     return text
+
+
+# Diagnostic/audit data is untrusted. Keep it bounded and do not persist credentials.
+_SECRET_KEY = re.compile(r"(?i)(?:password|passwd|secret|token|bearer|api[_-]?key|authorization|cookie|credential|private[_-]?key|signature|return_nonce|session[_-]?id|access[_-]?key|refresh[_-]?key)")
+_SECRET_INLINE = re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9_.~+/-]{8,}|\b((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,;]+")
+
+
+def _redact_text(value: Any, limit: int = 1000) -> str:
+    return _SECRET_INLINE.sub(lambda m: (m.group(1) or m.group(2) or "") + "[REDACTED]", _safe_text(value, limit))
+
+
+def _safe_packet_data(value: Any, depth: int = 0, budget: Optional[List[int]] = None) -> Any:
+    """Budgeted JSON-safe evidence snapshot. Never persist raw sensitive fields."""
+    if budget is None:
+        budget = [24576]
+    if budget[0] <= 0:
+        return "[TRUNCATED]"
+    if depth > 5:
+        return "[DEPTH_LIMIT]"
+    if isinstance(value, dict):
+        result: Dict[str, Any] = {}
+        for key, val in itertools.islice(value.items(), 64):
+            key_text = _safe_text(key, 128)
+            budget[0] -= len(key_text)
+            if _SECRET_KEY.search(key_text):
+                result[key_text] = "[REDACTED]"
+            else:
+                result[key_text] = _safe_packet_data(val, depth + 1, budget)
+        if len(value) > 64:
+            result["_truncated_items"] = True
+        return result
+    if isinstance(value, (list, tuple, set)):
+        result = [_safe_packet_data(x, depth + 1, budget) for x in itertools.islice(iter(value), 48)]
+        if len(value) > 48:
+            result.append("[TRUNCATED]")
+        return result
+    if isinstance(value, (str, bytes, bytearray)):
+        if isinstance(value, (bytes, bytearray)):
+            value = bytes(value[:1500]).decode('utf-8', errors='replace')
+        item = _redact_text(value, min(1500, max(24, budget[0])))
+        budget[0] -= len(item)
+        return item
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        return value
+    result = _redact_text(value, min(256, max(24, budget[0])))
+    budget[0] -= len(result)
+    return result
 
 
 def _module_base_dir() -> Path:
@@ -164,27 +245,37 @@ def _manifest_dir() -> Path:
     return (_data_dir() / "security").resolve()
 
 
-def arile_is_protected_core_file(path_value: Any) -> bool:
-    """Return True if a target resolves to a protected SarahMemory core file."""
+def _protected_basename(path_value: Any) -> str:
+    """Normalize both Windows and POSIX paths on any host OS."""
     try:
-        name = Path(os.fspath(path_value)).name.lower()
-    except Exception:
-        name = str(path_value or "").replace("\\", "/").split("/")[-1].lower()
-    return name in ARILE_PROTECTED_CORE_FILES
+        text = os.fspath(path_value)
+    except (TypeError, ValueError):
+        text = str(path_value or "")
+    text = str(text).replace("\\", "/").split("?")[0].rstrip(" /\t\r\n")
+    name = text.rsplit("/", 1)[-1].rstrip(". ").casefold()
+    # A symlink alias must not conceal a protected source path.
+    try:
+        resolved_name = Path(text).resolve(strict=False).name.casefold()
+        if resolved_name in ARILE_PROTECTED_CORE_FILES or resolved_name in ARILE_TIER1_SECURITY_FILES:
+            return resolved_name
+    except (OSError, ValueError, RuntimeError):
+        pass
+    return name
+
+
+def arile_is_protected_core_file(path_value: Any) -> bool:
+    """Return True when a filename is in the protected source list."""
+    return _protected_basename(path_value) in ARILE_PROTECTED_CORE_FILES
 
 
 def arile_is_tier1_security_file(path_value: Any) -> bool:
-    try:
-        name = Path(os.fspath(path_value)).name.lower()
-    except Exception:
-        name = str(path_value or "").replace("\\", "/").split("/")[-1].lower()
-    return name in ARILE_TIER1_SECURITY_FILES
+    return _protected_basename(path_value) in ARILE_TIER1_SECURITY_FILES
 
 
 def arile_assert_not_protected_mutation(path_value: Any, operation: str = "mutation", source: str = "unknown") -> None:
     """Raise PermissionError if a protected core file is targeted for mutation."""
     if arile_is_protected_core_file(path_value):
-        name = Path(os.fspath(path_value)).name if path_value is not None else str(path_value)
+        name = _protected_basename(path_value)
         arile_emit(
             source=source,
             kind="protected_core_variance",
@@ -202,6 +293,16 @@ def arile_assert_not_protected_mutation(path_value: Any, operation: str = "mutat
 
 def arile_protected_files() -> List[str]:
     return sorted({"SarahMemoryGlobals.py", "SarahMemoryARILE.py"})
+
+
+def _severity_class(severity: float) -> str:
+    if severity >= SEVERITY_EMERGENCY_MIN:
+        return "EMERGENCY"
+    if severity >= SEVERITY_GOVERNANCE_MIN:
+        return "FAILURE"
+    if severity >= SEVERITY_DIAGNOSTIC_MIN:
+        return "ERROR"
+    return "ALERT" if severity >= 0.25 else "INFO"
 
 
 @dataclasses.dataclass
@@ -238,18 +339,23 @@ class RealityVariancePacket:
     packet_id: str = ""
 
     def normalize(self) -> "RealityVariancePacket":
-        self.source = _safe_text(self.source, 160) or "unknown"
-        self.kind = _safe_text(self.kind, 120) or "variance"
-        self.failure_type = _safe_text(self.failure_type, 160)
-        self.severity = _safe_float(self.severity, 0.0)
+        self.source = _redact_text(self.source, 160) or "unknown"
+        self.kind = _redact_text(self.kind, 120) or "variance"
+        self.failure_type = _redact_text(self.failure_type, 160)
+        raw_severity = _safe_number(self.severity)
+        if raw_severity is None:
+            self.severity = 1.0
+            self.failure_type = self.failure_type or "malformed_severity"
+        else:
+            self.severity = max(0.0, min(1.0, raw_severity))
         self.novelty = _safe_float(self.novelty, 0.0)
         self.confidence = _safe_float(self.confidence, 0.5)
-        self.risk = _safe_text(self.risk, 40) or "low"
-        self.summary = _safe_text(self.summary, 1000)
-        self.organ = _safe_text(self.organ, 80)
-        self.expected_state = _safe_text(self.expected_state, 500)
-        self.observed_state = _safe_text(self.observed_state, 500)
-        self.recommended_response = _safe_text(self.recommended_response, 500)
+        self.risk = (_safe_text(self.risk, 40) or "low").lower()
+        self.summary = _redact_text(self.summary, 1000)
+        self.organ = _redact_text(self.organ, 80)
+        self.expected_state = _redact_text(self.expected_state, 500)
+        self.observed_state = _redact_text(self.observed_state, 500)
+        self.recommended_response = _redact_text(self.recommended_response, 500)
         self.fault_class = _safe_text(self.fault_class, 80)
         self.severity_class = _safe_text(self.severity_class, 40).upper()
         self.residual = _safe_number(self.residual)
@@ -258,25 +364,19 @@ class RealityVariancePacket:
         self.duration_seconds = max(0.0, _safe_number(self.duration_seconds, 0.0) or 0.0)
         self.witness_timestamp = _safe_text(self.witness_timestamp, 80)
         self.freshness = _safe_float(self.freshness, 0.0) if self.freshness is not None else None
-        self.controller = _safe_text(self.controller, 160)
-        self.contract_id = _safe_text(self.contract_id, 160)
+        self.controller = _redact_text(self.controller, 160)
+        self.contract_id = _redact_text(self.contract_id, 160)
         self.safe_stop_required = bool(self.safe_stop_required)
+        if self.safe_stop_required:
+            self.severity = max(self.severity, SEVERITY_GOVERNANCE_MIN)
         self.cleared = bool(self.cleared)
         self.execution_authority = False
-        if not self.severity_class:
-            if self.severity >= SEVERITY_EMERGENCY_MIN:
-                self.severity_class = "EMERGENCY"
-            elif self.severity >= SEVERITY_GOVERNANCE_MIN:
-                self.severity_class = "FAILURE"
-            elif self.severity >= SEVERITY_DIAGNOSTIC_MIN:
-                self.severity_class = "ERROR"
-            elif self.severity >= 0.25:
-                self.severity_class = "ALERT"
-            else:
-                self.severity_class = "INFO"
+        # Severity is computed from evidence; a self-attested class cannot downrank it.
+        self.severity_class = _severity_class(self.severity)
+        if self.safe_stop_required or self.severity >= SEVERITY_GOVERNANCE_MIN:
+            self.requires_governance = True
         self.retention = _safe_text(self.retention, 80) or "ram"
-        if not isinstance(self.data, dict):
-            self.data = {}
+        self.data = _safe_packet_data(self.data if isinstance(self.data, dict) else {})
         if not self.packet_id:
             seed = json.dumps(self.to_dict(include_id=False), sort_keys=True, default=str).encode("utf-8", errors="ignore")
             self.packet_id = "arile_" + hashlib.sha256(seed + str(_now()).encode()).hexdigest()[:16]
@@ -338,14 +438,21 @@ class RealityVarianceScorer:
         if packet.failure_type in {"logic_bomb", "memory_poison", "protected_core_mutation_attempt", "external_authority_drift"}:
             packet.requires_governance = True
             packet.severity = max(packet.severity, 0.80)
-        if packet.severity >= SEVERITY_GOVERNANCE_MIN:
+        if packet.safe_stop_required or packet.severity >= SEVERITY_GOVERNANCE_MIN:
             packet.requires_governance = True
-            if packet.retention in {"", "ram"}:
-                packet.retention = "security_audit" if risk in {"critical", "high"} else "diagnostic"
+        if packet.severity >= SEVERITY_EMERGENCY_MIN:
+            packet.risk = "critical"
+        elif packet.severity >= SEVERITY_GOVERNANCE_MIN and packet.risk not in {"critical", "high"}:
+            packet.risk = "high"
+        if packet.severity >= SEVERITY_GOVERNANCE_MIN and packet.retention in {"", "ram"}:
+            packet.retention = "security_audit" if packet.risk in {"critical", "high"} else "diagnostic"
+        packet.severity_class = _severity_class(packet.severity)
         return packet
 
     def scan_logic_bomb(self, text: str, source: str = "input") -> Dict[str, Any]:
-        text = _safe_text(text, 20000)
+        raw_text = str(text or "")
+        was_truncated = len(raw_text) > 20000
+        text = _safe_text(raw_text, 20000)
         low = text.lower()
         hits: List[str] = []
         for pat in self.LOGIC_BOMB_PATTERNS:
@@ -355,7 +462,7 @@ class RealityVarianceScorer:
         for pat in self.SOCIAL_ENGINEERING_PATTERNS:
             if re.search(pat, low, flags=re.IGNORECASE):
                 social_hits.append(pat)
-        size_risk = len(text) > 12000 or text.count("{") > 80 or text.count("(") > 500
+        size_risk = was_truncated or len(raw_text) > 12000 or text.count("{") > 80 or text.count("(") > 500
         undefined_pressure = bool(re.search(r"\bundefined\b|\bnon[- ]?repeating infinite\b|\bexact failure point\b", low))
         tool_pressure = bool(re.search(r"\b(tool|mcp|api|browser|powershell|cmd|shell|file|patch|driver|servo|motor)\b", low))
         verdict = "SAFE_NORMAL"
@@ -373,6 +480,7 @@ class RealityVarianceScorer:
             "logic_hits": len(hits),
             "social_hits": len(social_hits),
             "size_risk": size_risk,
+            "truncated": was_truncated,
             "undefined_pressure": undefined_pressure,
             "tool_pressure": tool_pressure,
             "prompt_hash": "sha256:" + hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest(),
@@ -411,46 +519,106 @@ class ARILEThrottle:
                 self._last_seen[key] = (last, count)
                 return False, count
             self._last_seen[key] = (now, 1)
-            if len(self._last_seen) > 5000:
-                stale = [k for k, (ts, _c) in self._last_seen.items() if now - ts > 600]
-                for k in stale[:1000]:
-                    self._last_seen.pop(k, None)
+            if len(self._last_seen) > 2048:
+                # Bounded regardless of how quickly unique keys arrive.
+                for stale_key, _entry in sorted(self._last_seen.items(), key=lambda kv: kv[1][0])[:len(self._last_seen) - 2048]:
+                    self._last_seen.pop(stale_key, None)
             return True, 1
 
 
 class ARILEWriteGate:
+    """Bounded, serialized and failure-aware append-only evidence writer."""
+
     def __init__(self, min_severity: float = DEFAULT_MIN_WRITE_SEVERITY) -> None:
         self.min_severity = min_severity
         self._pending: List[Dict[str, Any]] = []
         self._lock = threading.RLock()
         self._last_flush = _now()
+        self._last_urgent_flush = 0.0
+        self.dropped = 0
+        self.write_failures = 0
+        self.persisted = 0
+        self.last_error = ""
 
     def consider(self, packet: RealityVariancePacket, force: bool = False) -> None:
+        packet.normalize()
         if not force and packet.severity < self.min_severity and packet.retention not in {"security_audit", "emergency_audit"}:
             return
         with self._lock:
+            if len(self._pending) >= DEFAULT_MAX_PENDING_AUDIT:
+                # Preserve a critical event ahead of lower-severity backlog when possible.
+                if packet.severity >= SEVERITY_EMERGENCY_MIN:
+                    lowest_index = min(range(len(self._pending)), key=lambda i: float(self._pending[i].get("severity", 0.0)))
+                    if float(self._pending[lowest_index].get("severity", 0.0)) < packet.severity:
+                        self._pending.pop(lowest_index)
+                    else:
+                        self.dropped += 1
+                        self.last_error = "audit_pending_capacity_exhausted"
+                        return
+                else:
+                    self.dropped += 1
+                    self.last_error = "audit_pending_capacity_exhausted"
+                    return
+                self.dropped += 1  # A lower-priority event was displaced.
+                self.last_error = "audit_pending_lower_severity_displaced"
             self._pending.append(packet.to_dict())
+
+    def flush_urgent(self) -> int:
+        """Emergency evidence is prompt but not one disk write per input packet."""
+        now = _now()
+        with self._lock:
+            if now - self._last_urgent_flush < DEFAULT_URGENT_FLUSH_SECONDS:
+                return 0
+            self._last_urgent_flush = now
+        return self.flush_due(force=True)
 
     def flush_due(self, force: bool = False) -> int:
         now = _now()
         with self._lock:
             if not force and now - self._last_flush < DEFAULT_BATCH_SECONDS:
                 return 0
+            if not self._pending:
+                self._last_flush = now
+                return 0
             rows = self._pending[:DEFAULT_MAX_WRITES_PER_BATCH]
-            self._pending = self._pending[DEFAULT_MAX_WRITES_PER_BATCH:]
-            self._last_flush = now
-        if not rows:
-            return 0
-        try:
-            folder = _log_dir()
-            folder.mkdir(parents=True, exist_ok=True)
-            path = folder / "arile_events.jsonl"
-            with path.open("a", encoding="utf-8") as f:
+            # Hold one lock across write and removal: another thread cannot cause loss.
+            try:
+                folder = _log_dir()
+                folder.mkdir(parents=True, exist_ok=True)
+                path = folder / "arile_events.jsonl"
+                existing_bytes = path.stat().st_size if path.exists() else 0
+                remaining_bytes = DEFAULT_AUDIT_MAX_BYTES - existing_bytes
+                written_rows = 0
+                pieces: List[str] = []
                 for row in rows:
-                    f.write(json.dumps(row, ensure_ascii=False, sort_keys=True, default=str) + "\n")
-            return len(rows)
-        except Exception:
-            return 0
+                    line = json.dumps(_safe_packet_data(row), ensure_ascii=False, sort_keys=True, default=str) + "\n"
+                    size = len(line.encode("utf-8"))
+                    if size > remaining_bytes:
+                        break
+                    pieces.append(line)
+                    remaining_bytes -= size
+                    written_rows += 1
+                if not written_rows:
+                    # Retention rotation is delegated to governed maintenance.
+                    self.last_error = "audit_log_retention_limit_reached"
+                    self.write_failures += 1
+                    return 0
+                payload = "".join(pieces)
+                with path.open("a", encoding="utf-8") as f:
+                    f.write(payload)
+                    f.flush()
+                    if str(os.getenv("SARAH_ARILE_AUDIT_FSYNC", "0")).lower() in {"1", "true", "yes"}:
+                        os.fsync(f.fileno())
+                del self._pending[:written_rows]
+                self.persisted += written_rows
+                self._last_flush = now
+                self.last_error = ""
+                return written_rows
+            except Exception as exc:
+                self.write_failures += 1
+                self.last_error = _redact_text(type(exc).__name__ + ": " + str(exc), 240)
+                self._last_flush = now  # back off during failing storage
+                return 0
 
 
 class ARILERuntime:
@@ -465,62 +633,72 @@ class ARILERuntime:
         self._lock = threading.RLock()
         self.started_at = ""
         self.dropped = 0
+        self.suppressed = 0
         self.processed = 0
         self.health: Dict[str, Dict[str, Any]] = {}
+        self._stopping = False
 
     def start(self, reason: str = "manual") -> Dict[str, Any]:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return self.status()
             self._stop.clear()
+            self._stopping = False
             self.started_at = _iso()
             self._thread = threading.Thread(target=self._loop, name="SarahMemoryARILE", daemon=True)
             self._thread.start()
         return self.status(extra={"reason": reason})
 
     def stop(self, reason: str = "shutdown") -> Dict[str, Any]:
-        self._stop.set()
-        t = self._thread
-        if t is not None and t.is_alive():
+        with self._lock:
+            self._stopping = True
+            self._stop.set()
+            t = self._thread
+        if t is not None and t.is_alive() and t is not threading.current_thread():
             try:
                 t.join(timeout=2.0)
             except Exception:
                 pass
-        try:
-            self.write_gate.flush_due(force=True)
-        except Exception:
-            pass
+        # Bounded shutdown flush. Pending evidence remains in memory if unavailable.
+        for _ in range(4):
+            if self.write_gate.flush_due(force=True) <= 0:
+                break
         return self.status(extra={"reason": reason})
 
     def emit(self, packet: RealityVariancePacket) -> bool:
         packet = self.scorer.score(packet)
+        with self._lock:
+            if self._stopping:
+                self.dropped += 1
+                return False
         if packet.severity < 0.25 and packet.retention in {"", "ram"}:
-            # Low signal remains live-state only and is not queued.
             with self._lock:
                 self.ring.append(packet.to_dict())
             return True
         allowed, suppressed = self.throttle.allow(packet)
         if not allowed:
+            with self._lock:
+                self.suppressed += 1
             return True
         try:
             self.queue.put_nowait(packet)
             return True
         except queue.Full:
-            self.dropped += 1
+            with self._lock:
+                self.dropped += 1
             if packet.severity >= SEVERITY_EMERGENCY_MIN:
                 try:
-                    _ = self.queue.get_nowait()
-                except Exception:
-                    pass
-                try:
+                    self.queue.get_nowait()
+                    with self._lock:
+                        self.dropped += 1  # displaced packet was not processed
                     self.queue.put_nowait(packet)
                     return True
-                except Exception:
+                except (queue.Empty, queue.Full):
                     return False
             return False
 
     def _loop(self) -> None:
-        while not self._stop.is_set():
+        while not self._stop.is_set() or not self.queue.empty():
             try:
                 try:
                     packet = self.queue.get(timeout=0.5)
@@ -547,6 +725,8 @@ class ARILERuntime:
             self.ring.append(row)
             self.processed += 1
             src = packet.source or "unknown"
+            if src not in self.health and len(self.health) >= DEFAULT_MAX_HEALTH_SOURCES:
+                self.health.pop(next(iter(self.health)))
             self.health[src] = {
                 "last_seen": packet.timestamp,
                 "last_kind": packet.kind,
@@ -557,12 +737,12 @@ class ARILERuntime:
             }
         self.write_gate.consider(packet, force=packet.retention in {"security_audit", "emergency_audit"} or packet.severity >= SEVERITY_EMERGENCY_MIN)
         if packet.severity >= SEVERITY_EMERGENCY_MIN:
-            self.write_gate.flush_due(force=True)
+            self.write_gate.flush_urgent()
 
     def status(self, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         with self._lock:
             out = {
-                "ok": True,
+                "ok": not self._stopping and self.dropped == 0 and self.write_gate.dropped == 0 and self.write_gate.write_failures == 0,
                 "module": "SarahMemoryARILE",
                 "version": MODULE_VERSION,
                 "started": bool(self._thread is not None and self._thread.is_alive()),
@@ -571,6 +751,14 @@ class ARILERuntime:
                 "ring_size": int(len(self.ring)),
                 "processed": int(self.processed),
                 "dropped": int(self.dropped),
+                "suppressed": int(self.suppressed),
+                "processing_active": bool(self._thread is not None and self._thread.is_alive() and not self._stop.is_set()),
+                "standby_queue": bool(self.queue.qsize() and (self._thread is None or not self._thread.is_alive())),
+                "audit_pending": len(self.write_gate._pending),
+                "audit_persisted": int(self.write_gate.persisted),
+                "audit_dropped": int(self.write_gate.dropped),
+                "audit_write_failures": int(self.write_gate.write_failures),
+                "audit_error": self.write_gate.last_error,
                 "protected_files": arile_protected_files(),
                 "health_sources": len(self.health),
             }
@@ -672,6 +860,12 @@ def arile_observe_variance(
     response or grants execution authority.
     """
     try:
+        values = [float(expected), float(observed), float(tolerance)]
+        if not all(math.isfinite(v) for v in values) or values[2] <= 0.0:
+            return {"ok": False, "error": "invalid_or_nonfinite_telemetry", "packet": None, "emitted": False, "execution_authority": False}
+    except (ValueError, TypeError, OverflowError):
+        return {"ok": False, "error": "invalid_telemetry", "packet": None, "emitted": False, "execution_authority": False}
+    try:
         from SarahMemoryLogicCalc import operational_severity, telemetry_residual  # type: ignore
 
         comparison = telemetry_residual(observed, expected, tolerance)
@@ -722,6 +916,7 @@ def arile_observe_variance(
         controller=controller,
         contract_id=contract_id,
         safe_stop_required=safe_stop_required,
+        requires_governance=safe_stop_required or severity >= SEVERITY_GOVERNANCE_MIN,
         cleared=bool(severity == 0.0),
         data={"metric": str(metric), "unit": str(unit), "comparison": comparison, "execution_authority": False},
     ).normalize()
@@ -743,23 +938,24 @@ def arile_should_run(lane: str, source: str = "unknown", default: bool = True) -
 
 
 def arile_endpoint_guard(endpoint_name: str, request_meta: Optional[Dict[str, Any]] = None, risk: str = "low") -> str:
-    """Lightweight API boundary guard. Returns allow/defer/block."""
-    meta = dict(request_meta or {})
-    content_length = int(meta.get("content_length") or 0)
-    method = str(meta.get("method") or "").upper()
-    endpoint = str(endpoint_name or "")[:240]
-    if content_length > int(os.getenv("SARAH_ARILE_MAX_API_PAYLOAD", "10485760") or 10485760):
+    """Advisory API boundary triage. Returns allow/defer/block, never authority."""
+    try:
+        meta = dict(request_meta or {})
+        raw_length = meta.get("content_length", 0)
+        content_length = int(raw_length or 0)
+        if content_length < 0:
+            raise ValueError("negative_content_length")
+        maximum = _env_int("SARAH_ARILE_MAX_API_PAYLOAD", 10485760, 1024, 268435456)
+        method = str(meta.get("method") or "").upper()
+        endpoint = _safe_text(endpoint_name, 240)
+    except Exception:
+        return "block"  # Invalid input must not throw into fail-open callers.
+    if content_length > maximum:
         arile_emit(
-            source="api_boundary",
-            kind="api_boundary_variance",
-            failure_type="oversized_payload",
-            severity=0.78,
-            confidence=0.93,
-            risk="high",
+            source="api_boundary", kind="api_boundary_variance", failure_type="oversized_payload",
+            severity=0.78, confidence=0.93, risk="high",
             summary=f"Oversized API payload blocked at {endpoint}: {content_length} bytes",
-            requires_governance=True,
-            retention="security_audit",
-            data=meta,
+            requires_governance=True, retention="security_audit", data=meta,
         )
         return "block"
     if method not in {"", "GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"}:
@@ -807,19 +1003,33 @@ class ARILEPatchBridge:
 
     @classmethod
     def validate_overlay_manifest(cls, manifest: Dict[str, Any]) -> Dict[str, Any]:
-        manifest = manifest or {}
-        targets = [str(x or "") for x in (manifest.get("targets") or [])]
-        touches_security = bool(manifest.get("touches_security"))
-        rollback = bool(manifest.get("rollback_available"))
+        if not isinstance(manifest, dict):
+            return {"ok": False, "errors": ["manifest_must_be_mapping"], "targets": [], "policy": "monkeypatch_overlay_only", "execution_authority": False, "requires_external_approval": True}
+        raw_targets = manifest.get("targets")
         errors: List[str] = []
-        for t in targets:
-            if t in cls.blocked_targets or t.lower() in {x.lower() for x in cls.blocked_targets}:
+        if raw_targets is None:
+            raw_targets = []
+        if not isinstance(raw_targets, (list, tuple)):
+            errors.append("targets_must_be_list")
+            raw_targets = []
+        targets = [str(x or "")[:257] for x in raw_targets[:65]]
+        touches_security = manifest.get("touches_security") is True
+        rollback = manifest.get("rollback_available") is True
+        if not targets:
+            errors.append("targets_required")
+        if len(targets) > 64:
+            errors.append("too_many_targets")
+        for t in targets[:64]:
+            if not t.strip() or len(t) > 256:
+                errors.append("invalid_overlay_target")
+            root_symbol = t.replace("::", ".").split(".", 1)[0].lower()
+            if root_symbol in {x.lower() for x in cls.blocked_targets}:
                 errors.append(f"protected_arile_symbol:{t}")
         if touches_security:
             errors.append("security_touch_requires_manual_source_patch_not_overlay")
         if not rollback:
             errors.append("rollback_required")
-        return {"ok": not errors, "errors": errors, "targets": targets, "policy": "monkeypatch_overlay_only"}
+        return {"ok": not errors, "errors": errors, "targets": targets, "policy": "monkeypatch_overlay_only", "execution_authority": False, "requires_external_approval": True}
 
 
 def verify_arile_source_integrity() -> Dict[str, Any]:
@@ -827,7 +1037,7 @@ def verify_arile_source_integrity() -> Dict[str, Any]:
     try:
         path = Path(__file__).resolve()
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        return {"ok": True, "file": str(path), "sha256": digest, "protected": True, "policy": "monkeypatch_overlay_only"}
+        return {"ok": True, "file": str(path), "sha256": digest, "protected": True, "verified_against_trusted_baseline": False, "integrity_state": "HASH_ONLY_UNVERIFIED", "policy": "monkeypatch_overlay_only"}
     except Exception as e:
         return {"ok": False, "error": str(e), "protected": True, "policy": "monkeypatch_overlay_only"}
 
@@ -841,14 +1051,14 @@ if os.getenv("SARAH_ARILE_AUTOSTART_ON_IMPORT", "0").strip().lower() in {"1", "t
     start_arile_runtime(reason="import_autostart")
 
 # ====================================================================
-# END OF SarahMemoryARILE.py v9.0.0
+# END OF SarahMemoryARILE.py v9.1.0a
 # ====================================================================
 
 # --- SML ORGAN ADAPTER START ---
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryARILE',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-arile-enterprise-sml-0.2",
     "category": 'Unknown',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -870,18 +1080,23 @@ def sml_get_metadata():
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Numerically compatible, evidence-based operational health snapshot."""
+    status = get_arile_runtime_status()
+    running = bool(status.get("processing_active"))
+    errors = int(status.get("dropped", 0)) + int(status.get("audit_dropped", 0)) + int(status.get("audit_write_failures", 0))
+    availability = 1.0 if running else 0.0
+    reliability = (max(0.0, 1.0 - errors / max(1, int(status.get("processed", 0)) + errors))) if running else 0.0
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Healthy" if running and errors == 0 else "Degraded" if running else "Standby",
+        "availability": availability,
+        "integrity": 0.0,  # No trusted signed-baseline comparison performed here.
+        "performance": 0.0,  # No latency benchmark is taken by this adapter.
+        "reliability": reliability,
+        "confidence": 0.60 if running else 0.25,
+        "latency_ms": 0.0,  # Unmeasured; not a claimed zero-latency result.
+        "stability": reliability,
+        "compatibility": 0.0,  # Packet adapter present, end-to-end not independently verified.
+        "notes": ["SML adapter present", "integrity and latency not independently measured", "execution authority: none"],
     }
 
 

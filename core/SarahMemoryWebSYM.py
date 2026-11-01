@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryWebSYM.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 CALCULATOR & SYMBOLIC MATHEMATICS ENGINE
@@ -59,12 +58,13 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Calculator and symbolic mathematics engine covering arithmetic, science, finance, statistics, unit conversion, matrix operations, and query synthesis."
 # --- SARAHMETA END ---
+# v9.1.0a enterprise source hardening: original interfaces preserved; state-changing legacy paths require governed authorization.
 
 import re
 import os
@@ -87,7 +87,7 @@ except Exception:
     _SM_LOGICCALC = None
 
 # Set decimal precision for high-accuracy calculations
-getcontext().prec = 50
+# Decimal precision uses caller context; no import-time mutation.
 
 # Configure logging
 logger = logging.getLogger("WebSYM")
@@ -151,6 +151,314 @@ WEBSTER_STATIC = {
     "speed of light": "The speed of light in vacuum is approximately 299,792,458 meters per second.",
     "planck constant": "Planck's constant (h) is approximately 6.62607015 × 10^-34 joule-seconds.",
     "gravitational constant": "The gravitational constant (G) is approximately 6.674 × 10^-11 N⋅m²/kg²."
+}
+
+# Units are explicitly classified by physical dimensions. Cross-domain conversions fail closed.
+_SM_UNIT_DIM = {
+    '"': 'length',
+    "'": 'length',
+    'acre': 'area',
+    'acres': 'area',
+    'atm': 'pressure',
+    'atmosphere': 'pressure',
+    'atmospheres': 'pressure',
+    'b': 'data/information',
+    'bar': 'pressure',
+    'barrel': 'volume',
+    'barrels': 'volume',
+    'bars': 'pressure',
+    'bbl': 'volume',
+    'bit': 'data/information',
+    'bits': 'data/information',
+    'british thermal unit': 'energy',
+    'btu': 'energy',
+    'byte': 'data/information',
+    'bytes': 'data/information',
+    'c': 'temperature',
+    'cal': 'energy',
+    'calorie': 'energy',
+    'calories': 'energy',
+    'carat': 'mass/weight',
+    'carats': 'mass/weight',
+    'cc': 'volume',
+    'celsius': 'temperature',
+    'centimeter': 'length',
+    'centimeters': 'length',
+    'centuries': 'time',
+    'century': 'time',
+    'cm': 'length',
+    'cm2': 'area',
+    'cm3': 'volume',
+    'cm²': 'area',
+    'cm³': 'volume',
+    'ct': 'mass/weight',
+    'cubic centimeter': 'volume',
+    'cubic centimeters': 'volume',
+    'cubic feet': 'volume',
+    'cubic foot': 'volume',
+    'cubic inch': 'volume',
+    'cubic inches': 'volume',
+    'cubic meter': 'volume',
+    'cubic meters': 'volume',
+    'cubic millimeter': 'volume',
+    'cubic millimeters': 'volume',
+    'cubic yard': 'volume',
+    'cubic yards': 'volume',
+    'cup': 'volume',
+    'cups': 'volume',
+    'd': 'time',
+    'day': 'time',
+    'days': 'time',
+    'decade': 'time',
+    'decades': 'time',
+    'electron volt': 'energy',
+    'electron volts': 'energy',
+    'ev': 'energy',
+    'f': 'temperature',
+    'fahrenheit': 'temperature',
+    'feet': 'length',
+    'feet per second': 'speed',
+    'fl oz': 'volume',
+    'fluid ounce': 'volume',
+    'fluid ounces': 'volume',
+    'foot': 'length',
+    'fps': 'speed',
+    'ft': 'length',
+    'ft/s': 'speed',
+    'ft2': 'area',
+    'ft3': 'volume',
+    'ft²': 'area',
+    'ft³': 'volume',
+    'g': 'mass/weight',
+    'gal': 'volume',
+    'gallon': 'volume',
+    'gallons': 'volume',
+    'gb': 'data/information',
+    'gib': 'data/information',
+    'gibibyte': 'data/information',
+    'gibibytes': 'data/information',
+    'gigabyte': 'data/information',
+    'gigabytes': 'data/information',
+    'gram': 'mass/weight',
+    'grams': 'mass/weight',
+    'h': 'time',
+    'ha': 'area',
+    'hectare': 'area',
+    'hectares': 'area',
+    'horsepower': 'power',
+    'hour': 'time',
+    'hours': 'time',
+    'hp': 'power',
+    'hr': 'time',
+    'imperial gallon': 'volume',
+    'imperial gallons': 'volume',
+    'in': 'length',
+    'in2': 'area',
+    'in3': 'volume',
+    'inch': 'length',
+    'inches': 'length',
+    'in²': 'area',
+    'in³': 'volume',
+    'j': 'energy',
+    'joule': 'energy',
+    'joules': 'energy',
+    'k': 'temperature',
+    'kb': 'data/information',
+    'kcal': 'energy',
+    'kelvin': 'temperature',
+    'kg': 'mass/weight',
+    'kib': 'data/information',
+    'kibibyte': 'data/information',
+    'kibibytes': 'data/information',
+    'kilobyte': 'data/information',
+    'kilobytes': 'data/information',
+    'kilocalorie': 'energy',
+    'kilocalories': 'energy',
+    'kilogram': 'mass/weight',
+    'kilograms': 'mass/weight',
+    'kilojoule': 'energy',
+    'kilojoules': 'energy',
+    'kilometer': 'length',
+    'kilometers': 'length',
+    'kilometers per hour': 'speed',
+    'kilopascal': 'pressure',
+    'kilopascals': 'pressure',
+    'kilowatt': 'power',
+    'kilowatt hour': 'energy',
+    'kilowatt hours': 'energy',
+    'kilowatts': 'power',
+    'kj': 'energy',
+    'km': 'length',
+    'km/h': 'speed',
+    'km2': 'area',
+    'km²': 'area',
+    'knot': 'speed',
+    'knots': 'speed',
+    'kpa': 'pressure',
+    'kph': 'speed',
+    'kt': 'speed',
+    'kw': 'power',
+    'kwh': 'energy',
+    'l': 'volume',
+    'lb': 'mass/weight',
+    'lbs': 'mass/weight',
+    'light year': 'length',
+    'light years': 'length',
+    'liter': 'volume',
+    'liters': 'volume',
+    'long ton': 'mass/weight',
+    'long tons': 'mass/weight',
+    'ly': 'length',
+    'm': 'length',
+    'm/s': 'speed',
+    'm2': 'area',
+    'm3': 'volume',
+    'mb': 'data/information',
+    'mebibyte': 'data/information',
+    'mebibytes': 'data/information',
+    'megabyte': 'data/information',
+    'megabytes': 'data/information',
+    'megawatt': 'power',
+    'megawatts': 'power',
+    'meter': 'length',
+    'meters': 'length',
+    'meters per second': 'speed',
+    'metric horsepower': 'power',
+    'metric ton': 'mass/weight',
+    'metric tons': 'mass/weight',
+    'mg': 'mass/weight',
+    'mi': 'length',
+    'mi2': 'area',
+    'mib': 'data/information',
+    'microgram': 'mass/weight',
+    'micrograms': 'mass/weight',
+    'micrometer': 'length',
+    'micrometers': 'length',
+    'micron': 'length',
+    'microns': 'length',
+    'microsecond': 'time',
+    'microseconds': 'time',
+    'mile': 'length',
+    'miles': 'length',
+    'miles per hour': 'speed',
+    'milligram': 'mass/weight',
+    'milligrams': 'mass/weight',
+    'milliliter': 'volume',
+    'milliliters': 'volume',
+    'millimeter': 'length',
+    'millimeters': 'length',
+    'millisecond': 'time',
+    'milliseconds': 'time',
+    'min': 'time',
+    'minute': 'time',
+    'minutes': 'time',
+    'mi²': 'area',
+    'ml': 'volume',
+    'mm': 'length',
+    'mm2': 'area',
+    'mm3': 'volume',
+    'mmhg': 'pressure',
+    'mm²': 'area',
+    'mm³': 'volume',
+    'month': 'time',
+    'months': 'time',
+    'mph': 'speed',
+    'mps': 'speed',
+    'ms': 'time',
+    'mw': 'power',
+    'm²': 'area',
+    'm³': 'volume',
+    'nanometer': 'length',
+    'nanometers': 'length',
+    'nanosecond': 'time',
+    'nanoseconds': 'time',
+    'nautical mile': 'length',
+    'nautical miles': 'length',
+    'nm': 'length',
+    'nmi': 'length',
+    'ns': 'time',
+    'ounce': 'mass/weight',
+    'ounces': 'mass/weight',
+    'oz': 'mass/weight',
+    'pa': 'pressure',
+    'pascal': 'pressure',
+    'pascals': 'pressure',
+    'pb': 'data/information',
+    'pebibyte': 'data/information',
+    'pebibytes': 'data/information',
+    'petabyte': 'data/information',
+    'petabytes': 'data/information',
+    'pib': 'data/information',
+    'pint': 'volume',
+    'pints': 'volume',
+    'pound': 'mass/weight',
+    'pounds': 'mass/weight',
+    'pounds per square inch': 'pressure',
+    'ps': 'power',
+    'psi': 'pressure',
+    'pt': 'volume',
+    'qt': 'volume',
+    'quart': 'volume',
+    'quarts': 'volume',
+    's': 'time',
+    'sec': 'time',
+    'second': 'time',
+    'seconds': 'time',
+    'short ton': 'mass/weight',
+    'short tons': 'mass/weight',
+    'square centimeter': 'area',
+    'square centimeters': 'area',
+    'square feet': 'area',
+    'square foot': 'area',
+    'square inch': 'area',
+    'square inches': 'area',
+    'square kilometer': 'area',
+    'square kilometers': 'area',
+    'square meter': 'area',
+    'square meters': 'area',
+    'square mile': 'area',
+    'square miles': 'area',
+    'square millimeter': 'area',
+    'square millimeters': 'area',
+    'square yard': 'area',
+    'square yards': 'area',
+    'st': 'mass/weight',
+    'stone': 'mass/weight',
+    'stones': 'mass/weight',
+    't': 'mass/weight',
+    'tb': 'data/information',
+    'tebibyte': 'data/information',
+    'tebibytes': 'data/information',
+    'terabyte': 'data/information',
+    'terabytes': 'data/information',
+    'tib': 'data/information',
+    'ton': 'mass/weight',
+    'tonne': 'mass/weight',
+    'tonnes': 'mass/weight',
+    'tons': 'mass/weight',
+    'torr': 'pressure',
+    'w': 'power',
+    'watt': 'power',
+    'watt hour': 'energy',
+    'watt hours': 'energy',
+    'watts': 'power',
+    'week': 'time',
+    'weeks': 'time',
+    'wh': 'energy',
+    'wk': 'time',
+    'yard': 'length',
+    'yards': 'length',
+    'yd': 'length',
+    'yd2': 'area',
+    'yd3': 'volume',
+    'yd²': 'area',
+    'yd³': 'volume',
+    'year': 'time',
+    'years': 'time',
+    'yr': 'time',
+    'μg': 'mass/weight',
+    'μm': 'length',
+    'μs': 'time',
 }
 
 # Mathematical constants
@@ -706,7 +1014,9 @@ class WebSemanticSynthesizer:
                         return f"{value} {from_unit} is {result:.2f} {to_unit}"
                 
                 # General unit conversion
-                if from_unit in UNIT_CONVERSION and to_unit in UNIT_CONVERSION:
+                if (from_unit in UNIT_CONVERSION and to_unit in UNIT_CONVERSION and
+                        _SM_UNIT_DIM.get(from_unit) is not None and
+                        _SM_UNIT_DIM[from_unit] == _SM_UNIT_DIM.get(to_unit)):
                     # Convert to base unit, then to target unit
                     base_value = value * UNIT_CONVERSION[from_unit]
                     result = base_value / UNIT_CONVERSION[to_unit]
@@ -1544,97 +1854,56 @@ class WebSemanticSynthesizer:
     
     @staticmethod
     def _safe_eval(expression: str) -> Optional[float]:
-        """
-        Safely evaluate a mathematical expression using AST parsing.
-        
-        This prevents arbitrary code execution while allowing mathematical
-        operations.
-        
-        Args:
-            expression: Mathematical expression to evaluate
-            
-        Returns:
-            Evaluated result or None if evaluation fails
-        """
+        """Bounded numeric expression evaluator; never executes arbitrary Python."""
+        import ast
         try:
-            import ast
-            import operator as op
-            
-            # Allowed operations
-            operators = {
-                ast.Add: op.add,
-                ast.Sub: op.sub,
-                ast.Mult: op.mul,
-                ast.Div: op.truediv,
-                ast.Pow: op.pow,
-                ast.Mod: op.mod,
-                ast.USub: op.neg,
-                ast.UAdd: op.pos,
-            }
-            
-            # Allowed functions
-            functions = {
-                'sqrt': math.sqrt,
-                'abs': abs,
-                'sin': math.sin,
-                'cos': math.cos,
-                'tan': math.tan,
-                'asin': math.asin,
-                'acos': math.acos,
-                'atan': math.atan,
-                'sinh': math.sinh,
-                'cosh': math.cosh,
-                'tanh': math.tanh,
-                'log': math.log,
-                'log10': math.log10,
-                'log2': math.log2,
-                'exp': math.exp,
-                'ceil': math.ceil,
-                'floor': math.floor,
-                'round': round,
-            }
-            
-            def eval_(node):
-                if isinstance(node, ast.Num):  # <number>
-                    return node.n
-                elif isinstance(node, ast.Constant):  # Python 3.8+
-                    if isinstance(node.value, (int, float, complex)):
-                        return node.value
-                    raise ValueError("Unsupported constant type")
-                elif isinstance(node, ast.BinOp):  # <left> <operator> <right>
-                    left = eval_(node.left)
-                    right = eval_(node.right)
-                    return operators[type(node.op)](left, right)
-                elif isinstance(node, ast.UnaryOp):  # <operator> <operand>
-                    operand = eval_(node.operand)
-                    return operators[type(node.op)](operand)
-                elif isinstance(node, ast.Call):  # function(args)
-                    if isinstance(node.func, ast.Name) and node.func.id in functions:
-                        func = functions[node.func.id]
-                        args = [eval_(arg) for arg in node.args]
-                        return func(*args)
-                    elif isinstance(node.func, ast.Attribute):
-                        # Handle math.func() calls
-                        if isinstance(node.func.value, ast.Name) and node.func.value.id == 'math':
-                            func_name = node.func.attr
-                            if func_name in functions:
-                                func = functions[func_name]
-                                args = [eval_(arg) for arg in node.args]
-                                return func(*args)
-                    raise ValueError("Function not allowed")
+            if not isinstance(expression, str) or len(expression) > 512:
+                return None
+            tree = ast.parse(expression, mode="eval")
+            nodes = list(ast.walk(tree))
+            if len(nodes) > 90:
+                return None
+            functions = {"sqrt": math.sqrt, "abs": abs, "sin": math.sin,
+                         "cos": math.cos, "tan": math.tan, "log": math.log,
+                         "log10": math.log10, "log2": math.log2,
+                         "asin": math.asin, "acos": math.acos, "atan": math.atan,
+                         "ceil": math.ceil, "floor": math.floor,
+                         "exp": math.exp, "round": round}
+            def calc(n, depth=0):
+                if depth > 30:
+                    raise ValueError("deep_expression")
+                if isinstance(n, ast.Constant) and type(n.value) in (int, float):
+                    value = float(n.value)
+                elif isinstance(n, ast.UnaryOp) and isinstance(n.op, (ast.UAdd, ast.USub)):
+                    value = calc(n.operand, depth+1) * (-1 if isinstance(n.op, ast.USub) else 1)
+                elif isinstance(n, ast.BinOp):
+                    a, b = calc(n.left, depth+1), calc(n.right, depth+1)
+                    if isinstance(n.op, ast.Pow):
+                        if abs(b) > 64 or abs(a) > 1e12:
+                            raise ValueError("power_budget")
+                        value = a**b
+                    elif isinstance(n.op, ast.Mult): value = a*b
+                    elif isinstance(n.op, ast.Div): value = a/b
+                    elif isinstance(n.op, ast.Add): value = a+b
+                    elif isinstance(n.op, ast.Sub): value = a-b
+                    elif isinstance(n.op, ast.Mod): value = a%b
+                    else: raise ValueError("unsupported_operator")
+                elif isinstance(n, ast.Call) and not n.keywords and len(n.args) <= 2:
+                    name = n.func.id if isinstance(n.func, ast.Name) else (
+                        n.func.attr if isinstance(n.func, ast.Attribute) and
+                        isinstance(n.func.value, ast.Name) and n.func.value.id == "math" else None)
+                    if name not in functions:
+                        raise ValueError("function_not_allowed")
+                    value = functions[name](*[calc(arg, depth+1) for arg in n.args])
                 else:
-                    raise ValueError("Expression not allowed")
-            
-            # Parse and evaluate
-            node = ast.parse(expression, mode='eval')
-            result = eval_(node.body)
-            
-            return float(result)
-            
-        except Exception as e:
-            logger.debug(f"[SAFE_EVAL] Error: {e}")
+                    raise ValueError("unsupported_expression")
+                if isinstance(value, complex) or not math.isfinite(float(value)) or abs(value) > 1e100:
+                    raise ValueError("unbounded_numeric_result")
+                return float(value)
+            return calc(tree.body)
+        except (Exception,):
             return None
-    
+
     # ========================================================================
     # EXTERNAL API INTEGRATION
     # ========================================================================
@@ -1836,6 +2105,7 @@ logger.info("[WebSYM] Capabilities: Basic Arithmetic, Scientific, Statistics, Fi
 # ====================================================================
 
 # --- SML ORGAN ADAPTER START ---
+import copy as _sml_copy
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryWebSYM',
@@ -1857,22 +2127,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return _sml_copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter registered; runtime quality not measured"],
     }
 
 
@@ -1882,7 +2152,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryWebSYM',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": _sml_copy.deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

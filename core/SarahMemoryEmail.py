@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryEmail.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,8 +13,8 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
+
 --------
 SarahMemoryEmail is a local-first, sealed communications lane for mailbox intake,
 classification, storage, forwarding, and safe auto-reply.
@@ -58,7 +58,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -219,7 +219,10 @@ def _email_db_path() -> str:
 def _safe_bool_config(name: str, env_name: str, default: bool = False) -> bool:
     try:
         if config is not None and hasattr(config, name):
-            return bool(getattr(config, name))
+            value = getattr(config, name)
+            if isinstance(value, str):
+                return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+            return value is True
     except Exception:
         pass
     return _env_flag(env_name, default)
@@ -470,7 +473,7 @@ def _extract_message_bodies(msg: Message) -> Tuple[str, str]:
     body_text = ""
     body_html = ""
     if msg.is_multipart():
-        for part in msg.walk():
+        for part in list(msg.walk())[:64]:
             content_type = (part.get_content_type() or "").lower()
             disposition = (part.get_content_disposition() or "").lower()
             if disposition == "attachment":
@@ -557,13 +560,24 @@ def _stage_attachment(part: Message, message_id: str) -> Optional[EmailAttachmen
         return None
     filename = _decode_mime_header(part.get_filename() or "attachment.bin") or "attachment.bin"
     payload = part.get_payload(decode=True) or b""
-    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", filename)
+    if len(payload) > 8 * 1024 * 1024:
+        return None
+    safe_name = (re.sub(r"[^A-Za-z0-9._-]", "_", filename).strip('._') or 'attachment.bin')[:128]
     msg_bucket = re.sub(r"[^A-Za-z0-9._-]", "_", message_id or str(int(time.time())))
     incoming_dir = os.path.join(_email_root(), "attachments", "incoming", msg_bucket)
     os.makedirs(incoming_dir, exist_ok=True)
     file_path = os.path.join(incoming_dir, safe_name)
-    with open(file_path, "wb") as handle:
-        handle.write(payload)
+    # Filename collisions are normal in MIME; use exclusive creation.
+    stem, ext = os.path.splitext(safe_name)
+    for _attempt in range(8):
+        try:
+            with open(file_path, 'xb') as handle:
+                handle.write(payload)
+            break
+        except FileExistsError:
+            file_path = os.path.join(incoming_dir, stem[:70] + '_' + os.urandom(8).hex() + ext)
+    else:
+        return None
 
     sha = _sha256_bytes(payload)
     scan_status = "not_scanned"
@@ -587,6 +601,13 @@ def _stage_attachment(part: Message, message_id: str) -> Optional[EmailAttachmen
     else:
         scan_status = "scanner_unavailable"
         scan_details = "SarahMemoryFilesystem unavailable"
+    # Unknown or negative scan outcomes must never be promoted as safe.
+    if scan_status.lower() not in {'clean', 'low'}:
+        quarantine = os.path.join(_email_root(), 'attachments', 'quarantine')
+        os.makedirs(quarantine, exist_ok=True)
+        dest = os.path.join(quarantine, os.path.basename(file_path) + '_' + os.urandom(8).hex())
+        os.replace(file_path, dest)
+        file_path = dest
 
     return EmailAttachmentRecord(
         filename=safe_name,
@@ -603,14 +624,16 @@ def _stage_attachment(part: Message, message_id: str) -> Optional[EmailAttachmen
 # Reminder/calendar extraction
 # -----------------------------------------------------------------------------
 def _process_reminder_calendar_text(text: str) -> Dict[str, Any]:
-    if reminder_mod is None:
-        return {"status": "skipped", "reason": "SarahMemoryReminder unavailable"}
-    if not text.strip():
-        return {"status": "skipped", "reason": "empty_text"}
-    try:
-        return reminder_mod.process_calendar_command(text, user_id=EMAIL_USER_ID)
-    except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+    """Treat calendar-like email text as a review candidate, never an instruction.
+
+    The existing UI/OperatorCore must obtain independently authenticated operator
+    approval before handing an approved command to SarahMemoryReminder.
+    """
+    return {
+        "status": "review_required" if str(text or "").strip() else "skipped",
+        "reason": "inbound_email_cannot_authorize_calendar_or_reminder_mutation",
+        "execution_authority": False,
+    }
 
 
 # -----------------------------------------------------------------------------
@@ -713,7 +736,9 @@ class SarahMemoryEmailService:
             try:
                 client.starttls(ssl.create_default_context())
             except Exception:
-                pass
+                try: client.logout()
+                except Exception: pass
+                raise RuntimeError('IMAP STARTTLS required before authentication')
         client.login(IMAP_USER, IMAP_PASSWORD)
         return client
 
@@ -725,7 +750,7 @@ class SarahMemoryEmailService:
         if POP3_SSL:
             client = poplib.POP3_SSL(POP3_HOST, POP3_PORT, timeout=20)
         else:
-            client = poplib.POP3(POP3_HOST, POP3_PORT, timeout=20)
+            raise RuntimeError('POP3 plaintext credential login disabled')
         client.user(POP3_USER)
         client.pass_(POP3_PASSWORD)
         return client
@@ -735,6 +760,8 @@ class SarahMemoryEmailService:
             raise RuntimeError("SMTP disabled")
         if not SMTP_HOST or not SMTP_USER:
             raise RuntimeError("SMTP configuration incomplete")
+        if not SMTP_STARTTLS:
+            raise RuntimeError('SMTP credential login requires TLS')
         server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30)
         server.ehlo()
         if SMTP_STARTTLS:
@@ -789,7 +816,8 @@ class SarahMemoryEmailService:
                 parsed = self.process_message_bytes(raw, source_folder=INBOX_FOLDER)
                 items.append(parsed)
                 try:
-                    client.store(msg_id, "+FLAGS", "\\Seen")
+                    if parsed.get('status') == 'ok' and parsed.get('stored'):
+                        client.store(msg_id, "+FLAGS", "\\Seen")
                 except Exception:
                     pass
             return items
@@ -822,6 +850,8 @@ class SarahMemoryEmailService:
                 pass
 
     def process_message_bytes(self, raw_bytes: bytes, source_folder: str = INBOX_FOLDER) -> Dict[str, Any]:
+        if not isinstance(raw_bytes, bytes) or len(raw_bytes) > 12 * 1024 * 1024:
+            return {'status': 'error', 'error': 'message_size_limit_exceeded'}
         msg = email.message_from_bytes(raw_bytes, policy=policy.default)
         parsed = self._parse_message(msg)
         reminder_result = {"status": "skipped", "reason": "not_eligible"}
@@ -830,8 +860,10 @@ class SarahMemoryEmailService:
                 reminder_result = _process_reminder_calendar_text(parsed.body_sanitized)
 
         saved = self._store_message(parsed, source_folder, reminder_result)
+        if not saved:
+            return {'status': 'error', 'error': 'email_storage_failed', 'stored': False, 'message_id': parsed.message_id}
         auto_reply = {"status": "skipped"}
-        if self._should_auto_reply(parsed):
+        if False and self._should_auto_reply(parsed):  # outbound approval contract not verified
             auto_reply = self.reply_to_message(parsed, reminder_result)
             if auto_reply.get("status") == "sent":
                 self._mark_auto_replied(parsed.message_id)
@@ -867,7 +899,10 @@ class SarahMemoryEmailService:
         body_sanitized = _sanitize_text(body_text or body_html)
 
         attachments: List[EmailAttachmentRecord] = []
-        for part in msg.walk():
+        # Bound MIME part iteration and staged attachment cardinality.
+        for part in list(msg.walk())[:64]:
+            if len(attachments) >= 16:
+                break
             if (part.get_content_disposition() or "").lower() == "attachment":
                 try:
                     record = _stage_attachment(part, message_id)
@@ -1336,7 +1371,7 @@ def rem_email_intelligence_tick(limit: int = 5) -> Dict[str, Any]:
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryEmail',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Execution',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -1354,22 +1389,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter present; runtime health not independently measured"],
     }
 
 
@@ -1379,7 +1414,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryEmail',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

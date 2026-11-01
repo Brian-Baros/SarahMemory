@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryEvolution.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 PURPOSE (Self Evolution and Patching TOOL):
@@ -82,7 +81,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -186,7 +185,7 @@ except Exception:
 # CONSTANTS / PATHS
 # =============================================================================
 
-VERSION_STR = "v9.0.0"
+VERSION_STR = "v9.1.0a"
 VERSION_TAG = "v800"
 
 BASE_DIR = Path(getattr(config, "BASE_DIR", Path(__file__).resolve().parent)) if config else Path(__file__).resolve().parent
@@ -364,6 +363,7 @@ def build_claude_operator_pack(pack_title: str, task_summary: str, rel_paths: Li
         rel = rel.strip().lstrip("/\\")
         src = (BASE_DIR / rel).resolve()
         try:
+            src.relative_to(BASE_DIR.resolve())  # prevent pack traversal or symlink escape
             if not src.exists() or not src.is_file():
                 missing.append(rel)
                 continue
@@ -488,8 +488,10 @@ def _save_json_report(name: str, payload: Any) -> Path:
 
 def _read_text_safely(p: Path, max_chars: int = 200_000) -> str:
     try:
-        data = p.read_text(encoding="utf-8", errors="ignore")
-        return data[:max_chars]
+        if p.is_symlink() or not p.is_file():
+            return ''
+        with p.open('r', encoding='utf-8', errors='ignore') as handle:
+            return handle.read(max(0, min(max_chars, 200_000)))
     except Exception:
         return ""
 
@@ -652,26 +654,13 @@ def _discover_mods_overlay_dir() -> Optional[Path]:
 
 
 def _prune_old_files(directory: Path, keep: int) -> Dict[str, Any]:
-    """
-    Prunes oldest files in a directory (non-recursive) to limit bloat.
-    Used ONLY in NEOSKYMATRIX mode (or when owner explicitly agrees).
-    """
-    out: Dict[str, Any] = {"dir": str(directory), "keep": keep, "deleted": 0, "errors": 0}
+    """Inventory-only until a retention/backup/audit authority contract exists."""
+    out = {'dir': str(directory), 'keep': keep, 'deleted': 0, 'errors': 0, 'review_required': True}
     try:
-        if not directory.exists() or not directory.is_dir():
-            return out
-        files = [p for p in directory.glob("*") if p.is_file()]
-        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        if len(files) <= keep:
-            return out
-        for p in files[keep:]:
-            try:
-                p.unlink(missing_ok=True)
-                out["deleted"] += 1
-            except Exception:
-                out["errors"] += 1
+        files = sorted((p for p in directory.iterdir() if p.is_file() and not p.is_symlink()), key=lambda p: p.stat().st_mtime, reverse=True) if directory.is_dir() else []
+        out['eligible_count'] = max(0, len(files) - max(0, int(keep)))
     except Exception:
-        out["errors"] += 1
+        out['errors'] = 1
     return out
 
 
@@ -1484,28 +1473,7 @@ def _issue_allows_patch_generation(issue: DetectedIssue) -> Tuple[bool, str]:
 
 
 def _extract_concrete_patch_apply_body(issue: DetectedIssue, target_file: str) -> Optional[str]:
-    """
-    Return concrete apply() body code when a verified patch implementation exists.
-
-    This intentionally does NOT fabricate code. The previous Evolution behavior
-    created placeholder monkey patches that compiled poorly or did nothing. From
-    this point forward, no .py patch is written unless this function returns real
-    implementation code and the whole generated file passes compile validation.
-    """
-    details = issue.details or ""
-
-    # Future-proof handoff: if a trusted repair outbox/LLM result embeds a bounded
-    # EVOLUTION_APPLY_BODY block in the issue details, Evolution may stage it after
-    # compile validation. Normal log errors will not contain this marker.
-    start = "# EVOLUTION_APPLY_BODY_START"
-    end = "# EVOLUTION_APPLY_BODY_END"
-    if start in details and end in details:
-        try:
-            body = details.split(start, 1)[1].split(end, 1)[0].strip("\n")
-            return body if body.strip() else None
-        except Exception:
-            return None
-
+    """Issue text is untrusted observation; do not turn it into executable code."""
     return None
 
 
@@ -1761,7 +1729,7 @@ def sandbox_test_patch_file(patch_file: Path) -> Tuple[bool, str]:
         except Exception as e:
             return False, f"synapes_failed: {type(e).__name__}: {e}"
 
-    return True, "compile_only_ok"
+    return False, 'compile_only_not_sandbox_verified'
 
 
 # =============================================================================
@@ -2610,7 +2578,7 @@ def rem_promote_or_stage(candidate: Dict[str, Any], *, snapshot: Optional[Dict[s
     elif not bool(governance.get("allow", False)): reasons.append("CognitiveServices did not allow promotion.")
     elif not bool(sandbox.get("passed", False)): reasons.append("Sandbox trial failed.")
     elif not bool(assurance.get("allow", False)): reasons.append("AssuranceGate did not allow promotion.")
-    elif proposed.get("type") in ("metadata_only", "research_only", "analysis_only", None) and str(candidate.get("risk_tier", "low")).lower() == "low": decision = "AUTO_APPLIED_METADATA_ONLY"; reasons.append("Low-risk REM result accepted as metadata/report learning only; no core files changed.")
+    elif proposed.get("type") in ("metadata_only", "research_only", "analysis_only", None) and str(candidate.get("risk_tier", "low")).lower() == "low": decision = "STAGE_FOR_REVIEW"; reasons.append("Caller-provided approval flags are evidence, not verified promotion authority; no core files changed.")
     else: decision = "STAGE_FOR_REVIEW"; reasons.append("Candidate passed but is not eligible for autonomous code promotion.")
     _ensure_dirs(); report = {"decision":decision,"reasons":reasons,"candidate":candidate,"sandbox":sandbox,"governance":governance,"assurance":assurance,"ts":_now_iso(),"protected_files":["SarahMemoryGlobals.py","SarahMemoryARILE.py"],"core_files_changed":[]}
     try: _save_json_report("rem_promotion_" + hashlib.sha256(json.dumps(candidate, sort_keys=True, default=str).encode()).hexdigest()[:12], report)
@@ -2625,7 +2593,7 @@ def rem_promote_or_stage(candidate: Dict[str, Any], *, snapshot: Optional[Dict[s
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryEvolution',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Learning',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -2643,22 +2611,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter present; runtime health not independently measured"],
     }
 
 
@@ -2668,7 +2636,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryEvolution',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

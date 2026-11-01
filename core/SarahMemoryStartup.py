@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryStartup.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 STARTUP REGISTRATION MODULE v9.0.0
@@ -91,7 +90,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -198,8 +197,8 @@ def register_startup(app_name: str, app_path: str) -> bool:
     platform_info = get_platform_info()
     
     # Validate inputs
-    if not app_name or not app_path:
-        logger.error("Application name and path are required for startup registration")
+    if not app_name or not app_path or not __import__("re").fullmatch(r"[A-Za-z0-9_-]{1,64}", str(app_name)):
+        logger.error("Safe application name and path are required for startup registration")
         return False
         
     if not os.path.exists(app_path):
@@ -333,6 +332,8 @@ def _register_startup_linux(app_name: str, app_path: str) -> bool:
     """
     try:
         # Create autostart directory if it doesn't exist
+        if not __import__("re").fullmatch(r"[A-Za-z0-9_-]{1,64}", str(app_name)):
+            return False
         AUTOSTART_DIR.mkdir(parents=True, exist_ok=True)
         
         # Create .desktop file
@@ -367,59 +368,27 @@ X-GNOME-Autostart-enabled=true
         return False
 
 def _register_startup_macos(app_name: str, app_path: str) -> bool:
-    """
-    Register application for macOS startup using LaunchAgents.
-    
-    Args:
-        app_name: Application name
-        app_path: Full path to executable
-        
-    Returns:
-        bool: Success status
-    """
+    """Write valid LaunchAgent XML, with exact app identity and exit checks."""
     try:
-        # Create LaunchAgents directory if it doesn't exist
+        import re, plistlib
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', str(app_name)) or not os.path.isfile(app_path):
+            return False
+        label = f'com.softdev0.{app_name}'
         LAUNCHAGENTS_DIR.mkdir(parents=True, exist_ok=True)
-        
-        # Create plist file
-        plist_file = LAUNCHAGENTS_DIR / f"com.softdev0.{app_name}.plist"
-        
-        # Determine program arguments
-        if app_path.endswith('.py'):
-            program_args = ['python3', app_path]
-        else:
-            program_args = [app_path]
-        
-        # Write plist content
-        plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.softdev0.{app_name}</string>
-    <key>ProgramArguments</key>
-    <array>
-        {''.join(f'        <string>{arg}</string>\n' for arg in program_args)}
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <false/>
-</dict>
-</plist>
-"""
-        
-        plist_file.write_text(plist_content)
-        plist_file.chmod(0o644)
-        
-        # Load the launch agent
-        subprocess.run(['launchctl', 'load', str(plist_file)], check=False)
-        
-        logger.info(f"✓ macOS LaunchAgent registered: {plist_file}")
+        target = LAUNCHAGENTS_DIR / (label + '.plist')
+        if target.is_symlink() or target.exists():
+            return False  # no-clobber; existing registrations need a verified replacement workflow
+        args = [sys.executable, os.path.abspath(app_path)] if app_path.endswith('.py') else [os.path.abspath(app_path)]
+        data = plistlib.dumps({'Label':label,'ProgramArguments':args,'RunAtLoad':True,'KeepAlive':False},fmt=plistlib.FMT_XML)
+        with os.fdopen(os.open(str(target),os.O_WRONLY | os.O_CREAT | os.O_EXCL,0o600),'wb') as f:
+            f.write(data)
+        result=subprocess.run(['launchctl','load',str(target)],capture_output=True,timeout=10,check=False)
+        if result.returncode != 0:
+            target.unlink(missing_ok=True)
+            return False
         return True
-        
-    except Exception as e:
-        logger.error(f"Failed to register macOS LaunchAgent: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error('macOS startup registration failed: %s',exc)
         return False
 
 # ============================================================================
@@ -514,6 +483,8 @@ def _unregister_startup_linux(app_name: str) -> bool:
     Returns:
         bool: Success status
     """
+    if not __import__("re").fullmatch(r"[A-Za-z0-9_-]{1,64}", str(app_name)):
+        return False
     try:
         desktop_file = AUTOSTART_DIR / f"{app_name}.desktop"
         
@@ -539,6 +510,8 @@ def _unregister_startup_macos(app_name: str) -> bool:
     Returns:
         bool: Success status
     """
+    if not __import__("re").fullmatch(r"[A-Za-z0-9_-]{1,64}", str(app_name)):
+        return False
     try:
         plist_file = LAUNCHAGENTS_DIR / f"com.softdev0.{app_name}.plist"
         
@@ -688,22 +661,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML registration confirmed; runtime measurements not performed"],
     }
 
 
@@ -713,7 +686,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryStartup',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

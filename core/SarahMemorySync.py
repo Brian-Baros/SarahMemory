@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemorySync.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 PHASE C ENHANCEMENT:
@@ -50,12 +49,13 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Local-first sync engine with Dropbox/FTPS/SarahNet behind explicit online arming, local Phase C fallback, anti-agent hijack gates, staged core file intake, and audit-first governance."
 # --- SARAHMETA END ---
+# v9.1.0a enterprise source hardening: original interfaces preserved; state-changing legacy paths require governed authorization.
 
 import base64
 import hashlib
@@ -279,25 +279,20 @@ def log_sync_event(event: str, details: Any, verdict: str = "INFO") -> None:
 # Initialize local directories at import. Directory creation is bounded and local.
 LOCAL_SYNC_DIR = _sync_dir()
 DROPBOX_SYNC_FOLDER = "/SarahMemorySync"
-try:
-    os.makedirs(LOCAL_SYNC_DIR, exist_ok=True)
-except Exception:
-    pass
+# Local synchronization directories are initialized by explicit sync operations.
 
 
 def _online_session_token_valid(session_token: Optional[str] = None) -> bool:
-    token = (session_token or os.getenv("SARAH_ONLINE_SESSION_TOKEN") or str(_cfg("ONLINE_SESSION_TOKEN", ""))).strip()
-    if len(token) < 24:
-        return False
-    # SARAHMEMORY_PATCH_NOTE: Token is an arming proof, not authentication alone.
-    # Remote endpoints still require their own auth/signature checks.
-    return True
+    supplied = str(session_token or "")
+    expected = str(_cfg("ONLINE_SESSION_TOKEN", "") or "")
+    return (len(expected) >= 32 and len(supplied) >= 32 and
+            hmac.compare_digest(supplied, expected))
 
 
 def _online_armed(session_token: Optional[str] = None, user_approved: bool = False) -> bool:
     feature_flag = bool(_cfg("REMOTE_SYNC_ENABLED", False)) or _env_flag("SARAH_REMOTE_SYNC_ENABLED", "false")
     session_flag = bool(_cfg("ONLINE_SESSION_ARMED", False)) or _env_flag("SARAH_ONLINE_SESSION_ARMED", "false")
-    return bool(feature_flag and session_flag and (user_approved or _online_session_token_valid(session_token)))
+    return bool(feature_flag and session_flag and _online_session_token_valid(session_token))
 
 
 def _contains_hijack_marker(value: Any) -> bool:
@@ -338,7 +333,7 @@ def sm_sync_governance_review(
         verdict = _DECISION_DENY
         reasons.append("remote_sync_requires_explicit_user_ui_online_arming_and_session_token")
 
-    if write_core and not user_approved:
+    if write_core:
         verdict = _DECISION_DENY
         reasons.append("core_write_requires_explicit_human_approval")
 
@@ -672,8 +667,8 @@ def _sha256_file(path: str) -> str:
 
 
 def _safe_relpath(path: str, base: str) -> str:
-    base_abs = os.path.abspath(base)
-    p_abs = os.path.abspath(path)
+    base_abs = os.path.realpath(os.path.abspath(base))
+    p_abs = os.path.realpath(os.path.abspath(path))
     try:
         common = os.path.commonpath([base_abs, p_abs])
     except Exception:
@@ -844,12 +839,16 @@ def sarahnet_sync_push(peer_id: str, base_dir: Optional[str] = None, max_bytes: 
         con.commit()
     finally:
         con.close()
-    out = {"ok": True, "node_id": node_id, "peer_id": peer_id, "sent": sent, "skipped": skipped, "errors": errors, "details": details[:25]}
+    out = {"ok": errors == 0, "node_id": node_id, "peer_id": peer_id, "sent": sent, "skipped": skipped, "errors": errors, "details": details[:25]}
     log_sync_event("SarahNet Push", out, verdict="ALLOW" if errors == 0 else "ALLOW_WITH_ERRORS")
     return out
 
 
 def sarahnet_sync_poll_and_apply(base_dir: Optional[str] = None, max_items: int = 25, *, user_approved: bool = False, session_token: Optional[str] = None, apply_to_core: bool = False) -> dict:
+    # Core promotion belongs to authenticated OperatorCore; never to transport.
+    if apply_to_core:
+        return {"ok": False, "applied": 0, "reason": "core_promotion_requires_operatorcore_receipt"}
+    max_items = max(1, min(int(max_items), 25))
     action = "sarahnet_apply_core" if apply_to_core else "sarahnet_stage"
     review = sm_sync_governance_review(action, remote=True, source="sarahnet", payload={"apply_to_core": apply_to_core}, risk="critical" if apply_to_core else "high", user_approved=user_approved, session_token=session_token, write_core=apply_to_core)
     if not review["ok"]:
@@ -924,18 +923,31 @@ def sarahnet_sync_poll_and_apply(base_dir: Optional[str] = None, max_items: int 
                 if not rel or ".." in rel or rel.startswith(("/", "\\")) or not (rel.startswith("core/") or rel.startswith("api/server/")):
                     rejected += 1
                     continue
-                raw = base64.b64decode(data_b64.encode("ascii"), validate=False)
-                sha = hashlib.sha256(raw).hexdigest()
-                if sha_in and sha.lower() != sha_in.lower():
+                if len(data_b64) > 2_800_000:
                     rejected += 1
                     continue
-                stage_path = os.path.abspath(os.path.join(staged_root, rel.replace("/", os.sep)))
-                if os.path.commonpath([staged_root, stage_path]) != staged_root:
+                raw = base64.b64decode(data_b64.encode("ascii"), validate=True)
+                if len(raw) > 2_000_000:
+                    rejected += 1
+                    continue
+                sha = hashlib.sha256(raw).hexdigest()
+                if len(sha_in) != 64 or sha.lower() != sha_in.lower():
+                    rejected += 1
+                    continue
+                safe_file_id = hashlib.sha256(str(file_id).encode("utf-8")).hexdigest()[:16]
+                stage_path = os.path.realpath(os.path.join(staged_root, safe_file_id, rel.replace("/", os.sep)))
+                if os.path.commonpath([os.path.realpath(staged_root), stage_path]) != os.path.realpath(staged_root):
                     rejected += 1
                     continue
                 os.makedirs(os.path.dirname(stage_path), exist_ok=True)
-                with open(stage_path, "wb") as f:
-                    f.write(raw)
+                try:
+                    with open(stage_path, "xb") as f:
+                        f.write(raw)
+                        f.flush()
+                        os.fsync(f.fileno())
+                except FileExistsError:
+                    rejected += 1
+                    continue
                 staged += 1
                 decision = "staged"
                 if apply_to_core:
@@ -967,7 +979,7 @@ def sarahnet_sync_poll_and_apply(base_dir: Optional[str] = None, max_items: int 
         con.commit()
     finally:
         con.close()
-    out = {"ok": True, "node_id": node_id, "staged": staged, "applied": applied, "rejected": rejected, "offer_rejected": offer_rejected, "accepted_offers": accepted_offers, "errors": errors, "acked": acks, "polled": len(records), "apply_to_core": bool(apply_to_core)}
+    out = {"ok": errors == 0 and rejected == 0 and offer_rejected == 0, "node_id": node_id, "staged": staged, "applied": applied, "rejected": rejected, "offer_rejected": offer_rejected, "accepted_offers": accepted_offers, "errors": errors, "acked": acks, "polled": len(records), "apply_to_core": bool(apply_to_core)}
     log_sync_event("SarahNet Poll", out, verdict="STAGE_ONLY" if not apply_to_core else "ALLOW")
     return out
 
@@ -1188,6 +1200,7 @@ if __name__ == "__main__":
 # END OF LINE
 
 # --- SML ORGAN ADAPTER START ---
+import copy as _sml_copy
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemorySync',
@@ -1209,22 +1222,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return _sml_copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter registered; runtime quality not measured"],
     }
 
 
@@ -1234,7 +1247,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemorySync',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": _sml_copy.deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryOptimization.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 SYSTEM OPTIMIZATION MODULE v9.0.0
@@ -109,7 +108,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -200,8 +199,12 @@ def get_startup_profile(force_refresh: bool = False) -> Dict[str, Any]:
 def mark_task_completion(task_name: str) -> None:
     return None
 
+_OPT_MONITOR_STOP = threading.Event()
+_OPT_MONITOR_THREAD = None
+
 def stop_optimization_monitor() -> None:
-    return None
+    """Stop bounded monitor without blocking the host's shutdown."""
+    _OPT_MONITOR_STOP.set()
 
 
 # =============================================================================
@@ -288,7 +291,7 @@ def _partition_write(role: str, payload: Any, *, meta: Optional[Dict[str, Any]] 
     # Keep within buffer: reserve 4 bytes header
     max_payload = cap - 4
     if len(data) > max_payload:
-        data = data[:max_payload]
+        return False  # Never claim a truncated/invalid JSON record is valid.
 
     # zero first, then write header + data
     _ctypes_zero_buffer(buf)
@@ -368,7 +371,9 @@ def memory_partition() -> Dict[str, Any]:
             "refresh_minutes": refresh_minutes,
         }
 
-    if total_mb <= 0 or partitions <= 0:
+    # Four cognitive responsibilities need distinct buffers; do not alias deploy/test
+    # to monitor in constrained configurations. Memory allocations remain bounded.
+    if total_mb <= 0 or partitions < 4 or total_mb > 256 or sandbox_mb > 256 or partitions > 32:
         return {
             "ok": False,
             "error": "Invalid SARAH_TOTAL_MEMORY_MB or SARAH_MEMORY_PARTITIONS",
@@ -694,27 +699,25 @@ def optimize_system() -> str:
 # OPTIMIZATION MONITOR - Backward Compatible
 # =============================================================================
 def start_optimization_monitor(interval: int = 10) -> None:
-    """
-    Start a background loop that runs optimization checks.
-    v8.0: Enhanced with better thread management.
-
-    Args:
-        interval: Seconds between optimization checks
-    """
-    def monitor_loop():
-        logger.info(f"[v8.0] Starting optimization monitor (interval={interval}s)")
-        try:
-            while True:
-                optimize_system()
-                time.sleep(interval)
-        except Exception as e:
-            logger.error(f"[v8.0] Monitor loop error: {e}")
-
+    """Start at most one stoppable, bounded resource-monitor worker."""
+    global _OPT_MONITOR_THREAD
+    if _OPT_MONITOR_THREAD is not None and _OPT_MONITOR_THREAD.is_alive():
+        return
     try:
-        run_async(monitor_loop)
-        logger.info("[v8.0] Optimization monitor started")
-    except Exception as e:
-        logger.error(f"[v8.0] Failed to start optimization monitor: {e}")
+        seconds = max(5.0, min(3600.0, float(interval)))
+    except (ValueError, TypeError, OverflowError):
+        seconds = 10.0
+    _OPT_MONITOR_STOP.clear()
+    def monitor_loop():
+        while not _OPT_MONITOR_STOP.is_set():
+            try:
+                optimize_system()
+            except Exception as exc:
+                logger.warning("Optimization monitor cycle failed: %s", exc)
+            _OPT_MONITOR_STOP.wait(seconds)
+    _OPT_MONITOR_THREAD = threading.Thread(target=monitor_loop, name="SarahOptimizationMonitor", daemon=True)
+    _OPT_MONITOR_THREAD.start()
+
 
 # =============================================================================
 # IDLE OPTIMIZATION TASKS - v8.0 Enhanced
@@ -1172,22 +1175,23 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    import copy
+    return copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter present; runtime health and integration not independently measured"],
     }
 
 
@@ -1197,7 +1201,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryOptimization',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": sml_get_metadata(),
         "health": sml_health(),
     }
 

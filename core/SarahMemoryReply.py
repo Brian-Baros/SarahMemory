@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryReply.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 """
 
@@ -38,7 +37,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -125,6 +124,7 @@ logger.setLevel(logging.INFO)
 _FOLLOWUP_CONTEXT: Dict[str, Dict[str, Any]] = {}
 _FOLLOWUP_MAX_AGE_SEC = 1800.0
 _FOLLOWUP_MAX_ITEMS = 256
+_SM_ROUTE_LOCAL = threading.local()
 
 YES_RE = re.compile(r"^(yes|yeah|yep|yup|sure|ok|okay|please|do it|go on|continue|tell me more)\b", re.I)
 NO_RE = re.compile(r"^(no|nope|nah|never mind|nevermind|stop|cancel|forget it|no thanks)\b", re.I)
@@ -150,6 +150,9 @@ def _sm_prune_followup_context() -> None:
 
 def _sm_current_session_key(meta: Optional[Dict[str, Any]] = None) -> str:
     meta = dict(meta or {})
+    supplied_context = getattr(_SM_ROUTE_LOCAL, "meta", None)
+    if isinstance(supplied_context, dict):
+        meta = {**supplied_context, **meta}
     for k in ("session_id", "sessionId", "sid", "chat_id", "chatId", "client_id", "clientId", "user_id", "userId"):
         v = meta.get(k)
         if isinstance(v, str) and v.strip():
@@ -163,12 +166,14 @@ def _sm_current_session_key(meta: Optional[Dict[str, Any]] = None) -> str:
                     v = payload.get(k)
                     if isinstance(v, str) and v.strip():
                         return v.strip()
-            ua = (request.headers.get("User-Agent") or "")[:120]
-            ip = request.headers.get("X-Forwarded-For") or request.remote_addr or "unknown"
-            return f"{ip}|{ua}"
+            # Neither forwarded IP nor User-Agent authenticates a chat session.
+            # A shared NAT/proxy must not merge independent conversations.
+            return "unbound-" + os.urandom(16).hex()
     except Exception:
         pass
-    return str(meta.get("source") or "default")
+    # Unidentified requests must not reuse one persistent follow-up identity.
+    # Unique unbound key preserves answer generation without cross-client memory.
+    return "unbound-" + os.urandom(16).hex()
 
 
 def _sm_clean_reply_text(s: str) -> str:
@@ -1549,10 +1554,20 @@ def route_reply(*args, **kwargs) -> Dict[str, Any]:
         user_text = kwargs.get("user_text")
         if user_text is None and args:
             user_text = args[0]
-        return generate_reply(None, user_text or "")
+        _SM_ROUTE_LOCAL.meta = {k: kwargs[k] for k in ("session_id", "sessionId", "sid", "chat_id", "chatId", "client_id", "clientId", "user_id", "userId") if isinstance(kwargs.get(k), str) and kwargs[k].strip()}
+        out = generate_reply(None, user_text or "")
+        if isinstance(out, dict) and isinstance(out.get("meta"), dict):
+            out["meta"].update(getattr(_SM_ROUTE_LOCAL, "meta", {}))
+            if "lane" in kwargs:
+                out["meta"]["requested_lane"] = str(kwargs["lane"])
+                out["meta"]["requested_lane_enforced"] = False
+        return out
     except Exception as e:
         logger.error("route_reply failure: %s", e)
         return ReplyBundle("I'm having trouble routing that request.", meta={"error": str(e)}).to_dict()
+    finally:
+        if hasattr(_SM_ROUTE_LOCAL, "meta"):
+            del _SM_ROUTE_LOCAL.meta
 
 
 def generate_reply(self, user_text: str) -> Dict[str, Any]:
@@ -2173,22 +2188,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Expose adapter presence without fabricating operational measurements."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "UNKNOWN",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter registered; live operational measurements not verified"],
     }
 
 
@@ -2198,7 +2213,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryReply',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

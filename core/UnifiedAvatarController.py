@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: UnifiedAvatarController.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 UNIFIED AVATAR CONTROLLER v9.0.0
@@ -118,12 +117,13 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "High-level avatar orchestration layer for avatar creation, modification, emotion sync, Blender rendering, and voice-avatar coordination."
 # --- SARAHMETA END ---
+# v9.1.0a enterprise source hardening: original interfaces preserved; state-changing legacy paths require governed authorization.
 
 import logging
 import time
@@ -330,9 +330,7 @@ SANDBOX_DIR = getattr(
     os.path.join(_sm_avatar_base_dir(), 'sandbox')
 )
 
-# Create directories
-for directory in [AVATAR_MODELS_DIR, AVATAR_DIR, AVATAR_3D_DIR, SANDBOX_DIR]:
-    os.makedirs(directory, exist_ok=True)
+# Workspace creation belongs to explicit avatar initialization, not module import.
 
 # SARAHMEMORY_PATCH_NOTE: avatar paths use governed BASE_DIR/DATA_DIR for portability.
 # =============================================================================
@@ -383,17 +381,7 @@ class AutoSwitchingMechanism:
                 logger.info("[v8.0] Local design info retrieved")
                 return local_result
 
-            # Fallback to API/Synapes
-            if synapes_module:
-                logger.info("[v8.0] Querying external API for design...")
-                api_result = synapes_module.compose_new_module(request_dict.get('request', request_key))
-
-                if api_result and "error" not in str(api_result).lower():
-                    self.local_cache[request_key] = api_result
-                    self.log_design_info(request_key, api_result)
-                    logger.info("[v8.0] API design info retrieved")
-                    return api_result
-
+            # Network module generation is deferred to the governed executor.
             # Default fallback
             logger.warning("[v8.0] Using default design template")
             default_design = self._get_default_design()
@@ -1272,33 +1260,10 @@ class UnifiedAvatarController:
             self._set_rem_avatar_state("rem_complete", "ready", "cycle_complete")
 
     def _run_lane_with_timeout(self, lane_name: str, fn, kwargs: Dict[str, Any]) -> Dict[str, Any]:
-        """Run one REM subprocess lane with a hard timeout guard."""
-        box: Dict[str, Any] = {}
-
-        def runner():
-            try:
-                started = time.time()
-                value = fn(**kwargs)
-                if not isinstance(value, dict):
-                    value = {"ok": True, "value": value}
-                value.setdefault("ok", True)
-                value["duration_ms"] = int((time.time() - started) * 1000)
-                box["value"] = value
-            except Exception as exc:
-                box["value"] = {"ok": False, "error": str(exc), "lane": lane_name}
-
-        t = threading.Thread(target=runner, name=f"SarahMemory-REM-Lane-{lane_name}", daemon=True)
-        t.start()
-        t.join(self._rem_lane_timeout_seconds())
-        if t.is_alive():
-            return {
-                "ok": False,
-                "degraded": True,
-                "timeout": True,
-                "lane": lane_name,
-                "error": f"REM lane '{lane_name}' exceeded timeout {self._rem_lane_timeout_seconds()}s",
-            }
-        return box.get("value", {"ok": False, "error": "lane returned no result", "lane": lane_name})
+        """Fail closed: Python threads are not cancellable at a hard deadline."""
+        return {"ok": False, "executed": False, "degraded": True,
+                "lane": str(lane_name), "reason": "cancellable_worker_required",
+                "execution_authority": False}
 
     def _run_rem_subprocess_lanes(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """Run bounded REM support lanes: diagnostics, API metadata, DL, research, email, filesystem."""
@@ -1692,6 +1657,10 @@ def launch_blender_avatar_render(
     blend_file_path: str,
     output_image_path: Optional[str] = None
 ) -> bool:
+    # Blender project files may run embedded scripts. This legacy interface has
+    # no verified approval receipt or controlled worker sandbox; do not execute.
+    return False  # Requires a governed OperatorCore/Blender runner.
+
     """
     Launch Blender to render avatar.
     v8.0: Enhanced with better error handling and optimized settings.
@@ -1969,6 +1938,7 @@ logger.info("[v8.0] UnifiedAvatarController module loaded successfully")
 # ====================================================================
 
 # --- SML ORGAN ADAPTER START ---
+import copy as _sml_copy
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'UnifiedAvatarController',
@@ -1990,22 +1960,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return _sml_copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter registered; runtime quality not measured"],
     }
 
 
@@ -2015,7 +1985,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'UnifiedAvatarController',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": _sml_copy.deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

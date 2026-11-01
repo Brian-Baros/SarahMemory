@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryCognitiveCompass.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,8 +13,8 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
+
 - Orientation watchdog, anti-drift guide, and task-completion compass for SarahMemory AiOS.
 - Keeps SarahMemoryNeuron.py pointed at the ORIGINAL user goal until task completion is
 verified, or until the system safely aborts / clarifies / escapes a loop.
@@ -59,7 +59,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -197,7 +197,7 @@ logger.propagate = False
 # Constants
 # -----------------------------------------------------------------------------
 MODULE_NAME = "SarahMemoryCognitiveCompass"
-MODULE_VERSION = "9.0.0"
+MODULE_VERSION = "9.1.0a"
 _DB_NAME = "cognitive_compass.db"
 _CACHE_TTL = 10.0
 
@@ -380,7 +380,12 @@ def _safe_text(value: Any, limit: int = 500) -> str:
 
 def _flag(name: str, default: bool = False) -> bool:
     try:
-        return bool(getattr(config, name, default))
+        value = getattr(config, name, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value == 1
+        return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
     except Exception:
         return default
 
@@ -410,16 +415,15 @@ def _module_approved(module_name: str, capability: Optional[str] = None) -> bool
             return bool(fn(module_name, capability=capability))
     except Exception:
         pass
-    return True
+    return False
 
 
 def _module_importable(module_name: str) -> bool:
-    if module_name in sys.modules:
-        return True
+    # Non-executing lookup: module imports can run arbitrary import-time code.
+    import importlib.util
     try:
-        __import__(module_name)
-        return True
-    except Exception:
+        return module_name in sys.modules or importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError, AttributeError, TypeError):
         return False
 
 
@@ -929,6 +933,8 @@ def _progress_from_state(
     state = dict(plan_state or {})
 
     for field_name in progress.__dataclass_fields__.keys():
+        if field_name == "compare_passed":
+            continue  # never inherit a release decision without a fresh Compare check
         setattr(progress, field_name, bool(prev_prog.get(field_name, False) or state.get(field_name, False)))
 
     # Heuristic shorthands from local plan/executor state
@@ -944,8 +950,7 @@ def _progress_from_state(
         progress.content_applied = True
     if state.get("result_verified") is True or state.get("verified") is True:
         progress.result_verified = True
-    if state.get("compare_passed") is True:
-        progress.compare_passed = True
+    # Compare claims in a plan are only evidence and may not release Reply.
 
     # SMGET / OperatorCore lifecycle inference
     smget = _smget_packet_from_inputs(governor=governor, plan_state=state, context=context, proposed_action=proposed_action)
@@ -974,8 +979,7 @@ def _progress_from_state(
     if not compare_meta and isinstance(smget.get("compare"), dict):
         compare_meta = dict(smget.get("compare") or {})
     compare_status = str(compare_meta.get("status") or "").strip().upper()
-    if compare_status in {"PASS", "OK", "HIT"} or bool(compare_meta.get("ok")):
-        progress.compare_passed = True
+    # Only _compare_gate's fresh call to SarahMemoryCompare can release Reply.
 
     return progress
 
@@ -1284,8 +1288,8 @@ def _compare_gate(
     context: Optional[Dict[str, Any]] = None,
     proposed_action: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    if progress.compare_passed:
-        return {"status": "PASS", "ok": True}
+    # A stored or caller-supplied Compare Boolean is NOT an authoritative receipt.
+    # Re-evaluate a concrete candidate through the existing Compare owner.
     if not progress.result_verified:
         return {"status": "PENDING", "ok": False}
 
@@ -1296,7 +1300,7 @@ def _compare_gate(
     intent = str(contract.get("primary_lane") or "general")
     compare = _compare_accepts(request_text, candidate_text, intent=intent)
     status = str(compare.get("status") or "").upper()
-    ok = status in {"HIT", "PASS", "OK"} or bool(compare.get("ok"))
+    ok = compare.get("ok") is True and status in {"HIT", "PASS", "OK"}
     return {"status": status or "ERROR", "ok": ok, "compare": compare, "candidate_text": _safe_text(candidate_text, 600)}
 
 
@@ -1365,7 +1369,11 @@ def compass_guard(
         return out
 
     # Governor is authoritative on whether the next move may proceed.
-    g_decision = str(governor.get("decision") or "ALLOW").upper() if isinstance(governor, dict) else "ALLOW"
+    g_decision = str(governor.get("decision") or "DEFER").upper() if isinstance(governor, dict) else "DEFER"
+    if g_decision not in {"ALLOW", "DENY", "DEFER", "REQUIRE_USER"}:
+        g_decision = "DEFER"
+    if isinstance(governor, dict) and governor.get("allow") is not True and g_decision == "ALLOW":
+        g_decision = "DEFER"
     if g_decision in {"DENY", "DEFER", "REQUIRE_USER"}:
         reason = "Governor did not authorize continued execution."
         if g_decision == "REQUIRE_USER":
@@ -1434,11 +1442,11 @@ def compass_guard(
         next_required_step = DIRECTIVE_ABORT
 
     compare_gate = _compare_gate(request_text, contract, progress, plan_state, governor=governor, context=ctx, proposed_action=proposed_action)
-    if compare_gate.get("ok"):
+    if compare_gate.get("ok") and progress.result_verified and not escape.get("triggered") and not smget_override.get("status") == STATUS_SAFE_ABORT:
         progress.compare_passed = True
         status = STATUS_COMPLETE_VERIFIED
         next_required_step = DIRECTIVE_ALLOW_REPLY
-    elif progress.result_verified and not compare_gate.get("ok") and not escape.get("triggered"):
+    elif progress.result_verified and not compare_gate.get("ok") and not escape.get("triggered") and status not in {STATUS_SAFE_ABORT, STATUS_RED_ZONE}:
         status = STATUS_COMPARE_PENDING
         next_required_step = DIRECTIVE_HOLD_REPLY
 
@@ -2062,22 +2070,22 @@ def gcop_mission_bearing(packet=None, event=None, continuity_state=None, runtime
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
+        "status": "Degraded",
         "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": None,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter importable; end-to-end readiness not tested"],
     }
 
 
@@ -2087,7 +2095,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryCognitiveCompass',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

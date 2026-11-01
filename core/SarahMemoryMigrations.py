@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryMigrations.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 DATABASE MIGRATIONS MODULE v9.0.0
@@ -104,7 +103,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -118,6 +117,9 @@ import json
 import hashlib
 import time
 import shutil
+import pathlib
+import copy
+import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -134,8 +136,7 @@ except ImportError:
     SETTINGS_DIR = os.path.join(DATA_DIR, 'settings')
     GLOBALS_IMPORTED = False
 
-# Ensure directories exist
-os.makedirs(DATASETS_DIR, exist_ok=True)
+# Directories are created only during approved migration/backup, never at import.
 
 # ============================================================================
 # LOGGING CONFIGURATION
@@ -230,6 +231,15 @@ def migrate_root_runtime_artifacts() -> Dict[str, Any]:
         if not os.path.isfile(source):
             result["skipped"].append({"name": name, "reason": "source_missing"})
             continue
+        # Live SQLite data belongs to its DB owner; never separate main DB from WAL/SHM.
+        # Offline relocation requires a separately approved quiescence/restore operation.
+        if name.lower().endswith((".db", ".sqlite", ".sqlite3")):
+            result["skipped"].append({"name": name, "reason": "sqlite_owner_quiescence_required"})
+            continue
+        if os.path.islink(source) or os.path.islink(target):
+            result["ok"] = False
+            result["errors"].append({"name": name, "error": "symlink_artifact_denied"})
+            continue
         try:
             os.makedirs(os.path.dirname(target), exist_ok=True)
             if os.path.exists(target):
@@ -292,24 +302,16 @@ def _migration_success_exists(version: str, migration_name: str) -> bool:
 # ============================================================================
 
 def _connect(path: str = DB_PATH, timeout: float = 10.0) -> sqlite3.Connection:
-    """
-    Create a database connection with enhanced error handling.
-    
-    Args:
-        path: Path to database file
-        timeout: Connection timeout in seconds
-        
-    Returns:
-        sqlite3.Connection object
-    """
-    try:
-        conn = sqlite3.connect(path, timeout=timeout)
-        conn.execute("PRAGMA journal_mode=WAL")  # Enable Write-Ahead Logging for better concurrency
-        conn.execute("PRAGMA synchronous=NORMAL")  # Balance between safety and performance
-        return conn
-    except Exception as e:
-        logger.error(f"Failed to connect to database {path}: {e}")
-        raise
+    """Connect without imposing a journal-mode change as a side effect."""
+    if not os.path.isfile(path):
+        parent = os.path.dirname(os.path.abspath(path))
+        if not os.path.isdir(parent):
+            raise FileNotFoundError("database parent directory not initialized")
+    conn = sqlite3.connect(path, timeout=max(0.1, min(float(timeout), 30.0)))
+    conn.execute("PRAGMA busy_timeout=10000")
+    return conn
+
+_MIGRATION_STRICT = False
 
 def _exec(cur: sqlite3.Cursor, sql: str, params: tuple = None) -> bool:
     """
@@ -338,10 +340,14 @@ def _exec(cur: sqlite3.Cursor, sql: str, params: tuple = None) -> bool:
             logger.debug(f"Schema element already exists (expected): {e}")
             return True
 
+        if _MIGRATION_STRICT:
+            raise
         logger.warning(f"SQL operation error: {e}")
         logger.debug(f"Failed SQL: {sql[:100]}...")
         return False
     except Exception as e:
+        if _MIGRATION_STRICT:
+            raise
         logger.error(f"Unexpected error executing SQL: {e}")
         logger.debug(f"Failed SQL: {sql[:100]}...")
         return False
@@ -449,20 +455,11 @@ def run_migrations() -> bool:
     return success
 
 def run_versioned_migrations(target_version: str = None) -> bool:
-    """Run only pending schema migrations, with one backup when necessary."""
+    """Bounded pending schema migration, gated by consistent backup and result checks."""
+    global _MIGRATION_STRICT
     if target_version is None:
         target_version = CURRENT_SCHEMA_VERSION
-
-    logger.info("Running migrations to version %s", target_version)
-    placement = migrate_root_runtime_artifacts()
-    if not placement.get("ok"):
-        logger.warning("Root artifact placement completed with errors: %s", placement.get("errors"))
-    elif placement.get("moved") or placement.get("deduplicated") or placement.get("conflicts_preserved"):
-        logger.info("Root artifact placement result: moved=%s deduplicated=%s conflicts=%s",
-                    len(placement.get("moved") or []), len(placement.get("deduplicated") or []),
-                    len(placement.get("conflicts_preserved") or []))
-
-    migrations = [
+    versions = [
         ("1.0", "v1.0_initial_schema", _migrate_v1_0),
         ("2.0", "v2.0_emotion_tracking", _migrate_v2_0),
         ("3.0", "v3.0_personality_system", _migrate_v3_0),
@@ -472,27 +469,41 @@ def run_versioned_migrations(target_version: str = None) -> bool:
         ("7.0", "v7.0_identity_device", _migrate_v7_0),
         ("8.0", "v8.0_enterprise_features", _migrate_v8_0),
     ]
-    pending = [(v, n, fn) for v, n, fn in migrations if not _migration_success_exists(v, n)]
-    if not pending:
-        logger.info("No pending schema migrations; backup and schema rewrites skipped.")
-        if ENABLE_MIGRATION_VERIFICATION:
-            return bool(verify_schema_integrity())
-        return True
-
-    try:
-        if ENABLE_AUTO_BACKUP and (not BACKUP_ONLY_WHEN_PENDING or pending):
-            if os.path.exists(DB_PATH) and os.path.getsize(DB_PATH) > 0:
-                backup_database()
-        success = True
-        for version, name, fn in pending:
-            logger.info("Applying pending migration %s (%s)", version, name)
-            success = bool(fn()) and success
-        if ENABLE_MIGRATION_VERIFICATION:
-            success = bool(verify_schema_integrity()) and success
-        return success
-    except Exception as exc:
-        logger.error("Migration failed: %s", exc, exc_info=True)
+    allowed = {version for version, _, _ in versions} | {CURRENT_SCHEMA_VERSION, "9.1.0a"}
+    target_version = str(target_version)
+    if target_version not in allowed:
+        logger.error('Unsupported migration target: %s', target_version)
         return False
+    def order(version):
+        return tuple(int(part) for part in version.replace('a','').split('.') if part.isdecimal())
+    pending = [(v,n,fn) for v,n,fn in versions
+               if order(v) <= order(target_version) and not _migration_success_exists(v,n)]
+    if not pending:
+        return verify_schema_integrity() if order(target_version) >= order('8.0') else True
+    # Only an execution request creates history; a read-only no-pending check does not.
+    os.makedirs(DATASETS_DIR, exist_ok=True)
+    _init_migration_history()
+    if not os.path.isfile(MIGRATION_HISTORY_PATH):
+        logger.error('Migration history unavailable; refusing to modify schema')
+        return False
+    # Never alter data-layout artifacts silently while applying schema changes.
+    # Root placement is an explicitly separate maintenance action.
+    if os.path.exists(DB_PATH) and os.path.getsize(DB_PATH) > 0:
+        if not backup_database():
+            logger.error('Migration denied: consistent preflight backup unavailable')
+            return False
+    try:
+        _MIGRATION_STRICT = True
+        for version, name, fn in pending:
+            if not fn():
+                logger.error('Migration failed: %s', name)
+                return False
+        return verify_schema_integrity() if order(target_version) >= order('8.0') else True
+    except Exception as exc:
+        logger.error('Migration aborted: %s', exc)
+        return False
+    finally:
+        _MIGRATION_STRICT = False
 
 #======================================================================
 # MIGRATION HELPERS
@@ -909,70 +920,69 @@ def _migrate_v8_0() -> bool:
 # ============================================================================
 
 def verify_schema_integrity() -> bool:
-    """
-    Verify database schema integrity.
-    
-    Returns:
-        bool: True if schema is valid, False otherwise
-    """
+    """Verify actual column contracts and bounded SQLite file integrity."""
+    if not os.path.isfile(DB_PATH):
+        return False
+    required = {
+      'gui_events': {'id','timestamp','event','details'},
+      'qa_feedback': {'id','ts','question','score','feedback'},
+      'emotion_states': {'id','ts','emotion','intensity','context'},
+      'traits': {'id','trait_name','description','last_updated','ts','trait','value','source'},
+      'performance_metrics': {'id','ts','metric_name','metric_value','component','metadata'},
+      'audit_trail': {'id','ts','user_id','action','resource','result','details'},
+    }
     try:
-        conn = _connect()
-        cur = conn.cursor()
-        
-        # Check required tables exist
-        required_tables = [
-            'gui_events',
-            'qa_feedback',
-            'emotion_states',
-            'traits',
-            'performance_metrics',
-            'audit_trail'
-        ]
-        
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        existing_tables = [row[0] for row in cur.fetchall()]
-        
-        missing_tables = set(required_tables) - set(existing_tables)
-        
-        if missing_tables:
-            logger.warning(f"Missing tables: {missing_tables}")
-            conn.close()
-            return False
-        
-        conn.close()
-        logger.info("✓ Schema integrity verified")
+        with sqlite3.connect('file:' + os.path.abspath(DB_PATH) + '?mode=ro',uri=True) as conn:
+            if conn.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+                return False
+            for table, columns in required.items():
+                actual = {row[1] for row in conn.execute('PRAGMA table_info("'+table+'")')}
+                if not columns.issubset(actual):
+                    logger.warning('Invalid schema for %s; columns missing: %s',table,columns-actual)
+                    return False
         return True
-        
-    except Exception as e:
-        logger.error(f"Schema verification failed: {e}")
+    except Exception as exc:
+        logger.error('Schema verification failed: %s',exc)
         return False
 
 def backup_database(backup_path: str = None) -> Optional[str]:
-    """
-    Create backup of database before migrations.
-    
-    Args:
-        backup_path: Custom backup path (optional)
-        
-    Returns:
-        str: Path to backup file, or None if failed
-    """
+    """Online SQLite backup includes committed WAL pages; unique, verified, no clobber."""
+    if not os.path.isfile(DB_PATH):
+        return None
+    temp = None
     try:
         if backup_path is None:
             backup_dir = os.path.join(DATASETS_DIR, 'backups')
-            os.makedirs(backup_dir, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_path = os.path.join(backup_dir, f"system_logs_backup_{timestamp}.db")
-        
-        import shutil
-        shutil.copy2(DB_PATH, backup_path)
-        
-        logger.info(f"✓ Database backed up to: {backup_path}")
-        return backup_path
-        
-    except Exception as e:
-        logger.error(f"Database backup failed: {e}")
+            backup_path = os.path.join(backup_dir, 'system_logs_backup_' +
+                datetime.now().strftime('%Y%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:10] + '.db')
+        dest = pathlib.Path(backup_path).expanduser().absolute()
+        source = pathlib.Path(DB_PATH).expanduser().absolute()
+        if dest == source or dest.exists() or dest.is_symlink():
+            raise FileExistsError('backup destination must be a new file')
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        temp = dest.with_name('.' + dest.name + '.' + uuid.uuid4().hex + '.partial')
+        with sqlite3.connect('file:' + str(source) + '?mode=ro', uri=True, timeout=10) as src:
+            with sqlite3.connect(str(temp), timeout=10) as dst:
+                src.backup(dst, pages=256, sleep=0.05)
+                check = dst.execute('PRAGMA quick_check').fetchone()
+                if not check or check[0] != 'ok':
+                    raise RuntimeError('backup_quick_check_failed')
+        # Reserve final name atomically; cannot overwrite a prior backup.
+        with open(dest, 'xb') as out, open(temp, 'rb') as inp:
+            shutil.copyfileobj(inp, out, 1024*1024)
+            out.flush()
+            os.fsync(out.fileno())
+        with sqlite3.connect('file:' + str(dest) + '?mode=ro', uri=True) as verify:
+            if verify.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+                raise RuntimeError('copied_backup_quick_check_failed')
+        return str(dest)
+    except Exception as exc:
+        logger.error('SQLite online backup failed: %s', exc)
         return None
+    finally:
+        if temp is not None:
+            try: pathlib.Path(temp).unlink(missing_ok=True)
+            except Exception: pass
 
 def get_migration_status() -> Dict[str, Any]:
     """
@@ -1055,6 +1065,11 @@ if __name__ == '__main__':
     logger.info("SarahMemory Migrations Testing Complete")
     logger.info("="*70)
 
+def rollback_migration(steps=1):
+    """Safe explicit refusal: destructive downgrade plan has not been authorized."""
+    return {"ok": False, "reason": "verified_downgrade_plan_required", "steps": steps,
+            "execution_authority": False}
+
 # ====================================================================
 # END OF SarahMemoryMigrations.py v9.0.0
 # ====================================================================
@@ -1063,7 +1078,7 @@ if __name__ == '__main__':
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryMigrations',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Infrastructure',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -1081,23 +1096,15 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
-    return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
-    }
+    """Non-executing adapter presence probe. No fabricated live quality measurements."""
+    return {"status":"Unverified", "availability":None, "integrity":None,
+            "performance":None, "reliability":None, "confidence":0.0,
+            "latency_ms":None, "stability":None, "compatibility":None,
+            "notes":["SarahMemoryMigrations.py: module adapter present; live health not measured"]}
 
 
 def sml_diagnostics():
@@ -1106,7 +1113,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryMigrations',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

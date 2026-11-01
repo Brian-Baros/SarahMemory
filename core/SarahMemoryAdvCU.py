@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryAdvCU.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 ADVANCED CONTEXT UNIT (AdvCU)
@@ -28,8 +27,8 @@ KEY CAPABILITIES:
 -----------------
 1. INTENT CLASSIFICATION
 - Rule-based fast classification (offline-first)
-- Neural embedding-based classification (when models available)
-- Hybrid scoring with confidence levels
+- Optional approved local neural embeddings for text similarity
+- Conservative contextual scoring with bounded heuristic confidence
 - 19+ distinct intent categories
 
 2. COMMAND PARSING
@@ -100,7 +99,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -124,7 +123,9 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any, Set, Union, Callable
 from enum import Enum
-from collections import defaultdict
+from collections import defaultdict, Counter
+from contextlib import closing
+from pathlib import Path
 
 # ============================================================================
 # SAFE IMPORTS
@@ -195,7 +196,7 @@ INTENT_CACHE_PATH = os.path.join(DATASETS_DIR, "intent_override_cache.json")
 CODE_CORPUS_JSON = os.path.join(DATASETS_DIR, "code_corpus_cache.json")
 
 # Ensure directories exist
-os.makedirs(os.path.dirname(SYSTEM_DB_PATH), exist_ok=True)
+# Import is read-only: create database directories only on an explicit persistence operation.
 
 # Offline mode detection
 _OFFLINE_MODE = bool(
@@ -207,6 +208,15 @@ _OFFLINE_MODE = bool(
 
 # Thread lock for model loading
 _model_lock = threading.RLock()
+_corpus_lock = threading.RLock()
+_db_lock = threading.RLock()
+_db_initialized_path = None
+_ADVCU_MAX_INPUT = 16384
+_ADVCU_MAX_SOURCE_FILES = 256
+_ADVCU_MAX_SOURCE_BYTES = 1024 * 1024
+_ADVCU_MAX_MINED_ROWS_PER_FILE = 1200
+_ADVCU_MAX_CORPUS_RESULTS = 800
+
 
 
 # ============================================================================
@@ -460,7 +470,7 @@ _CREATIVE_VERBS = {
     "produce", "build", "craft", "render", "write"
 }
 _CREATIVE_OUTPUT_KEYWORDS = {
-    "image": ("image", "picture", "photo", "art", "drawing", "poster", "graphic", "wallpaper"),
+    "image": ("image", "picture", "photo", "art", "drawing", "poster", "graphic", "wallpaper", "logo", "meme", "banner", "illustration", "sketch"),
     "video": ("video", "movie", "clip", "animation", "reel", "short"),
     "music": ("music", "song", "beat", "melody", "instrumental", "lyrics", "track"),
     "avatar": ("avatar", "character", "persona", "model"),
@@ -634,10 +644,11 @@ class ParsedCommand:
             "semantic_summary": self.semantic_summary,
             "module_hints": list(self.module_hints or []),
             "helper_payload": dict(self.helper_payload or {}),
+            "execution_authority": False,
         }
 
     def is_actionable(self) -> bool:
-        """Check if this command can be executed."""
+        """Return a potential action candidate, never an authorization verdict."""
         return self.intent in (
             "open_app", "open_url", "search_web", "play_media",
             "close_quit", "window_mgmt", "system_control", "agent_control",
@@ -702,11 +713,8 @@ def tokenize(text: str) -> List[str]:
 
 
 def _contains_any(text: str, terms: List[str]) -> bool:
-    """Check if text contains any of the given terms."""
-    if not text or not terms:
-        return False
-    t = text.lower()
-    return any(term.lower() in t for term in terms)
+    """Phrase-boundary matching: avoid 'ram' inside 'programming'."""
+    return _advcu_any_phrase(_normalize_text(text), terms)
 
 
 def _contains_phrase(text: str, phrase: str) -> bool:
@@ -734,33 +742,27 @@ _ST_EMBEDDER_LOADED: bool = False
 
 
 def _hash_embed(text: str, dim: int = 64) -> List[float]:
-    """
-    Generate a deterministic embedding vector using hash functions.
-    Works completely offline without any external dependencies.
+    """Deterministic signed feature hashing of lexical tokens and character trigrams.
 
-    Args:
-        text: Input text to embed
-        dim: Dimension of output vector
-
-    Returns:
-        List of float values (embedding vector)
+    This is lexical similarity, not a trained semantic embedding model.
     """
-    if not text:
+    dim = max(8, min(2048, int(dim)))
+    tokens = tokenize(_normalize_text(text)[:_ADVCU_MAX_INPUT])
+    if not tokens:
         return [0.0] * dim
-
-    # Use SHA-256 hash
-    h = hashlib.sha256(text.encode("utf-8", errors="ignore")).digest()
-
-    # Generate dim floats from hash bytes
-    vals = []
-    for i in range(dim):
-        b = h[i % len(h)]
-        # Transform byte to float using sin for variation
-        vals.append(math.sin((b + i) * 0.0174533))
-
-    # Normalize vector
-    norm = math.sqrt(sum(v * v for v in vals)) or 1.0
-    return [v / norm for v in vals]
+    vector = [0.0] * dim
+    features = Counter("w:" + token for token in tokens)
+    for token in tokens:
+        padded = '^' + token + '$'
+        for i in range(max(0, len(padded) - 2)):
+            features['g:' + padded[i:i + 3]] += 0.35
+    for feature, weight in features.items():
+        digest = hashlib.blake2b(feature.encode('utf-8'), digest_size=8).digest()
+        idx = int.from_bytes(digest[:4], 'big') % dim
+        sign = -1 if digest[4] & 1 else 1
+        vector[idx] += sign * min(weight, 4)
+    norm = math.sqrt(sum(v * v for v in vector))
+    return [v / norm for v in vector] if norm else [0.0] * dim
 
 
 def _get_local_st() -> Optional[Any]:
@@ -809,22 +811,30 @@ def _get_local_st() -> Optional[Any]:
 
             # Try candidates in order; prefer local folder under MODELS_DIR
             models_dir = getattr(config, "MODELS_DIR", None) or os.path.join(os.getcwd(), "data", "models")
-            for repo in candidates:
+            model_root = Path(models_dir).resolve()
+            for repo in candidates[:8]:
                 try:
-                    local_dir1 = os.path.join(models_dir, repo.replace("/", "_"))
-                    local_dir2 = os.path.join(models_dir, repo)
-                    if os.path.isdir(local_dir1):
-                        _ST_EMBEDDER = SentenceTransformer(local_dir1, local_files_only=True)
-                    elif os.path.isdir(local_dir2):
-                        _ST_EMBEDDER = SentenceTransformer(local_dir2, local_files_only=True)
-                    else:
-                        _ST_EMBEDDER = SentenceTransformer(repo, local_files_only=True)
-                    logger.info(f"[AdvCU] Loaded SentenceTransformer model: {repo}")
+                    name = str(repo).strip().replace("\\", "/")
+                    if not name or name.startswith("/") or ".." in name.split("/") or ":" in name:
+                        continue
+                    local_dir1 = model_root / name.replace("/", "_")
+                    local_dir2 = model_root / name
+                    selected_path = None
+                    for candidate_path in (local_dir1, local_dir2):
+                        resolved_path = candidate_path.resolve()
+                        if resolved_path.is_relative_to(model_root) and resolved_path.is_dir():
+                            selected_path = resolved_path
+                            break
+                    if selected_path is None:
+                        continue  # A resolver identifier is not permission to fetch a model.
+                    _ST_EMBEDDER = SentenceTransformer(str(selected_path), local_files_only=True)
+                    logger.info("[AdvCU] Loaded local embedding model from approved models directory")
                     break
                 except Exception as e:
                     logger.debug(f"[AdvCU] ST load failed for {repo}: {e}")
                     _ST_EMBEDDER = None
-            logger.info("[AdvCU] Loaded SentenceTransformer model")
+            if _ST_EMBEDDER is None:
+                logger.debug("[AdvCU] No local SentenceTransformer model available")
 
         except Exception as e:
             logger.debug(f"[AdvCU] Could not load ST model: {e}")
@@ -908,69 +918,35 @@ def evaluate_similarity(text1: str, text2: str) -> float:
 
 
 def get_vector_score(text1: str, text2: str) -> float:
-    """
-    Calculate cosine similarity between character-code vectors.
-    Simple offline heuristic without neural models.
-
-    Args:
-        text1: First text
-        text2: Second text
-
-    Returns:
-        Similarity score between 0.0 and 1.0
-    """
-    try:
-        # Convert to character code vectors
-        a = [ord(c) for c in text1 if c.isalnum()]
-        b = [ord(c) for c in text2 if c.isalnum()]
-
-        if not a or not b:
-            return 0.0
-
-        # Pad shorter vector
-        min_len = min(len(a), len(b))
-        a = a[:min_len]
-        b = b[:min_len]
-
-        # Calculate cosine similarity
-        dot_product = sum(x * y for x, y in zip(a, b))
-        norm_a = math.sqrt(sum(x * x for x in a))
-        norm_b = math.sqrt(sum(x * x for x in b))
-
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
-
-        return dot_product / (norm_a * norm_b)
-
-    except Exception as e:
-        logger.error(f"[VEC] Vector score error: {e}")
+    """Bounded lexical vector score (0..1), not a neural-semantic certainty."""
+    a = _normalize_text(text1)
+    b = _normalize_text(text2)
+    if not a or not b:
         return 0.0
+    if a.casefold() == b.casefold():
+        return 1.0
+    tokens_a, tokens_b = set(tokenize(a)), set(tokenize(b))
+    if not tokens_a or not tokens_b:
+        return 0.0
+    lexical = len(tokens_a & tokens_b) / max(1, len(tokens_a | tokens_b))
+    vector = max(0.0, cosine_similarity(_hash_embed(a, 256), _hash_embed(b, 256)))
+    return round(max(0.0, min(1.0, 0.55 * lexical + 0.45 * vector)), 6)
 
 
 def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
-    """
-    Calculate cosine similarity between two vectors.
-
-    Args:
-        vec1: First vector
-        vec2: Second vector
-
-    Returns:
-        Cosine similarity (-1.0 to 1.0)
-    """
-    if not vec1 or not vec2:
-        return 0.0
-
+    """Validate equal vector dimensions and finite values before cosine comparison."""
     try:
-        n = min(len(vec1), len(vec2))
-        dot = sum(vec1[i] * vec2[i] for i in range(n))
-        norm1 = math.sqrt(sum(vec1[i] ** 2 for i in range(n))) or 1.0
-        norm2 = math.sqrt(sum(vec2[i] ** 2 for i in range(n))) or 1.0
-
-        return dot / (norm1 * norm2)
-
-    except Exception as e:
-        logger.error(f"[COS] Cosine similarity error: {e}")
+        if not vec1 or not vec2 or len(vec1) != len(vec2):
+            return 0.0
+        a = [float(v) for v in vec1]
+        b = [float(v) for v in vec2]
+        if not all(math.isfinite(v) for v in a + b):
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(x * x for x in b))
+        return max(-1.0, min(1.0, dot / (na * nb))) if na and nb else 0.0
+    except (TypeError, ValueError, OverflowError):
         return 0.0
 
 
@@ -978,28 +954,61 @@ def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
 # DETECTION HELPERS
 # ============================================================================
 
-def _likely_math(text: str) -> bool:
-    """Check if text likely contains a math expression."""
-    t = text.replace(" ", "")
+def _advcu_phrase(text: str, term: str) -> bool:
+    """Bounded whole-word or whole-phrase matching, never substring escalation."""
+    if not isinstance(text, str) or not isinstance(term, str) or not term.strip():
+        return False
+    return bool(re.search(r"(?<![a-z0-9_])" + re.escape(term.strip().lower()) +
+                          r"(?![a-z0-9_])", text.lower()))
+
+
+def _advcu_any_phrase(text: str, terms) -> bool:
+    return any(_advcu_phrase(text, term) for term in terms)
+
+
+def _advcu_informational(text: str) -> bool:
+    """Distinguish questions about actions from requests to execute those actions."""
+    t = _normalize_text(text).lower().strip()
     if not t:
         return False
-
-    # Must contain at least one math symbol and one digit
-    has_symbol = any(c in MATH_SYMBOLS for c in t)
-    has_digit = any(c.isdigit() for c in t)
-
-    if not (has_symbol and has_digit):
-        return False
-
-    # Avoid pure phone numbers or IDs
-    if re.fullmatch(r"\d{7,}", t):
-        return False
-
-    # Check for basic arithmetic pattern
-    if re.search(r"\d+\s*[\+\-\*/\^%]\s*\d+", text):
+    if re.match(r"^(?:what|why|how|who|where|when|which|define|explain|describe|"
+                r"tell me about|teach me|please explain|can you explain|could you explain|"
+                r"show me how to|what does|what is|what are)\b", t):
         return True
+    if re.match(r"^(?:can|could|would|will) you (?:tell|explain|describe|show|teach)\b", t):
+        return True
+    return False
 
-    return True
+
+def _advcu_direct_action(text: str) -> bool:
+    """Recognize a requested operation, not a quoted instruction or a discussion."""
+    t = _normalize_text(text).lower().strip()
+    if not t or _advcu_informational(t):
+        return False
+    t = re.sub(r"^(?:hey sarah[, ]*|sarah[, ]*|please\s+)", "", t).strip()
+    return bool(re.match(r"^(?:(?:can|could|would|will) you\s+|i want you to\s+|"
+                         r"please\s+)?(?:open|launch|start|run|execute|close|quit|"
+                         r"exit|stop|kill|pause|resume|turn|enable|disable|increase|"
+                         r"decrease|set|play|search|find|go to|navigate to|take me to|"
+                         r"show|create|make|generate|design|render|produce|compose|build|draw|write|send|save|delete|install|reboot|"
+                         r"restart|shut down|mute|unmute|maximize|minimize|focus)\b", t))
+
+
+def _advcu_explicit_visual(text: str) -> bool:
+    t = _normalize_text(text).lower()
+    strong = ("image", "photo", "picture", "camera", "webcam", "screenshot", "video frame",
+              "in the scene", "what do you see", "look at", "in the image", "in this image", "color of", "colour of",
+              "what color", "what colour", "read the sign", "read this sign", "read the label",
+              "read the screen", "read this text", "read this label", "ocr", "license plate", "track motion",
+              "track the", "safety zone", "hazard zone", "distance to", "how far away",
+              "how close is", "what does my shirt say", "what does the sign say",
+              "is this outfit", "does this shirt", "detect objects", "detect faces")
+    return _advcu_any_phrase(t, strong)
+
+
+def _likely_math(text: str) -> bool:
+    """Arithmetic only; never treat model names, versions or UTF-8 as math."""
+    return extract_math_expression(text) is not None
 
 
 def _looks_like_url(text: str) -> bool:
@@ -1012,57 +1021,32 @@ def _looks_like_url(text: str) -> bool:
 
 
 def _looks_like_login(text: str) -> bool:
-    """Check if text indicates a login request."""
-    t = text.lower()
-    keywords = [
-        "login", "log in", "sign in", "sign-in",
-        "authenticate", "enter password", "enter pin"
-    ]
-    return any(k in t for k in keywords)
+    t = _normalize_text(text).lower()
+    return bool(not _advcu_informational(t) and _advcu_any_phrase(t,
+        ("login", "log in", "sign in", "sign-in", "authenticate", "enter password", "enter pin")))
 
 
 def _looks_like_signup(text: str) -> bool:
-    """Check if text indicates a signup request."""
-    t = text.lower()
-    keywords = [
-        "sign up", "signup", "create account",
-        "register", "registration", "new account"
-    ]
-    return any(k in t for k in keywords)
+    t = _normalize_text(text).lower()
+    return bool(not _advcu_informational(t) and _advcu_any_phrase(t,
+        ("sign up", "signup", "create account", "register account", "new account")))
 
 
 def _looks_like_device_query(text: str) -> bool:
-    """Check if text asks about the device/system."""
-    t = text.lower()
-    keywords = [
-        "hardware",
-        "device",
-        "system info",
-        "system status",
-        "system stats",
-        "gpu",
-        "vram",
-        "cuda",
-        "nvidia-smi",
-        "disk space",
-        "free space",
-        "drive space",
-        "storage",
-        "cpu usage",
-        "cpu temp",
-        "cpu temperature",
-        "processor temp",
-        "gpu temp",
-        "gpu temperature",
-        "thermal",
-        "temperature",
-        "temp",
-        "cpu",
-        "ram",
-        "memory usage",
-        "memory",
-    ]
-    return any(k in t for k in keywords)
+    """Hardware status/identity about this device, not generic software education."""
+    t = _normalize_text(text).lower()
+    if _advcu_informational(t) and not _advcu_any_phrase(t, ("my cpu", "my gpu", "my ram", "my device", "my computer", "my pc", "your cpu", "your gpu", "your ram", "your processor", "your hardware", "current cpu", "current gpu", "system status", "system stats", "hardware status")):
+        return False
+    explicit = ("my cpu", "my gpu", "my ram", "my computer", "my device", "my pc", "your cpu", "your gpu", "your ram", "your processor", "your hardware",
+                "cpu usage", "cpu temp", "cpu temperature", "gpu temp", "gpu temperature",
+                "cpu speed", "gpu speed", "disk space", "free space", "drive space",
+                "how much ram", "hardware status", "device status", "system stats", "system info",
+                "my hardware", "my processor", "nvidia-smi", "vram usage", "storage usage")
+    if _advcu_any_phrase(t, explicit):
+        return True
+    if re.search(r"^(?:show|check|report|get|display|read|inspect)\b", t):
+        return _advcu_any_phrase(t, ("gpu", "cpu", "ram", "vram", "hardware", "device", "disk", "storage", "temperature"))
+    return False
 
 def _looks_like_diagnostics(text: str) -> bool:
     t = text.lower()
@@ -1079,22 +1063,21 @@ def _looks_like_diagnostics(text: str) -> bool:
 
 
 def _looks_like_time_query(text: str) -> bool:
-    """Check if text asks about time or scheduling."""
-    t = text.lower()
-
-    # Direct time questions
-    if any(phrase in t for phrase in [
-        "what time", "current time", "time now", "today's date",
-        "what's today", "what day is", "schedule", "remind me",
-        "set alarm", "calendar", "appointment"
-    ]):
+    t = _normalize_text(text).lower()
+    if not t:
+        return False
+    explicit = ("what time", "current time", "time now", "today's date", "what's today",
+                "what day is", "schedule", "remind me", "set alarm", "calendar", "appointment",
+                "meeting tomorrow", "meeting today", "meeting next", "date today")
+    if _advcu_any_phrase(t, explicit):
         return True
-
-    # Time-related words with question context
-    if TIME_WORDS.search(t) and QUESTION_STARTERS.search(t):
-        return True
-
-    return False
+    # Generic prepositions 'in/on/at/this' do not express a temporal question.
+    temporal = ("today", "tonight", "tomorrow", "yesterday", "minutes", "minute", "hours",
+                "hour", "weeks", "week", "month", "months", "year", "years", "noon",
+                "midnight", "morning", "afternoon", "evening", "next friday", "next monday")
+    return bool(_advcu_any_phrase(t, temporal) and
+                (re.search(r"^(?:when|what time|how long|how many|how soon)\b", t) or
+                 _advcu_any_phrase(t, ("remind", "meeting", "deadline", "schedule", "alarm"))))
 
 
 def _looks_like_greeting(text: str) -> bool:
@@ -1114,51 +1097,28 @@ def _looks_like_identity(text: str) -> bool:
 
 
 def _looks_like_system_control(text: str) -> bool:
-    """Check if text is a system control command."""
-    t = text.lower()
-    keywords = [
-        "volume", "brightness", "system", "mute", "unmute",
-        "increase", "decrease", "turn on", "turn off",
-        "shut down", "restart", "reboot", "sleep", "hibernate",
-        "wifi", "bluetooth", "airplane mode"
-    ]
-    return any(kw in t for kw in keywords)
+    t = _normalize_text(text).lower()
+    if not _advcu_direct_action(t):
+        return False
+    return _advcu_any_phrase(t, ("volume", "brightness", "mute", "unmute", "wifi", "bluetooth",
+                                 "airplane mode", "restart", "reboot", "hibernate", "sleep",
+                                 "turn on", "turn off", "shut down", "system settings"))
 
 
 def _detect_action_subject(text: str) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Detect action and subject from text.
-
-    Returns:
-        (action_category, subject_key) tuple
-    """
-    t = text.lower()
-    tokens = tokenize(text)
-    joined = " ".join(tokens)
-
-    # Detect action
+    """Surface action and named target; quoted/discussed operations are not actions."""
+    t = _normalize_text(text).lower()
     action_label = None
-    for action_key, synonyms in ACTION_SYNONYMS.items():
-        for syn in synonyms:
-            if _contains_phrase(joined, syn) or _contains_phrase(t, syn):
+    if _advcu_direct_action(t) and not _advcu_informational(t):
+        for action_key, synonyms in ACTION_SYNONYMS.items():
+            if _advcu_any_phrase(t, synonyms):
                 action_label = action_key
                 break
-        if action_label:
-            break
-
-    # Detect subject
     subject_key = None
-    for subj_key, meta in SUBJECT_LEXICON.items():
-        if _contains_phrase(joined, subj_key) or _contains_phrase(t, subj_key):
-            subject_key = subj_key
+    for key, meta in SUBJECT_LEXICON.items():
+        if _advcu_phrase(t, key) or _advcu_any_phrase(t, meta.get("aka", ())):
+            subject_key = key
             break
-        for alias in meta.get("aka", []):
-            if _contains_phrase(joined, alias) or _contains_phrase(t, alias):
-                subject_key = subj_key
-                break
-        if subject_key:
-            break
-
     return action_label, subject_key
 
 
@@ -1186,10 +1146,12 @@ def _canonical_surface_exec(app_name: Optional[str]) -> str:
 def extract_surface_task(text: str, preferred_app: Optional[str] = None) -> Dict[str, Any]:
     t = _normalize_text(text)
     low = t.lower()
+    if not _advcu_direct_action(low) or _advcu_informational(low):
+        return {}
     result: Dict[str, Any] = {}
     requested_app = ''
-    for alias in sorted(_SURFACE_APP_ALIASES.keys(), key=len, reverse=True):
-        if re.search(r'(?<![a-z0-9])' + re.escape(alias) + r'(?![a-z0-9])', low):
+    for alias in sorted(_SURFACE_APP_ALIASES, key=len, reverse=True):
+        if _advcu_phrase(low, alias):
             requested_app = alias
             break
     if preferred_app and not requested_app:
@@ -1198,52 +1160,36 @@ def extract_surface_task(text: str, preferred_app: Optional[str] = None) -> Dict
     if canonical:
         result['requested_app'] = requested_app or canonical
         result['requested_app_exec'] = canonical
-
     open_named = re.search(r'\bopen\b.*?\b(?:document|file|spreadsheet|workbook|project|page|website)\b\s*(?:named|called)\s+(.+?)(?:\s+(?:and\s+(?:write|create|make)|about|with)\b|$)', t, re.I)
     if open_named:
         result['task_kind'] = 'open_named_document'
-        result['document_name'] = open_named.group(1).strip('" .')
+        result['document_name'] = open_named.group(1).strip('" .')[:256]
         return result
-
     title_m = re.search(r'\btitled\s+(.+?)(?:\s+and\s+(?:write|create|make)|\s+about|\s+with|$)', t, re.I)
     if title_m:
-        result['title'] = title_m.group(1).strip('" .')
+        result['title'] = title_m.group(1).strip('" .')[:256]
     about_matches = re.findall(r'\b(?:about|on|regarding)\s+([^?.!,;]+)', t, re.I)
     if about_matches:
-        result['topic'] = str(about_matches[-1]).strip(' ?.,')
-
-    if 'website' in low or 'webpage' in low or 'homepage' in low or 'about page' in low:
+        result['topic'] = about_matches[-1].strip(' ?.,')[:256]
+    if _advcu_any_phrase(low, ('website','webpage','homepage','about page')):
         result['task_kind'] = 'website_scaffold'
-        pages = []
-        if 'homepage' in low or 'home page' in low:
-            pages.append('index')
-        if 'about page' in low:
-            pages.append('about')
-        result['pages'] = pages or ['index', 'about']
-        if not result.get('topic'):
-            using_app = re.search(r'\busing\s+([A-Za-z0-9+ ._-]+?)(?:\s+with\b|\s+and\b|\s+about\b|$)', t, re.I)
-            if using_app:
-                maybe = using_app.group(1).strip(' .')
-                if maybe and 'website' not in maybe.lower():
-                    result['authoring_app_hint'] = maybe
+        pages=[]
+        if _advcu_any_phrase(low, ('homepage','home page')): pages.append('index')
+        if _advcu_phrase(low,'about page'): pages.append('about')
+        result['pages'] = pages or ['index','about']
         return result
-
-    if 'checkbook' in low or 'track my spending' in low or 'spreadsheet' in low or 'workbook' in low or ('excel' in low and any(k in low for k in ('create', 'make', 'build'))):
+    if _advcu_any_phrase(low, ('checkbook','track my spending','spreadsheet','workbook')) and _advcu_any_phrase(low, ('create','make','build','write')):
         result['task_kind'] = 'spreadsheet_template'
-        result['template_kind'] = 'checkbook' if ('checkbook' in low or 'spending' in low) else 'table'
+        result['template_kind'] = 'checkbook' if _advcu_any_phrase(low, ('checkbook','spending')) else 'table'
         return result
-
-    if 'draw' in low:
+    if _advcu_phrase(low,'draw'):
         result['task_kind'] = 'paint_draw'
         shape_m = re.search(r'\b(' + '|'.join(_SURFACE_DRAW_SHAPES) + r')\b', low)
         result['draw_subject'] = shape_m.group(1) if shape_m else 'drawing'
         return result
-
-    if any(x in low for x in ('document', 'report', 'essay', 'letter', 'page', 'write me a', 'write a', 'create me a document', 'create a document')):
+    if _advcu_any_phrase(low, ('write','create','make','build')) and _advcu_any_phrase(low, ('document','report','essay','letter','page')):
         result['task_kind'] = 'write_document'
-        result['document_text'] = t
-        return result
-
+        result['document_text'] = t[:2048]
     return result
 
 def _extract_keywords(text: str, limit: int = 8) -> List[str]:
@@ -1328,7 +1274,7 @@ def _normalize_visual_subject(subject: Optional[str]) -> Optional[str]:
     s = _normalize_text(subject).lower().strip(" ?!,.:-")
     if not s:
         return None
-    s = re.sub(r"(my|the|this|that|these|those|a|an)", " ", s)
+    s = re.sub(r"\b(my|the|this|that|these|those|a|an)\b", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     if not s:
         return None
@@ -1341,8 +1287,7 @@ def _normalize_visual_subject(subject: Optional[str]) -> Optional[str]:
 
 
 def _contains_any_phrase(text: str, phrases: Tuple[str, ...]) -> bool:
-    lt = (text or "").lower()
-    return any(p in lt for p in phrases)
+    return _advcu_any_phrase(_normalize_text(text), phrases)
 
 
 # --- SARAHMEMORY REALITY PATCH 2026-07-23: model/knowledge routing guards ---
@@ -1358,7 +1303,12 @@ _GENERAL_KNOWLEDGE_STARTERS: Tuple[str, ...] = (
 
 def _looks_like_model_architecture_request(text: str) -> bool:
     lt = _normalize_text(text).lower()
-    return any(h in lt for h in _MODEL_ARCHITECTURE_HINTS)
+    strong = tuple(x for x in _MODEL_ARCHITECTURE_HINTS if x not in
+                   ("train", "training", "adapter", "activation", "model forensics"))
+    if _advcu_any_phrase(lt, strong):
+        return True
+    return bool(_advcu_any_phrase(lt, ("train", "training", "adapter", "activation")) and
+                _advcu_any_phrase(lt, ("model", "llm", "tokenizer", "ai", "neural network")))
 
 
 def _looks_like_general_knowledge_question(text: str) -> bool:
@@ -1379,66 +1329,43 @@ def _looks_like_general_knowledge_question(text: str) -> bool:
 
 
 def _detect_visual_query_type(
-    text: str,
-    subject: Optional[str] = None,
-    output_type: Optional[str] = None,
+    text: str, subject: Optional[str] = None, output_type: Optional[str] = None,
     intent_label: Optional[str] = None,
 ) -> Optional[str]:
-    """Detect whether the user request is a vision/perception request and return a normalized vision query type."""
+    """Require perceptual evidence; generic words like 'say' never open a vision lane."""
     lt = _normalize_text(text).lower()
-    if not lt:
+    if not lt or _looks_like_model_architecture_request(lt):
         return None
-    # SARAHMEMORY REALITY PATCH 2026-07-23:
-    # General knowledge questions and local-model/tokenizer/SEL/QIST architecture work
-    # must not be routed as image/scene requests merely because broad words like
-    # "model" or "text" appear in the prompt.
-    if _looks_like_general_knowledge_question(lt) or _looks_like_model_architecture_request(lt):
+    # Mentioning an image in an instructional, editing, or generation request
+    # is not evidence that the user is asking to perceive an optical frame.
+    if intent_label in ("creative", "build_request"):
         return None
-
-    has_subject = bool(_normalize_visual_subject(subject))
-    has_visual_cues = (
-        _contains_any_phrase(lt, _VISUAL_DEVICE_HINTS)
-        or _contains_any_phrase(lt, _VISUAL_FACE_HINTS)
-        or _contains_any_phrase(lt, _VISUAL_OBJECT_HINTS)
-        or _contains_any_phrase(lt, _VISUAL_SAFETY_HINTS)
-        or _contains_any_phrase(lt, _VISUAL_COLOR_HINTS)
-        or _contains_any_phrase(lt, _VISUAL_TEXT_HINTS)
-        or _contains_any_phrase(lt, _VISUAL_MOTION_HINTS)
-        or _contains_any_phrase(lt, _VISUAL_DISTANCE_HINTS)
-        or _contains_any_phrase(lt, _VISUAL_COMPARE_HINTS)
-        or _contains_any_phrase(lt, _VISUAL_STYLE_HINTS)
-        or _contains_any_phrase(lt, _VISUAL_SCENE_HINTS)
-    )
-    visual_context = bool(has_visual_cues and (has_subject or True))
-    if not visual_context:
+    if _advcu_direct_action(lt) and _advcu_any_phrase(lt, ("generate", "create", "make", "draw", "design", "open", "launch", "save", "write", "render", "produce")):
         return None
-
+    if re.match(r"^(?:how (?:do|can|to)|what (?:is|are)|explain|define)\b", lt) and not _advcu_any_phrase(lt,
+        ("what color", "what colour", "color of", "colour of", "what do you see", "what is in", "read the", "in this image", "in the image", "what is written", "how far", "how close")):
+        return None
+    if not _advcu_explicit_visual(lt):
+        return None
     if _contains_any_phrase(lt, _VISUAL_SAFETY_HINTS):
         return "inspect_safety_zone"
-    if _contains_any_phrase(lt, _VISUAL_COMPARE_HINTS):
+    if _advcu_any_phrase(lt, ("before and after", "compare the image", "compare these photos")):
         return "compare_before_after"
-    if _contains_any_phrase(lt, _VISUAL_STYLE_HINTS):
+    if _advcu_any_phrase(lt, ("look good", "look bad", "look fat", "outfit", "fit", "style")):
         return "assess_style_or_fit"
-    if _contains_any_phrase(lt, _VISUAL_TEXT_HINTS):
-        return "read_text"
-    if _contains_any_phrase(lt, _VISUAL_COLOR_HINTS):
+    if _advcu_any_phrase(lt, ("what color", "what colour", "color of", "colour of", "dominant color", "identify color")):
         return "identify_color"
-    if _contains_any_phrase(lt, _VISUAL_MOTION_HINTS):
+    if _advcu_any_phrase(lt, ("read the", "read this", "ocr", "license plate", "what does my shirt say", "what does the sign say", "text in")):
+        return "read_text"
+    if _advcu_any_phrase(lt, ("track", "motion", "moving", "movement")):
         return "track_motion"
-    if _contains_any_phrase(lt, _VISUAL_DISTANCE_HINTS):
+    if _advcu_any_phrase(lt, ("distance", "how far", "how close", "proximity")):
         return "estimate_distance"
-    if _contains_any_phrase(lt, _VISUAL_FACE_HINTS):
+    if _advcu_any_phrase(lt, ("face", "faces", "facial", "eye color", "eyes")):
         return "detect_faces"
-    if _contains_any_phrase(lt, _VISUAL_SCENE_HINTS):
+    if _advcu_any_phrase(lt, ("what do you see", "describe the scene", "summarize this image")):
         return "scene_summary"
-    if _contains_any_phrase(lt, _VISUAL_OBJECT_HINTS):
-        return "detect_objects"
-
-    if output_type == "image":
-        return "scene_summary"
-    if intent_label in ("question", "device_query", "statement") and visual_context:
-        return "scene_summary"
-    return None
+    return "detect_objects" if _advcu_any_phrase(lt, ("object", "objects", "identify", "detect")) else "scene_summary"
 
 
 def _extract_visual_subject_from_text(text: str, query_type: Optional[str], fallback_subject: Optional[str] = None) -> Optional[str]:
@@ -1487,32 +1414,14 @@ def _visual_attributes_for_query_type(query_type: Optional[str]) -> List[str]:
     return list(mapping.get(query_type or "", []))
 
 
-def _infer_action_expectation(
-    text: str,
-    query_type: Optional[str],
-    intent_family: Optional[str],
-    lane: Optional[str],
-) -> Optional[str]:
-    """Infer whether the request is answer-only, advisory, monitoring, or a governed action candidate."""
+def _infer_action_expectation(text: str, query_type: Optional[str], intent_family: Optional[str], lane: Optional[str]) -> Optional[str]:
     lt = _normalize_text(text).lower()
-    if not query_type:
-        if lane == "action" or intent_family == "ACTION":
-            return "governed_action_candidate"
-        return None
-
     if query_type == "inspect_safety_zone":
-        if any(tok in lt for tok in _VISUAL_ACTION_HINTS):
-            return "governed_action_candidate"
-        return "answer_with_monitoring_guidance"
-
+        return "governed_action_candidate" if _advcu_direct_action(lt) and _advcu_any_phrase(lt, _VISUAL_ACTION_HINTS) else "answer_with_monitoring_guidance"
     if query_type in ("track_motion", "estimate_distance"):
-        if any(tok in lt for tok in ("track", "monitor", "follow", "alert", "notify", "report", "warn")):
-            return "answer_with_monitoring_guidance"
-        return "answer_only"
-
-    if lane == "action" or intent_family == "ACTION":
+        return "answer_with_monitoring_guidance" if _advcu_any_phrase(lt, ("track", "monitor", "follow", "alert", "notify", "report", "warn")) else "answer_only"
+    if (lane == "action" or intent_family == "ACTION") and _advcu_direct_action(lt):
         return "governed_action_candidate"
-
     return "answer_only"
 
 
@@ -1532,20 +1441,20 @@ def _merge_priority_attributes(priority: List[str], existing: List[str], limit: 
 
 
 def _detect_output_type(text: str, intent_label: str, action: Optional[str] = None) -> Optional[str]:
-    """Infer the primary requested output/artifact type."""
-    t = (text or "").lower()
-    # SARAHMEMORY REALITY PATCH 2026-07-23:
-    # Model/tokenizer/SEL/QIST architecture requests are not avatar/image creative work.
+    t = _normalize_text(text).lower()
     if _looks_like_model_architecture_request(t):
         return "model_architecture"
-    if _looks_like_general_knowledge_question(t):
+    if intent_label in ("diagnostics", "device_query"):
+        return "system_status"
+    if _advcu_informational(t) and not _advcu_explicit_visual(t):
         return "text_answer"
-    for kind, hints in _CREATIVE_OUTPUT_KEYWORDS.items():
-        for hint in hints:
-            if hint in t:
-                return kind
     if intent_label == "math":
         return "answer"
+    # Artifact type only when it was actually requested, not merely mentioned.
+    if (_advcu_direct_action(t) or intent_label in ("creative", "build_request")) and _advcu_any_phrase(t, _CREATIVE_VERBS):
+        for kind, hints in _CREATIVE_OUTPUT_KEYWORDS.items():
+            if _advcu_any_phrase(t, hints):
+                return kind
     if action in ("open_app", "open_url", "search_web", "play_media", "window_mgmt", "close_quit", "system_control"):
         return "action"
     if intent_label in ("diagnostics", "device_query"):
@@ -1729,169 +1638,95 @@ def _build_helper_payload_from_command(cmd: ParsedCommand) -> Dict[str, Any]:
 # ============================================================================
 
 def _rule_based_intent(text: Any) -> str:
-    """
-    Fast rule-based intent classification.
-    Prioritizes specific intents over broad ones.
-
-    Args:
-        text: Input text
-
-    Returns:
-        Intent label string
-    """
+    """Offline deterministic semantic classification; no action authority granted."""
     t = _normalize_text(text)
     if not t:
         return "statement"
-
     lt = t.lower()
-
-    # Priority 1: Authentication flows
+    if _looks_like_diagnostics(lt) and not _advcu_informational(lt):
+        return "diagnostics"
+    if _looks_like_device_query(lt):
+        return "device_query"
+    if _looks_like_time_query(lt):
+        return "time_related"
+    if _likely_math(t):
+        return "math"
+    if _looks_like_general_knowledge_question(lt) or _advcu_informational(lt):
+        return "identity_query" if _looks_like_identity(lt) else "question"
     if _looks_like_login(lt):
         return "login"
     if _looks_like_signup(lt):
         return "signup"
-
-    # Priority 2: Device queries
-    if _looks_like_device_query(lt):
-        return "device_query"
-
-    # Priority 2.5: Diagnostics / health checks
-    if _looks_like_diagnostics(lt):
-        return "diagnostics"
-
-    # Priority 2.75: Creative / build / network requests
-    if any(v in lt for v in _CREATIVE_VERBS) and any(
-        hint in lt for hints in _CREATIVE_OUTPUT_KEYWORDS.values() for hint in hints
-    ):
-        if any(h in lt for h in _NETWORK_HINTS):
+    if _advcu_direct_action(t):
+        if _advcu_any_phrase(t, ("stop", "halt", "pause", "resume", "cancel")) and _advcu_any_phrase(t, ("sarah", "agent", "agents", "mission", "task")):
+            return "agent_control"
+        if _looks_like_system_control(t):
+            return "system_control"
+        action, subj = _detect_action_subject(t)
+        if action:
+            return action
+        if _advcu_any_phrase(lt, _NETWORK_HINTS):
             return "network_request"
-        if any(h in lt for h in _CREATIVE_OUTPUT_KEYWORDS.get("website", ()) + _CREATIVE_OUTPUT_KEYWORDS.get("application", ())):
-            return "build_request"
-        return "creative"
-    if any(h in lt for h in _NETWORK_HINTS):
-        return "network_request"
-
-    # Priority 3: Conversational intents
+        if _advcu_any_phrase(lt, _CREATIVE_VERBS) and any(_advcu_any_phrase(lt, hints) for hints in _CREATIVE_OUTPUT_KEYWORDS.values()):
+            if _advcu_any_phrase(lt, _CREATIVE_OUTPUT_KEYWORDS["website"] + _CREATIVE_OUTPUT_KEYWORDS["application"]):
+                return "build_request"
+            return "creative"
+        return "command"
     if _looks_like_greeting(lt):
         return "greeting"
     if _looks_like_farewell(lt):
         return "farewell"
     if _looks_like_identity(lt):
         return "identity_query"
-
-    # Priority 4: Math and time
-    if _likely_math(t) or MATH_EXPR_REGEX.search(t):
-        return "math"
-    if _looks_like_time_query(lt):
-        return "time_related"
-
-    # Priority 5: System control
-    if _looks_like_system_control(lt):
-        return "system_control"
-
-    # Priority 6: Action + subject combinations
-    action, subject = _detect_action_subject(t)
-    if action and subject:
-        return action
-    elif action:
-        # Have action but no recognized subject
-        return action
-
-    # Priority 7: URL handling
     if _looks_like_url(t):
-        if _contains_any(lt, ["search", "look up", "find", "google"]):
-            return "search_web"
-        return "open_url"
-
-    # Priority 8: Command patterns
-    cmd_starts = [
-        "open", "go to", "launch", "start", "run", "play",
-        "search", "close", "quit", "exit", "shut down", "restart"
-    ]
-    if any(lt.startswith(cmd) for cmd in cmd_starts):
-        return "command"
-
-    # Priority 9: Questions vs statements
-    if QUESTION_STARTERS.search(lt):
-        # Check for smalltalk questions
-        smalltalk_phrases = [
-            "how are you", "how's it going", "how do you feel",
-            "are you okay", "what's up", "what are you doing"
-        ]
-        if any(phrase in lt for phrase in smalltalk_phrases):
-            return "smalltalk"
-        return "question"
-
-    # Priority 10: Short informal greetings
-    if lt in ("hi", "hey", "hello", "yo", "sup"):
-        return "greeting"
-
-    # Default: statement
+        return "question" if t.strip().endswith('?') else "statement"
+    if QUESTION_STARTERS.search(lt) or t.strip().endswith('?'):
+        return "smalltalk" if _advcu_any_phrase(lt, ("how are you", "how's it going", "how do you feel", "are you okay", "what's up")) else "question"
     return "statement"
 
 
 def _load_intent_override_cache() -> Dict[str, str]:
-    """Load user-defined intent overrides from cache file."""
+    """Read bounded, validated local overrides; user-file contents never grant execution."""
     try:
-        if os.path.exists(INTENT_CACHE_PATH):
-            with open(INTENT_CACHE_PATH, "r", encoding="utf-8") as f:
-                return json.load(f) or {}
-    except Exception as e:
-        logger.warning(f"[Cache] Failed to read intent overrides: {e}")
-    return {}
+        if not os.path.isfile(INTENT_CACHE_PATH) or os.path.getsize(INTENT_CACHE_PATH) > 256 * 1024:
+            return {}
+        with open(INTENT_CACHE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        allowed = {x.value for x in IntentType} | {"model_governance"}
+        if not isinstance(data, dict):
+            return {}
+        return {k: v for k, v in list(data.items())[:512]
+                if isinstance(k, str) and 0 < len(k) < 512 and isinstance(v, str) and v in allowed}
+    except (OSError, ValueError, TypeError) as exc:
+        logger.debug("[AdvCU] override cache unavailable: %s", exc)
+        return {}
 
 
-def classify_intent_with_confidence(
-    text: Any,
-    user_context: Any = None,
-    device_context: Any = None
-) -> Tuple[str, float]:
-    """
-    Classify intent with confidence score.
-    Combines rule-based and optional neural classification.
-
-    Args:
-        text: Input text to classify
-        user_context: Optional user context (reserved for future use)
-        device_context: Optional device context (reserved for future use)
-
-    Returns:
-        Tuple of (intent_label, confidence_score)
-    """
-    t = _normalize_text(text)
+def classify_intent_with_confidence(text: Any, user_context: Any = None, device_context: Any = None) -> Tuple[str, float]:
+    """Deterministic intent label with heuristic (not calibrated probability) score."""
+    t = _normalize_text(text)[:_ADVCU_MAX_INPUT]
     if not t:
         return "statement", 0.0
-
-    # Check override cache first
     cache = _load_intent_override_cache()
     if t in cache:
-        label = cache[t]
-        log_advcu_event("Intent Override Hit", json.dumps({"text": t, "label": label}))
-        return label, 1.0
-
-    # Rule-based classification
-    rule_label = _rule_based_intent(t)
-    rule_conf = 0.7  # Base confidence for rule-based
-
-    # Boost confidence for high-priority intents
-    high_conf_intents = {
-        "login", "signup", "device_query", "greeting",
-        "farewell", "identity_query", "math"
+        return cache[t], 0.92
+    label = _rule_based_intent(t)
+    evidence = {
+        "math": 0.94, "open_app": 0.88, "open_url": 0.85,
+        "greeting": 0.86, "farewell": 0.86, "device_query": 0.80,
+        "system_control": 0.82, "diagnostics": 0.83, "time_related": 0.79,
+        "question": 0.78, "identity_query": 0.83, "statement": 0.56,
     }
-    if rule_label in high_conf_intents:
-        rule_conf = 0.85
-
-    # Log the classification
-    log_advcu_event(
-        "Classify Intent",
-        json.dumps({
-            "text": t[:100],
-            "label": rule_label,
-            "confidence": round(rule_conf, 3)
-        })
-    )
-
-    return rule_label, float(rule_conf)
+    confidence = evidence.get(label, 0.73)
+    if len(t) < 5 and label not in ("greeting", "farewell"):
+        confidence = min(confidence, 0.55)
+    if label in ("command", "agent_control", "close_quit") and not _advcu_direct_action(t):
+        confidence = min(confidence, 0.45)
+    # Database audit is explicitly opt-in. Never persist private input by default.
+    if bool(getattr(config, 'ADVCU_ENABLE_EVENT_LOGGING', False)):
+        log_advcu_event("Classify Intent", json.dumps({"text_sha256": hashlib.sha256(t.encode('utf-8')).hexdigest(),
+                                                        "label": label, "heuristic_confidence": confidence}))
+    return label, float(confidence)
 
 
 def classify_intent(
@@ -1926,29 +1761,19 @@ def classify_intent(
 # ============================================================================
 
 def extract_math_expression(text: Any) -> Optional[str]:
-    """
-    Extract a math expression from text.
-
-    Args:
-        text: Input text
-
-    Returns:
-        Extracted math expression or None
-    """
+    """Return a standalone numeric expression without reinterpreting identifiers."""
     t = _normalize_text(text)
-    if not t:
+    if not t or len(t) > _ADVCU_MAX_INPUT:
         return None
-
-    # Try regex pattern first
-    m = MATH_EXPR_REGEX.search(t)
-    if m:
-        return m.group(1).strip()
-
-    # Check if entire text looks like an expression
-    cleaned = t.replace(" ", "")
-    if all(ch.isdigit() or ch in MATH_SYMBOLS or ch == "." for ch in cleaned):
-        return t.strip()
-
+    math = r"-?\d+(?:\.\d+)?(?:\s*[+*/%^\-]\s*-?\d+(?:\.\d+)?)+"
+    # Do not accept expressions embedded in identifiers or version-number chains.
+    for m in re.finditer(r"(?<![\w.])" + math + r"(?![\w.])", t):
+        candidate = m.group(0)
+        if re.search(r"[+*/%^\-]", candidate):
+            return candidate.strip()
+    bare = t.strip().rstrip('?!')
+    if re.fullmatch(r"[\d\s().+*/%^\-]+", bare) and re.search(r"[+*/%^\-]", bare):
+        return bare
     return None
 
 
@@ -1990,7 +1815,7 @@ def parse_command(
         ParsedCommand dataclass with extracted information
     """
     t = _normalize_text(text)
-    label, confidence = classify_intent_with_confidence(t)
+    label, confidence = classify_intent_with_confidence(t, user_context=user_context, device_context=device_context)
 
     # Initialize extraction results
     math_expr = None
@@ -2040,6 +1865,12 @@ def parse_command(
         if not subject:
             subject = app
 
+    if label == "agent_control":
+        action = "agent_control"
+    elif label == "diagnostics":
+        action = None
+    elif label in ("device_query", "time_related", "identity_query", "question") and not _advcu_direct_action(t):
+        action = None
     # Semantic subject fallback from natural language/topic extraction
     if not math_expr:
         subject = _infer_subject_from_text(
@@ -2075,8 +1906,11 @@ def parse_command(
         output_type=output_type,
         math_expr=math_expr
     )
+    if _advcu_informational(t) and output_type != "model_architecture" and not visual_query_type:
+        intent_family, likely_lane = "ANSWER", "answer"
+        action = None
     query_type = _infer_query_type(t, label, output_type, math_expr, visual_query_type=visual_query_type)
-    if surface_task:
+    if surface_task and surface_task.get("task_kind"):
         task_kind = str(surface_task.get("task_kind") or "").strip().lower()
         intent_family = "ACTION"
         likely_lane = "action"
@@ -2233,15 +2067,30 @@ CREATE TABLE IF NOT EXISTS advcu_log (
 """
 
 
-def _ensure_db() -> None:
-    """Ensure all AdvCU database tables exist."""
-    try:
-        os.makedirs(os.path.dirname(SYSTEM_DB_PATH), exist_ok=True)
-        with sqlite3.connect(SYSTEM_DB_PATH, timeout=10.0) as conn:
-            conn.executescript(_SCHEMA_SQL_CODE_CORPUS)
-            conn.commit()
-    except Exception as e:
-        logger.warning(f"[AdvCU] Database ensure failed: {e}")
+def _ensure_db() -> bool:
+    """Initialize existing schema once per path, only when a write is requested."""
+    global _db_initialized_path
+    if _db_initialized_path == SYSTEM_DB_PATH and os.path.isfile(SYSTEM_DB_PATH):
+        return True
+    with _db_lock:
+        if _db_initialized_path == SYSTEM_DB_PATH and os.path.isfile(SYSTEM_DB_PATH):
+            return True
+        try:
+            os.makedirs(os.path.dirname(SYSTEM_DB_PATH), exist_ok=True)
+            with closing(sqlite3.connect(SYSTEM_DB_PATH, timeout=5.0)) as conn:
+                conn.executescript(_SCHEMA_SQL_CODE_CORPUS)
+                conn.commit()
+            _db_initialized_path = SYSTEM_DB_PATH
+            return True
+        except (sqlite3.Error, OSError) as exc:
+            logger.warning("[AdvCU] Database setup unavailable: %s", exc)
+            return False
+
+
+def _advcu_read_connection():
+    """SQLite read-only URI; avoids unintentionally creating functions.db."""
+    return sqlite3.connect(Path(SYSTEM_DB_PATH).resolve().as_uri() + "?mode=ro",
+                           timeout=2.0, uri=True)
 
 
 def _ensure_code_corpus_db() -> None:
@@ -2250,23 +2099,16 @@ def _ensure_code_corpus_db() -> None:
 
 
 def log_advcu_event(event: str, details: str) -> None:
-    """
-    Log an AdvCU event to the database.
-
-    Args:
-        event: Event type/name
-        details: Event details (typically JSON)
-    """
+    """Explicit bounded audit persistence; never auto-called without opt-in."""
+    if not bool(getattr(config, 'ADVCU_ENABLE_EVENT_LOGGING', False)):
+        return
     try:
         _ensure_db()
-        with sqlite3.connect(SYSTEM_DB_PATH, timeout=5.0) as conn:
-            conn.execute(
-                "INSERT INTO advcu_log(ts, event, details) VALUES (?, ?, ?)",
-                (_get_timestamp(), event, details)
-            )
-            conn.commit()
-    except Exception as e:
-        logger.debug(f"[DB] log_advcu_event failed: {e}")
+        with sqlite3.connect(SYSTEM_DB_PATH, timeout=3.0) as conn:
+            conn.execute("INSERT INTO advcu_log(ts, event, details) VALUES (?, ?, ?)",
+                         (_get_timestamp(), str(event)[:128], str(details)[:1024]))
+    except (OSError, sqlite3.Error) as exc:
+        logger.debug("[AdvCU] audit persistence unavailable: %s", exc)
 
 
 # ============================================================================
@@ -2290,12 +2132,29 @@ def _normalize_snippet(s: str) -> str:
     return s if len(s) <= 4000 else (s[:4000] + " …[truncated]")
 
 
+def _advcu_sensitive_literal(value: str, key: str = "") -> bool:
+    """Conservatively omit private source literals; no attempt to store raw secrets."""
+    s = str(value or '')
+    k = str(key or '').lower()
+    if len(s) > 2048 or any(ord(c) < 32 and c not in '\n\t\r' for c in s):
+        return True
+    if re.search(r"(?:^|[_\W])(?:password|passwd|secret|credential|private_key|access_token|refresh_token|api_key|client_secret|auth_token|bearer)(?:$|[_\W])", k):
+        return True
+    if re.search(r"(?:-----BEGIN [^-]+PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|"
+                 r"(?:password|passwd|secret|api[_-]?key|access[_-]?token|bearer)\s*[:=]\s*[^\s]+)", s, re.I):
+        return True
+    if _RX_EMAIL.search(s) or re.search(r"https?://[^\s/@]+:[^\s/@]+@", s):
+        return True
+    return False
+
+
 class _NodeMiner(ast.NodeVisitor):
     """AST visitor to extract values from Python source."""
 
     def __init__(self, filename: str):
         self.filename = filename
-        self.rows: List[Tuple[str, str, str, int]] = []  # (kind, key, snippet, line)
+        self.rows: List[Tuple[str, str, str, int]] = []
+        self._seen = set()
 
     def visit_Assign(self, node: ast.Assign):
         """Visit assignment nodes."""
@@ -2343,13 +2202,8 @@ class _NodeMiner(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Constant(self, node: ast.Constant):
-        """Visit constant values."""
-        if isinstance(node.value, str):
-            s = node.value.strip()
-            if s:
-                self._add_row('str', None, _normalize_snippet(s), getattr(node, 'lineno', 0))
-                self._scan_regexes(s, getattr(node, 'lineno', 0))
-        self.generic_visit(node)
+        """Raw unlabeled literals are excluded: source context is needed for privacy filtering."""
+        return None
 
     def _capture_value(
         self,
@@ -2406,8 +2260,18 @@ class _NodeMiner(ast.NodeVisitor):
         return None
 
     def _add_row(self, kind: str, key: Optional[str], snippet: str, line: int):
-        """Add a row to results."""
-        self.rows.append((kind, key or "", snippet, int(line)))
+        """Bounded, sensitive-data filtered source metadata; never archive credentials."""
+        if len(self.rows) >= _ADVCU_MAX_MINED_ROWS_PER_FILE:
+            return
+        key = str(key or '')[:128]
+        snippet = str(snippet or '').strip()
+        if not snippet or _advcu_sensitive_literal(snippet, key):
+            return
+        snippet = _normalize_snippet(snippet)[:1024]
+        ident = (kind, key, snippet, int(line))
+        if ident not in self._seen:
+            self._seen.add(ident)
+            self.rows.append(ident)
 
     def _scan_regexes(self, text: str, line: int):
         """Scan text for URLs, emails, domains."""
@@ -2421,276 +2285,210 @@ class _NodeMiner(ast.NodeVisitor):
 
 
 def _iter_core_files() -> List[str]:
-    """Get list of core SarahMemory Python files."""
-    base = getattr(config, "BASE_DIR", os.getcwd())
-    return sorted(glob.glob(os.path.join(base, "SarahMemory*.py")))
+    """Enumerate a bounded set of ordinary CORE source files without recursion."""
+    base = Path(getattr(config, "BASE_DIR", os.getcwd())).resolve()
+    if not base.is_dir():
+        return []
+    files=[]
+    for path in sorted(base.glob("SarahMemory*.py")):
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > _ADVCU_MAX_SOURCE_BYTES:
+                continue
+            if path.resolve().parent != base:
+                continue
+            files.append(str(path))
+            if len(files) >= _ADVCU_MAX_SOURCE_FILES:
+                break
+        except OSError:
+            continue
+    return files
 
 
 def _scan_file(path: str) -> List[Tuple[str, str, str, int]]:
-    """
-    Scan a Python file and extract values.
-
-    Args:
-        path: Path to Python file
-
-    Returns:
-        List of (kind, key, snippet, line) tuples
-    """
+    """Bounded AST-only source analysis; never execute inspected code."""
     try:
-        with io.open(path, "r", encoding="utf-8", errors="ignore") as f:
-            src = f.read()
-
-        tree = ast.parse(src)
-        miner = _NodeMiner(os.path.basename(path))
+        entry = Path(path)
+        if entry.is_symlink() or not entry.is_file() or entry.stat().st_size > _ADVCU_MAX_SOURCE_BYTES:
+            return []
+        with entry.open('r', encoding='utf-8', errors='replace') as handle:
+            src = handle.read(_ADVCU_MAX_SOURCE_BYTES + 1)
+        if len(src.encode('utf-8', errors='ignore')) > _ADVCU_MAX_SOURCE_BYTES:
+            return []
+        tree = ast.parse(src, filename=str(entry))
+        miner = _NodeMiner(entry.name)
         miner.visit(tree)
-
-        # Check for JSON-like prompt payloads
-        if '"messages"' in src and _RX_MSGSKEY.search(src):
+        if '"messages"' in src and _RX_MSGSKEY.search(src) and len(miner.rows) < _ADVCU_MAX_MINED_ROWS_PER_FILE:
             miner.rows.append(('prompt', 'messages', '[messages payload detected]', 0))
-
         return miner.rows
-
-    except SyntaxError as se:
-        logger.warning(f"[AdvCU] AST parse failed for {os.path.basename(path)}: {se}")
-        return []
-    except Exception as e:
-        logger.warning(f"[AdvCU] scan_file error {os.path.basename(path)}: {e}")
+    except (OSError, SyntaxError, ValueError, UnicodeError) as exc:
+        logger.debug("[AdvCU] cannot AST-scan %s: %s", os.path.basename(path), exc)
         return []
 
 
 def warm_code_corpus(force: bool = False) -> Dict[str, Any]:
+    """Bounded incremental AST corpus refresh, never called on normal boot.
+
+    Original code_corpus/code_corpus_seen schema is preserved. Modified or removed
+    source files replace only their own indexed data inside a transaction.
     """
-    Scan all SarahMemory*.py files and store in database.
-    Uses delta-tracking to avoid duplicate inserts.
-
-    Args:
-        force: Force rescan even if cache exists
-
-    Returns:
-        Dictionary with scan statistics
-    """
-    _ensure_db()
-    ts = datetime.utcnow().isoformat()
-    files = _iter_core_files()
-
-    # Check for recent cache
-    if os.path.exists(CODE_CORPUS_JSON) and not force:
+    with _corpus_lock:
+        files = _iter_core_files()
+        fingerprints = {}
+        for name in files:
+            try:
+                stat = os.stat(name)
+                fingerprints[os.path.basename(name)] = [int(stat.st_size), int(stat.st_mtime_ns)]
+            except OSError:
+                continue
+        cache = get_corpus_stats()
+        old_fingerprints = cache.get('file_fingerprints') if isinstance(cache, dict) else None
+        if not isinstance(old_fingerprints, dict):
+            old_fingerprints = {}
+        if bool(cache.get('_ok')) and not force and fingerprints == old_fingerprints:
+            return cache
+        changed = sorted(key for key in fingerprints if force or fingerprints[key] != old_fingerprints.get(key))
+        removed = sorted(set(old_fingerprints) - set(fingerprints))
+        new_rows = []
+        scanned = 0
+        for name in changed:
+            fp = next((x for x in files if os.path.basename(x) == name), None)
+            if fp is None:
+                continue
+            for kind, key, snippet, line in _scan_file(fp):
+                scanned += 1
+                # Include original location in PK to preserve repeated literals in other files.
+                raw = '\x1f'.join((name, str(line), kind, key, snippet))
+                digest = hashlib.sha256(raw.encode('utf-8')).hexdigest()
+                new_rows.append((kind, key, snippet, name, int(line), digest))
+        result = {'_ok': False, 'generated': datetime.utcnow().isoformat(),
+                  'counts': {'files': len(files), 'scanned': scanned, 'new': 0,
+                             'changed_files': len(changed), 'removed_files': len(removed)},
+                  'file_fingerprints': fingerprints}
+        if not _ensure_db():
+            result['error'] = 'database_unavailable'
+            return result
         try:
-            with open(CODE_CORPUS_JSON, "r", encoding="utf-8") as f:
-                cache = json.load(f)
-            if isinstance(cache, dict) and cache.get("_ok"):
-                return cache
-        except Exception:
-            pass
-
-    # Scan files
-    rows = []
-    scanned = 0
-    for fp in files:
-        mined = _scan_file(fp)
-        for kind, key, snippet, line in mined:
-            scanned += 1
-            sh = hashlib.sha256((snippet or "").encode("utf-8")).hexdigest()
-            rows.append((kind, key, snippet, os.path.basename(fp), int(line), ts, sh))
-
-    # Insert new rows
-    new_inserts = 0
-    try:
-        with sqlite3.connect(SYSTEM_DB_PATH, timeout=10.0) as conn:
-            cur = conn.cursor()
-
-            for kind, key, snip, file, line, tstamp, sh in rows:
-                # Check if already seen
-                cur.execute("SELECT 1 FROM code_corpus_seen WHERE snip_hash=?", (sh,))
-                if cur.fetchone():
-                    continue
-
-                # Insert new
-                cur.execute(
-                    "INSERT OR REPLACE INTO code_corpus_seen(snip_hash, file, line, first_ts) VALUES (?, ?, ?, ?)",
-                    (sh, file, line, tstamp)
-                )
-                cur.execute(
-                    "INSERT INTO code_corpus(kind, key, snippet, file, line, ts) VALUES (?, ?, ?, ?, ?, ?)",
-                    (kind, key, snip, file, line, tstamp)
-                )
-                new_inserts += 1
-
-            conn.commit()
-
-    except Exception as e:
-        logger.warning(f"[AdvCU] DB delta write failed: {e}")
-
-    # Save cache
-    data = {
-        "_ok": True,
-        "generated": ts,
-        "counts": {
-            "files": len(files),
-            "scanned": scanned,
-            "new": new_inserts
-        }
-    }
-
-    try:
-        with open(CODE_CORPUS_JSON, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-    except Exception as e:
-        logger.warning(f"[AdvCU] Cache write failed: {e}")
-
-    logger.info(f"[AdvCU] Code corpus: {len(files)} files, {scanned} scanned, {new_inserts} new")
-    return data
+            with closing(sqlite3.connect(SYSTEM_DB_PATH, timeout=6.0)) as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                for name in changed + removed:
+                    conn.execute('DELETE FROM code_corpus WHERE file=?', (name,))
+                    conn.execute('DELETE FROM code_corpus_seen WHERE file=?', (name,))
+                stamp = result['generated']
+                for kind, key, snippet, name, line, digest in new_rows:
+                    conn.execute('INSERT OR IGNORE INTO code_corpus_seen(snip_hash,file,line,first_ts) VALUES (?,?,?,?)',
+                                 (digest, name, line, stamp))
+                    conn.execute('INSERT INTO code_corpus(kind,key,snippet,file,line,ts) VALUES (?,?,?,?,?,?)',
+                                 (kind, key, snippet, name, line, stamp))
+                conn.commit()
+            result['_ok'] = True
+            result['counts']['new'] = len(new_rows)
+            # Cache is optimization only: atomic replacement after committed DB transaction.
+            os.makedirs(os.path.dirname(CODE_CORPUS_JSON), exist_ok=True)
+            tmp = CODE_CORPUS_JSON + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as handle:
+                json.dump(result, handle, indent=2)
+            os.replace(tmp, CODE_CORPUS_JSON)
+        except (OSError, sqlite3.Error) as exc:
+            result['_ok'] = False
+            result['error'] = type(exc).__name__
+            logger.warning('[AdvCU] incremental code corpus failed: %s', exc)
+        return result
 
 
 def get_corpus_stats() -> Dict[str, Any]:
-    """Get statistics from the code corpus cache."""
+    """Read existing cache only, with size bound and schema check."""
     try:
-        if os.path.exists(CODE_CORPUS_JSON):
-            with open(CODE_CORPUS_JSON, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
+        if os.path.isfile(CODE_CORPUS_JSON) and os.path.getsize(CODE_CORPUS_JSON) < 256 * 1024:
+            with open(CODE_CORPUS_JSON, 'r', encoding='utf-8') as handle:
+                data = json.load(handle)
+            return data if isinstance(data, dict) else {'_ok': False}
+    except (OSError, ValueError, TypeError):
         pass
-    return {"_ok": False}
+    return {'_ok': False}
 
 
 def mine_hardcoded_knowledge(limit: Optional[int] = None) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Retrieve mined code knowledge from database.
-
-    Args:
-        limit: Maximum rows to retrieve
-
-    Returns:
-        Dictionary grouped by kind (url, domain, email, prompt, etc.)
-    """
-    _ensure_db()
+    """Read a bounded, already prepared local source corpus."""
     out: Dict[str, List[Dict[str, Any]]] = {}
-
+    if not os.path.isfile(SYSTEM_DB_PATH):
+        return out
+    requested = 500 if limit is None else max(0, min(800, int(limit)))
+    if requested == 0:
+        return out
     try:
-        with sqlite3.connect(SYSTEM_DB_PATH, timeout=10.0) as conn:
-            cur = conn.cursor()
-
-            if limit:
-                cur.execute(
-                    "SELECT kind, key, snippet, file, line FROM code_corpus LIMIT ?",
-                    (int(limit),)
-                )
-            else:
-                cur.execute("SELECT kind, key, snippet, file, line FROM code_corpus")
-
-            for kind, key, snip, file, line in cur.fetchall():
-                out.setdefault(kind, []).append({
-                    "key": key,
-                    "snippet": snip,
-                    "file": file,
-                    "line": line
-                })
-
-    except Exception as e:
-        logger.warning(f"[AdvCU] read corpus failed: {e}")
-
+        with closing(_advcu_read_connection()) as conn:
+            cur = conn.execute('SELECT kind,key,snippet,file,line FROM code_corpus ORDER BY id DESC LIMIT ?', (requested,))
+            for kind, key, snippet, file, line in cur:
+                if not _advcu_sensitive_literal(snippet, key):
+                    out.setdefault(kind, []).append({'key': key, 'snippet': snippet, 'file': file, 'line': line})
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        logger.debug('[AdvCU] code knowledge read failed: %s', exc)
     return out
 
 
 def contextualize_with_code(query: str, top_k: int = 8) -> List[Dict[str, Any]]:
-    """
-    Find code snippets relevant to a query.
-
-    Args:
-        query: Search query
-        top_k: Number of results to return
-
-    Returns:
-        List of relevant snippets with scores
-    """
-    _ensure_db()
-
-    # Embed query
-    qv = embed_text(query)[0]
-
-    # Retrieve all snippets
-    rows: List[Tuple[str, str, str, str, int]] = []
-    try:
-        with sqlite3.connect(SYSTEM_DB_PATH, timeout=10.0) as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT kind, key, snippet, file, line FROM code_corpus")
-            rows = cur.fetchall()
-    except Exception as e:
-        logger.warning(f"[AdvCU] retrieval failed: {e}")
+    """Bounded local lexical shortlist then vector scoring; never bulk-load a corpus."""
+    query = _normalize_text(query)[:512]
+    if not query or not os.path.isfile(SYSTEM_DB_PATH):
         return []
-
-    # Score snippets
+    n = max(1, min(32, int(top_k)))
+    terms = [x for x in tokenize(query) if len(x) > 2][:6]
+    try:
+        with closing(_advcu_read_connection()) as conn:
+            if terms:
+                filters = ' OR '.join('(lower(snippet) LIKE ? OR lower(key) LIKE ?)' for _ in terms)
+                args = [p for t in terms for p in ('%' + t.replace('%', '').replace('_', '') + '%',) * 2]
+                rows = list(conn.execute('SELECT kind,key,snippet,file,line FROM code_corpus WHERE ' + filters +
+                                         ' ORDER BY id DESC LIMIT ?', (*args, _ADVCU_MAX_CORPUS_RESULTS)))
+            else:
+                rows = list(conn.execute('SELECT kind,key,snippet,file,line FROM code_corpus ORDER BY id DESC LIMIT ?',
+                                         (_ADVCU_MAX_CORPUS_RESULTS,)))
+    except (OSError, sqlite3.Error) as exc:
+        logger.debug('[AdvCU] corpus retrieval failed: %s', exc)
+        return []
+    candidates = []
+    for kind, key, snip, file, line in rows:
+        if _advcu_sensitive_literal(snip, key):
+            continue
+        lexical = evaluate_similarity(query, (key or '') + ' ' + (snip or ''))
+        candidates.append((lexical, kind, key, snip, file, line))
+    candidates.sort(key=lambda record: record[0], reverse=True)
+    shortlisted = candidates[:max(64, n * 3)]
+    if not shortlisted:
+        return []
+    # One model batch, and a lexical fallback when no local embedding is selected.
+    try:
+        vectors = embed_text([query] + [rec[3][:1024] for rec in shortlisted])
+        query_vec = vectors[0]
+    except (ValueError, TypeError, IndexError):
+        vectors = []
+        query_vec = None
     scored = []
-    # Sample for performance if too many rows
-    sample = rows if len(rows) <= 20000 else rows[::max(1, len(rows) // 20000)]
-
-    for kind, key, snip, file, line in sample:
-        v = embed_text(snip)[0]
-        score = cosine_similarity(qv, v)
-        scored.append((score, kind, key, snip, file, line))
-
-    # Sort by score
-    scored.sort(key=lambda x: x[0], reverse=True)
-
-    # Return top_k
-    out = []
-    for score, kind, key, snip, file, line in scored[:max(1, top_k)]:
-        out.append({
-            "score": round(score, 4),
-            "kind": kind,
-            "key": key,
-            "snippet": snip,
-            "file": file,
-            "line": line
-        })
-
-    return out
+    for idx, (lexical, kind, key, snip, file, line) in enumerate(shortlisted):
+        vector_score = max(0.0, cosine_similarity(query_vec, vectors[idx + 1])) if query_vec and len(vectors) > idx + 1 else 0.0
+        score = min(1.0, max(0.0, 0.65 * lexical + 0.35 * vector_score))
+        scored.append({'score': round(score, 4), 'kind': kind, 'key': key,
+                       'snippet': snip, 'file': file, 'line': line})
+    return sorted(scored, key=lambda rec: rec['score'], reverse=True)[:n]
 
 
 def verify_corpus_status() -> Dict[str, Any]:
-    """
-    Get current corpus status from database.
-
-    Returns:
-        Dictionary with db_rows, seen_hashes, and cache info
-    """
-    out = {"db_rows": 0, "seen_hashes": 0, "cache": {}}
-
+    """Read-only corpus diagnostics; never mutate or create a database."""
+    out = {'db_rows': 0, 'seen_hashes': 0, 'cache': get_corpus_stats()}
+    if not os.path.isfile(SYSTEM_DB_PATH):
+        return out
     try:
-        _ensure_db()
-        with sqlite3.connect(SYSTEM_DB_PATH, timeout=5.0) as conn:
-            cur = conn.cursor()
-
-            cur.execute("SELECT COUNT(*) FROM code_corpus")
-            out["db_rows"] = int(cur.fetchone()[0])
-
-            cur.execute("SELECT COUNT(*) FROM code_corpus_seen")
-            out["seen_hashes"] = int(cur.fetchone()[0])
-
-    except Exception as e:
-        logger.debug(f"[verify] database query failed: {e}")
-
-    try:
-        if os.path.exists(CODE_CORPUS_JSON):
-            with open(CODE_CORPUS_JSON, "r", encoding="utf-8") as f:
-                out["cache"] = json.load(f)
-    except Exception:
-        pass
-
+        with closing(_advcu_read_connection()) as conn:
+            out['db_rows'] = int(conn.execute('SELECT COUNT(*) FROM code_corpus').fetchone()[0])
+            out['seen_hashes'] = int(conn.execute('SELECT COUNT(*) FROM code_corpus_seen').fetchone()[0])
+    except (OSError, sqlite3.Error):
+        out['status'] = 'unavailable'
     return out
 
 
 def ensure_corpus_ready() -> None:
-    """
-    Ensure code corpus is ready.
-    Safe to call multiple times.
-    """
-    try:
-        stats = get_corpus_stats()
-        if not stats.get("_ok"):
-            warm_code_corpus(force=False)
-    except Exception:
-        warm_code_corpus(force=False)
+    """Explicit request to verify the bounded incremental source index."""
+    warm_code_corpus(force=False)
 
 
 # ============================================================================
@@ -2713,171 +2511,80 @@ def sm_color_name_from_rgb(r: int, g: int, b: int) -> str:
 
 
 def sm_color_name_from_rgb_fine(r: int, g: int, b: int) -> str:
-    """
-    Fine-grained RGB to color name mapping.
-    Uses HSV color space for accurate naming.
-
-    Args:
-        r: Red component (0-255)
-        g: Green component (0-255)
-        b: Blue component (0-255)
-
-    Returns:
-        Color name string
-    """
-    # Normalize to 0-1 range
-    rp, gp, bp = r / 255.0, g / 255.0, b / 255.0
-    mx, mn = max(rp, gp, bp), min(rp, gp, bp)
-    v = mx
-    d = mx - mn
-
-    # Grayscale detection
-    if d < 0.05:
-        if v < 0.06:
-            return "black"
-        if v < 0.18:
-            return "charcoal"
-        if v < 0.30:
-            return "dark gray"
-        if v < 0.43:
-            return "gray"
-        if v < 0.70:
-            return "silver"
-        if v < 0.88:
-            return "off-white"
-        return "white"
-
-    # Calculate saturation
-    s = d / (mx or 1.0)
-
-    # Calculate hue
-    if mx == rp:
-        h = ((gp - bp) / (d or 1e-9)) % 6
-    elif mx == gp:
-        h = ((bp - rp) / (d or 1e-9)) + 2
-    else:
-        h = ((rp - gp) / (d or 1e-9)) + 4
-    h *= 60.0
-
-    # Determine tone
-    tone = "dark" if v < 0.15 else ("light" if v > 0.85 else "mid")
-
-    # Map hue to color name
-    if 0 <= h < 15 or h >= 345:
-        return "red" if tone != "dark" else "dark red"
-    elif 15 <= h < 45:
-        return "orange" if tone != "dark" else "brown"
-    elif 45 <= h < 60:
-        return "gold" if tone != "dark" else "olive"
-    elif 60 <= h < 80:
-        return "chartreuse" if tone != "dark" else "olive"
-    elif 80 <= h < 100:
-        return "lime" if tone != "dark" else "olive green"
-    elif 100 <= h < 130:
-        return "spring green" if s > 0.5 else "pale green"
-    elif 130 <= h < 170:
-        return "teal" if tone == "dark" else "cyan"
-    elif 170 <= h < 210:
-        return "azure" if tone != "dark" else "steel blue"
-    elif 210 <= h < 250:
-        return "blue" if tone != "light" else "sky blue"
-    elif 250 <= h < 280:
-        return "indigo" if tone == "dark" else "violet"
-    elif 280 <= h < 320:
-        return "magenta" if tone != "dark" else "plum"
-    elif 320 <= h < 345:
-        return "rose" if tone != "dark" else "maroon"
-
-    return "unknown"
+    """Stable bounded HSV-like RGB classification; rejects non-finite channels."""
+    try:
+        from colorsys import rgb_to_hsv
+        vals = [float(v) for v in (r, g, b)]
+        if not all(math.isfinite(v) and 0 <= v <= 255 for v in vals):
+            return 'unknown'
+        rr, gg, bb = [v / 255.0 for v in vals]
+        h, saturation, value = rgb_to_hsv(rr, gg, bb)
+    except (ValueError, TypeError, OverflowError):
+        return 'unknown'
+    if saturation < 0.15:
+        if value < 0.06: return 'black'
+        if value < 0.18: return 'charcoal'
+        if value < 0.30: return 'dark gray'
+        if value < 0.43: return 'gray'
+        if value < 0.70: return 'silver'
+        if value < 0.88: return 'off-white'
+        return 'white'
+    degrees = h * 360.0
+    tone = 'dark' if value < 0.15 else ('light' if value > 0.85 else 'mid')
+    if degrees < 15 or degrees >= 345: return 'dark red' if tone == 'dark' else 'red'
+    if degrees < 45: return 'brown' if tone == 'dark' else 'orange'
+    if degrees < 60: return 'olive' if tone == 'dark' else 'gold'
+    if degrees < 80: return 'olive' if tone == 'dark' else 'chartreuse'
+    if degrees < 100: return 'olive green' if tone == 'dark' else 'lime'
+    if degrees < 130: return 'spring green' if saturation > 0.5 else 'pale green'
+    if degrees < 170: return 'teal' if tone == 'dark' else 'cyan'
+    if degrees < 210: return 'steel blue' if tone == 'dark' else 'azure'
+    if degrees < 250: return 'sky blue' if tone == 'light' else 'blue'
+    if degrees < 280: return 'indigo' if tone == 'dark' else 'violet'
+    if degrees < 320: return 'plum' if tone == 'dark' else 'magenta'
+    if degrees < 345: return 'maroon' if tone == 'dark' else 'rose'
+    return 'unknown'
 
 
 def _dominant_color_and_name(bgr_roi) -> Dict[str, Any]:
-    """
-    Extract dominant color from an image region.
-
-    Args:
-        bgr_roi: BGR image region (numpy array)
-
-    Returns:
-        Dictionary with hex, rgb, hsl, name, confidence
-    """
-    if not _HAS_CV2 or not _HAS_NUMPY:
-        return {
-            "hex": "#000000",
-            "rgb": [0, 0, 0],
-            "hsl": [0, 0, 0],
-            "name": "unknown",
-            "confidence": 0.0
-        }
-
-    if bgr_roi is None or bgr_roi.size == 0:
-        return {
-            "hex": "#000000",
-            "rgb": [0, 0, 0],
-            "hsl": [0, 0, 0],
-            "name": "unknown",
-            "confidence": 0.0
-        }
-
+    """Bounded color identification with graceful empty/tiny-frame handling."""
+    missing = {"hex": "#000000", "rgb": [0, 0, 0], "hsl": [0, 0, 0],
+               "name": "unknown", "confidence": 0.0}
+    if not _HAS_CV2 or not _HAS_NUMPY or bgr_roi is None:
+        return missing
     try:
-        # Convert to HSV for filtering
-        hsv = _cv2.cvtColor(bgr_roi, _cv2.COLOR_BGR2HSV)
-        h, s, v = _cv2.split(hsv)
-
-        # Filter out very dark/desaturated pixels
-        mask = (s > 18) & (v > 25)
-        pix = bgr_roi[mask] if mask.any() else bgr_roi.reshape(-1, 3)
-
-        # K-means clustering
-        Z = np.float32(pix)
-        K = 3
-        criteria = (_cv2.TERM_CRITERIA_EPS + _cv2.TERM_CRITERIA_MAX_ITER, 24, 1.0)
-
-        _, labels, centers = _cv2.kmeans(Z, K, None, criteria, 3, _cv2.KMEANS_PP_CENTERS)
-        counts = np.bincount(labels.flatten(), minlength=K)
-        idx = int(counts.argmax())
-        b, g, r = centers[idx].astype(int).tolist()
-
-        name = sm_color_name_from_rgb(r, g, b)
-        conf = float(counts[idx] / max(1, counts.sum()))
-
-    except Exception:
-        # Fallback to mean
-        b, g, r = pix.mean(axis=0).astype(int).tolist()
-        name = sm_color_name_from_rgb(r, g, b)
-        conf = 0.5
-
-    # Calculate HSL
-    rp, gp, bp = r / 255.0, g / 255.0, b / 255.0
-    mx, mn = max(rp, gp, bp), min(rp, gp, bp)
-    l = (mx + mn) / 2.0
-
-    if mx == mn:
-        h = 0.0
-        s = 0.0
-    else:
-        d = mx - mn
-        s = d / (2.0 - mx - mn) if l > 0.5 else d / (mx + mn + 1e-9)
-
-        if mx == rp:
-            h = ((gp - bp) / d + (6 if gp < bp else 0))
-        elif mx == gp:
-            h = ((bp - rp) / d + 2)
+        roi = np.asarray(bgr_roi)
+        if roi.ndim != 3 or roi.shape[2] != 3 or roi.size == 0:
+            return missing
+        # Deterministic bounded sampling protects CPU and memory on full-HD frames.
+        flattened = roi.reshape(-1, 3)
+        step = max(1, (len(flattened) + 4095) // 4096)
+        pixels = flattened[::step].astype(np.uint8)
+        hsv = _cv2.cvtColor(pixels.reshape(-1, 1, 3), _cv2.COLOR_BGR2HSV).reshape(-1, 3)
+        mask = (hsv[:, 1] > 18) & (hsv[:, 2] > 25)
+        selected = pixels[mask] if mask.any() else pixels
+        if selected.shape[0] == 0:
+            return missing
+        groups = min(3, selected.shape[0])
+        if groups == 1:
+            b, g, r = map(int, selected[0])
+            confidence = 1.0
         else:
-            h = ((rp - gp) / d + 4)
-
-        h *= 60.0
-        h %= 360.0
-
-    hex_val = f"#{r:02x}{g:02x}{b:02x}"
-
-    return {
-        "hex": hex_val,
-        "rgb": [int(r), int(g), int(b)],
-        "hsl": [float(h), float(s), float(l)],
-        "name": name,
-        "confidence": conf
-    }
+            z = np.float32(selected)
+            criteria = (_cv2.TERM_CRITERIA_EPS + _cv2.TERM_CRITERIA_MAX_ITER, 24, 1.0)
+            _, labels, centers = _cv2.kmeans(z, groups, None, criteria, 2, _cv2.KMEANS_PP_CENTERS)
+            counts = np.bincount(labels.flatten(), minlength=groups)
+            dominant_idx = int(counts.argmax())
+            b, g, r = [int(max(0, min(255, round(x)))) for x in centers[dominant_idx]]
+            confidence = float(counts[dominant_idx] / max(1, counts.sum()))
+        from colorsys import rgb_to_hls
+        hue, lightness, saturation = rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
+        return {"hex": f"#{r:02x}{g:02x}{b:02x}", "rgb": [r, g, b],
+                "hsl": [float(hue * 360.0), float(saturation), float(lightness)],
+                "name": sm_color_name_from_rgb(r, g, b), "confidence": confidence}
+    except (ValueError, TypeError, AttributeError, OverflowError, _cv2.error) as exc:
+        logger.debug("[AdvCU] color processing unavailable: %s", exc)
+        return missing
 
 
 # ============================================================================
@@ -2885,42 +2592,13 @@ def _dominant_color_and_name(bgr_roi) -> Dict[str, Any]:
 # ============================================================================
 
 def _log_corpus_boot_message() -> None:
-    """Log a summary message about corpus state on module load."""
+    """Lightweight import-time summary: no source scan or database creation."""
     try:
-        run_mode = str(getattr(config, "RUN_MODE", os.getenv("RUN_MODE", "local")) or "local").strip().lower()
-        device_mode = str(getattr(config, "DEVICE_MODE", os.getenv("SARAH_DEVICE_MODE", "")) or "").strip().lower()
-        log_on_import = os.getenv("SARAH_ADVCU_LOG_CORPUS_ON_IMPORT", "0").strip().lower() in ("1", "true", "yes", "on")
-        if not log_on_import and (run_mode == "cloud" or device_mode == "public_web"):
-            logger.info("[AdvCU] Code corpus import summary held in governed cloud standby")
-            return
+        cache = get_corpus_stats()
+        counts = cache.get('counts') or {}
+        logger.debug("[AdvCU] corpus cache: files=%s rows=%s", counts.get('files', 0), counts.get('scanned', 0))
     except Exception:
         pass
-    try:
-        stats = get_corpus_stats()
-        counts = stats.get("counts") or {}
-        files = counts.get("files", 0)
-        scanned = counts.get("scanned", 0) or counts.get("rows", 0)
-        new_lines = counts.get("new", 0)
-
-        if files == 0 or scanned == 0:
-            # Fallback to DB + filesystem
-            try:
-                with sqlite3.connect(SYSTEM_DB_PATH, timeout=5.0) as conn:
-                    cur = conn.cursor()
-                    cur.execute("SELECT COUNT(*) FROM code_corpus")
-                    scanned = int(cur.fetchone()[0])
-            except Exception:
-                scanned = 0
-
-            try:
-                files = len(_iter_core_files())
-            except Exception:
-                files = 0
-
-        logger.info(f"[AdvCU] Code corpus: {files} files, {scanned} scanned, {new_lines} new")
-
-    except Exception as e:
-        logger.debug(f"[AdvCU] boot message skipped: {e}")
 
 
 def _advcu_warm_code_corpus_on_import() -> bool:
@@ -3170,12 +2848,14 @@ def build_contextual_intent_packet(
     label, confidence = classify_intent_with_confidence(raw)
     parsed = parse_command(raw)
     route_guard = {
-        "checked": True,
-        "no_substring_routing_inside_locked_phrases": True,
+        "checked": False,
+        "no_substring_routing_inside_locked_phrases": False,
         "blocked": [],
     }
     try:
         import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        route_guard["checked"] = True
+        route_guard["no_substring_routing_inside_locked_phrases"] = True
         for candidate in ("fan", "ram", "ai", "ui", "os", "cpu", "gpu"):
             verdict = _CIL.candidate_blocked_by_language_packet(candidate, lang)
             if verdict.get("blocked"):
@@ -3367,27 +3047,16 @@ def _advcu_infer_fast_query_type(text: str, parsed: Optional[ParsedCommand] = No
 
 
 def _advcu_safe_answer_only(text: str, parsed: Optional[ParsedCommand] = None) -> bool:
-    """True only for presentation-only questions. Actions still go through governance."""
-    lt = _normalize_text(text).lower()
-    if not lt:
+    """Presentation-only route. Non-authorizing regardless of phrases in questions."""
+    t = _normalize_text(text)
+    if not t or len(t) > _ADVCU_MAX_INPUT:
         return False
-    risky = (
-        "patch", "modify", "delete", "rename", "move", "copy", "write file", "save file",
-        "download", "install", "train", "fine tune", "finetune", "execute", "run command",
-        "powershell", "cmd", "terminal", "shell", "scrape", "web", "search the web",
-        "api key", "password", "credential", "token", "secret", "control hardware",
-    )
-    if any(r in lt for r in risky):
-        return False
-    try:
-        if parsed is not None and parsed.is_actionable():
-            # Math is answer-only even though it is actionable in older AdvCU compatibility.
-            if str(parsed.intent) == "math":
-                return True
+    if parsed is not None:
+        if parsed.likely_lane in ("action", "network", "creative") and parsed.action_expectation == "governed_action_candidate":
             return False
-    except Exception:
-        pass
-    return bool(_looks_like_general_knowledge_question(lt) or QUESTION_STARTERS.search(lt))
+        if parsed.intent in ("login", "signup", "agent_control", "system_control") and _advcu_direct_action(t):
+            return False
+    return bool(_advcu_informational(t) or (parsed is not None and parsed.intent in ("question", "math", "identity_query", "device_query", "time_related")))
 
 
 def _advcu_candidate_from_search_answers(query: str) -> Optional[Dict[str, Any]]:
@@ -3437,7 +3106,7 @@ def _advcu_candidate_from_semantic_pools(query: str, intent: str, query_type: st
                             "db": hit.get("db"),
                             "table": hit.get("table"),
                             "purpose": hit.get("purpose"),
-                            "confidence": float(hit.get("score") or 0.70),
+                            "confidence": max(0.0, min(0.65, float(hit.get("score") or 0.50))),
                             "method": result.get("method") or "meta_routed_sqlite_semantic_pool_search",
                             "db_hits": result.get("hits") or [],
                             "routes_checked": result.get("routes_checked"),
@@ -3461,7 +3130,7 @@ def _advcu_candidate_from_dataset_pool(query: str) -> Optional[Dict[str, Any]]:
                         "source": "local_dataset_pool",
                         "db": hit.get("db"),
                         "table": hit.get("table"),
-                        "confidence": float(hit.get("score") or 0.62),
+                        "confidence": max(0.0, min(0.58, float(hit.get("score") or 0.45))),
                         "method": result.get("method") or "direct_sqlite_dataset_pool_search",
                         "db_hits": result.get("hits") or [],
                         "latency_ms": result.get("latency_ms"),
@@ -3535,7 +3204,7 @@ def resolve_local_fast_answer(
         "network_used": False,
         "web_access": False,
         "api_access": False,
-        "filesystem_write": False,
+        "filesystem_write": bool(allow_learning_record and approved_for_learning) or bool(getattr(config, "ADVCU_ENABLE_EVENT_LOGGING", False)),
         "local_only": True,
         "errors": [],
     }
@@ -3615,9 +3284,10 @@ def resolve_local_fast_answer(
         "execution_authority": False,
         "network_used": False,
         "latency_ms": int((time.time() - started) * 1000),
+        "source_verified": bool(best.get("verified", False)),
     })
 
-    if allow_learning_record:
+    if allow_learning_record and approved_for_learning:
         out["synapes_record"] = _advcu_record_semantic_sample_if_allowed(
             text=raw,
             answer=answer,
@@ -3634,14 +3304,14 @@ def resolve_local_fast_answer(
 lookup_local_knowledge_answer = resolve_local_fast_answer
 
 # ====================================================================
-# END OF SarahMemoryAdvCU.py v9.0.0
+# END OF SarahMemoryAdvCU.py v9.1.0a
 # ====================================================================
 
 # --- SML ORGAN ADAPTER START ---
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryAdvCU',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Reasoning',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -3663,30 +3333,30 @@ def sml_get_metadata():
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Read-only self-evidence, not fabricated availability/latency percentages."""
+    available = os.path.isfile(SYSTEM_DB_PATH)
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "DEGRADED" if not available else "AVAILABLE",
+        "availability": 1.0 if available else 0.0,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.5 if available else 0.25,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Classifier available; SQLite corpus present" if available else
+                  "Classifier available; SQLite corpus absent; no measured runtime health"],
     }
 
 
 def sml_diagnostics():
-    """Return SML adapter diagnostics without executing organ behavior."""
-    return {
-        "status": "OK",
-        "component": 'SarahMemoryAdvCU',
-        "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
-        "health": sml_health(),
-    }
+    """Read-only diagnostic report without implicit DB creation."""
+    health = sml_health()
+    return {"status": health["status"], "component": "SarahMemoryAdvCU",
+            "sml_adapter": True, "metadata": dict(SML_ORGAN_METADATA), "health": health,
+            "db_present": os.path.isfile(SYSTEM_DB_PATH), "neural_embedder_loaded": _ST_EMBEDDER is not None,
+            "execution_authority": False}
 
 
 def sml_receive_packet(packet, *, action="observe", note="", updates=None):

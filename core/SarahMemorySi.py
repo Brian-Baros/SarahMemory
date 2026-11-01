@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemorySi.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 SOFTWARE INTERACTION MODULE v9.0.0
@@ -121,12 +120,13 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Software interaction module for app discovery, launching, focus/minimize/maximize, media playback control, and process lifecycle management across platforms."
 # --- SARAHMETA END ---
+# v9.1.0a enterprise source hardening: original interfaces preserved; state-changing legacy paths require governed authorization.
 
 import os
 import subprocess
@@ -707,6 +707,9 @@ def _launch_target_to_app_name(path: str) -> str:
 
 
 def launch_application(path: str) -> bool:
+    # Requires a scoped, authenticated OperatorCore execution grant; none supplied.
+    return False
+
     """
     Launch application by path.
     v8.0: Enhanced with process tracking and readiness verification.
@@ -771,6 +774,9 @@ def list_running_applications() -> List[Tuple[int, str]]:
 # APPLICATION TERMINATION - Backward Compatible
 # =============================================================================
 def terminate_application(app_name: str) -> bool:
+    # Requires a scoped, authenticated OperatorCore execution grant; none supplied.
+    return False
+
     """
     Terminate a running application.
     v8.0: Enhanced with graceful shutdown.
@@ -823,6 +829,9 @@ def terminate_application(app_name: str) -> bool:
 # WINDOW MANAGEMENT - Backward Compatible
 # =============================================================================
 def minimize_application(app_name: str) -> bool:
+    # Requires a scoped, authenticated OperatorCore execution grant; none supplied.
+    return False
+
     """Minimize application window."""
     if not gw:
         logger.warning("[v8.0] pygetwindow not available")
@@ -841,6 +850,9 @@ def minimize_application(app_name: str) -> bool:
         return False
 
 def maximize_application(app_name: str) -> bool:
+    # Requires a scoped, authenticated OperatorCore execution grant; none supplied.
+    return False
+
     """Maximize application window."""
     if not gw:
         logger.warning("[v8.0] pygetwindow not available")
@@ -859,6 +871,9 @@ def maximize_application(app_name: str) -> bool:
         return False
 
 def focus_application(app_name: str) -> bool:
+    # Requires a scoped, authenticated OperatorCore execution grant; none supplied.
+    return False
+
     """Focus application window."""
     if not gw:
         logger.warning("[v8.0] pygetwindow not available")
@@ -880,6 +895,9 @@ def focus_application(app_name: str) -> bool:
 # APPLICATION MANAGEMENT - Backward Compatible
 # =============================================================================
 def manage_application_request(full_command: str) -> bool:
+    # Requires a scoped, authenticated OperatorCore execution grant; none supplied.
+    return False
+
     """
     Handle application management commands.
     v8.0: Enhanced with better command parsing and normalized aliases.
@@ -941,6 +959,8 @@ def manage_application_request(full_command: str) -> bool:
 # WINDOWS FALLBACK LAUNCH - v8.0 New
 # =============================================================================
 def _windows_fallback_launch(app_name: str) -> bool:
+    return False  # Denied: no authenticated OperatorCore receipt.
+
     """Windows-specific fallback launch strategies with readiness verification."""
     try:
         base = _normalize_app_alias(app_name.replace('.exe', '').strip())
@@ -1011,6 +1031,8 @@ def _windows_fallback_launch(app_name: str) -> bool:
         return False
 
 def _terminate_all_apps() -> bool:
+    return False  # Denied: no authenticated OperatorCore receipt.
+
     """Terminate all tracked applications."""
     try:
         success = True
@@ -1031,6 +1053,8 @@ def _terminate_all_apps() -> bool:
 # MEDIA PLAYBACK - Backward Compatible
 # =============================================================================
 def execute_play_command(action: str, target: str, original_query: str) -> str:
+    return "Media playback requires an authorized action ticket."  # Denied: no authenticated OperatorCore receipt.
+
     """
     Handle media playback commands.
     v8.0: Enhanced with better parsing and error handling.
@@ -1133,11 +1157,14 @@ def execute_play_command(action: str, target: str, original_query: str) -> str:
 
 
 def type_text_to_active_window(text: str, interval: float = 0.01, press_enter: bool = False) -> bool:
+    # Requires a scoped, authenticated OperatorCore execution grant; none supplied.
+    return False
+
     """Type text into the currently focused window using pyautogui when available."""
     if not pyautogui:
         return False
     try:
-        pyautogui.FAILSAFE = False
+        pyautogui.FAILSAFE = True
         pyautogui.write(str(text or ''), interval=max(0.0, float(interval or 0.0)))
         if press_enter:
             pyautogui.press('enter')
@@ -1148,13 +1175,16 @@ def type_text_to_active_window(text: str, interval: float = 0.01, press_enter: b
 
 
 def press_hotkey(*keys: str) -> bool:
+    # Requires a scoped, authenticated OperatorCore execution grant; none supplied.
+    return False
+
     if not pyautogui:
         return False
     try:
         combo = [str(k).strip().lower() for k in keys if str(k).strip()]
         if not combo:
             return False
-        pyautogui.FAILSAFE = False
+        pyautogui.FAILSAFE = True
         pyautogui.hotkey(*combo)
         return True
     except Exception as e:
@@ -1163,6 +1193,9 @@ def press_hotkey(*keys: str) -> bool:
 
 
 def browser_search(app_name: str, query: str, timeout: float = 10.0) -> bool:
+    # Requires a scoped, authenticated OperatorCore execution grant; none supplied.
+    return False
+
     canonical = _normalize_app_alias(app_name) or app_name
     try:
         if not manage_application_request(f"open {canonical}"):
@@ -1182,6 +1215,9 @@ def browser_search(app_name: str, query: str, timeout: float = 10.0) -> bool:
 
 
 def browser_open_url(app_name: str, url: str, timeout: float = 10.0) -> bool:
+    # Requires a scoped, authenticated OperatorCore execution grant; none supplied.
+    return False
+
     return browser_search(app_name, url, timeout=timeout)
 
 # =============================================================================
@@ -1314,6 +1350,10 @@ def batch_application_control(requests: List[Union[str, Dict[str, Any]]]) -> Dic
 
 
 def execute_software_action(action_type: str, target: str, execution_mode: str = 'apply', metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if str(execution_mode or "apply").strip().lower() == "apply":
+        return {"ok": False, "executed": False, "verified": False,
+                "action_type": str(action_type or ""), "target": str(target or ""),
+                "reason": "operatorcore_grant_unavailable"}
     action = str(action_type or '').strip().lower()
     target_name = _normalize_app_alias(str(target or '').strip())
     mode = str(execution_mode or 'apply').strip().lower()
@@ -1387,6 +1427,7 @@ logger.info("[v8.0] SarahMemorySi module loaded successfully")
 # ====================================================================
 
 # --- SML ORGAN ADAPTER START ---
+import copy as _sml_copy
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemorySi',
@@ -1408,22 +1449,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return _sml_copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter registered; runtime quality not measured"],
     }
 
 
@@ -1433,7 +1474,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemorySi',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": _sml_copy.deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

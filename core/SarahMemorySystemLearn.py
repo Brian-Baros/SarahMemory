@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemorySystemLearn.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 """
 
@@ -38,7 +37,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -78,7 +77,7 @@ import subprocess
 import threading
 import importlib
 import SarahMemoryAdvCU
-importlib.reload(SarahMemoryAdvCU)
+# Import-time reload disabled; preserve existing AdvCU runtime state
 import SarahMemoryGlobals as config
 from SarahMemoryGlobals import DATASETS_DIR, TOOLS_DIR  # content = extract_text(...)
 from SarahMemoryAdvCU import classify_intent
@@ -99,7 +98,7 @@ except Exception:
     def is_offline() -> bool:
         return False
 
-config.LEARNING_PHASE_ACTIVE = False  # TRUE only inside explicit bounded learning cycles
+# Learning state is owned by the current runtime; do not reset on import
 # Initialize FAISS and SentenceTransformer
 from SarahMemoryGlobals import MODEL_CONFIG, MULTI_MODEL
 
@@ -170,43 +169,9 @@ def get_active_sentence_model():
 
     return _LiteEmbedder()
 
-try:
-    import torch
-    import faiss
-
-    # Initialize the local vector runtime whenever LOCAL_DATA_ENABLED is true.
-    # LOCAL_ONLY_MODE and offline mode force local_files_only=True inside
-    # get_active_sentence_model(); they must not disable local vectors.
-    _local_data_enabled = bool(getattr(config, "LOCAL_DATA_ENABLED", True))
-    if SAFE_MODE or not _local_data_enabled:
-        model = None
-        vector_index = None
-        reason = "SAFE_MODE" if SAFE_MODE else "LOCAL_DATA_ENABLED=False"
-        print(f"⚠️ Vector engine disabled due to {reason}.")
-    else:
-        _m = get_active_sentence_model()
-        if _m is None:
-            model = None
-            vector_index = None
-            print("⚠️ Vector engine disabled (no embedding model available).")
-        else:
-            model = _m
-            try:
-                if hasattr(model, "to"):
-                    model.to("cuda" if torch.cuda.is_available() else "cpu")
-            except Exception:
-                pass
-            try:
-                _probe = model.encode("SarahMemory vector readiness probe")
-                _dim = int(getattr(_probe, "shape", [len(_probe)])[-1])
-            except Exception:
-                _dim = 384
-            vector_index = faiss.IndexFlatL2(max(1, _dim))
-            print(f"✅ Local vector engine ready ({model.__class__.__name__}, dim={max(1, _dim)}).")
-except Exception as e:
-    model = None
-    vector_index = None
-    print(f"⚠️ Vector engine not initialized: {e}")
+# Enterprise v9.1.0a: heavy embedding/FAISS initialization is explicit, never import-time.
+model = None
+vector_index = None
 
 # GUI CONFIGURATION
 FILETYPE_GROUPS = {
@@ -538,11 +503,19 @@ class _SystemLearnBlankNLP:
                 return iter([])
         return _Doc()
 
-try:
-    nlp = spacy.load("en_core_web_sm") if spacy is not None else _SystemLearnBlankNLP()
-except Exception:
-    nlp = _SystemLearnBlankNLP()
-nlp.max_length = 1000000000  # Allows up to 2 million characters
+# NLP runtime is resolved only by explicit extraction.
+nlp = _SystemLearnBlankNLP()
+nlp.max_length = 1_000_000
+
+def _systemlearn_get_nlp():
+    global nlp
+    if isinstance(nlp, _SystemLearnBlankNLP) and spacy is not None:
+        try:
+            nlp = spacy.load('en_core_web_sm')
+            nlp.max_length = 1_000_000
+        except Exception:
+            pass
+    return nlp
 # DB Paths
 PERSONALITY_DB = os.path.join(config.DATASETS_DIR, "personality1.db")
 FUNCTIONS_DB = os.path.join(DATASETS_DIR, "functions.db")
@@ -692,7 +665,7 @@ if _systemlearn_import_vector_check_enabled():
 # ⬇️ NEW FUNCTION: Extract named entities from document
 
 def extract_named_entities(text):
-    doc = nlp(text)
+    doc = _systemlearn_get_nlp()(str(text)[:1_000_000])
     return [(ent.text, ent.label_) for ent in doc.ents if ent.label_ in ["PERSON", "GPE", "ORG"]]
 
 # ⬇️ NEW FUNCTION: Detect language of content
@@ -1159,7 +1132,7 @@ def is_clean_content(text):
     if SAFE_MODE or LOCAL_ONLY_MODE or is_offline():
         return len(text.strip().split()) >= 3
     # Otherwise, perform POS tagging and ensure the presence of nouns/verbs
-    doc = nlp(text)
+    doc = _systemlearn_get_nlp()(str(text)[:1_000_000])
     return any(t.pos_ in {"NOUN", "VERB", "PROPN"} for t in doc)
 
 # # def process_files(files, use_mammoth=True, use_antiword=True, learn_registry=False):
@@ -1347,22 +1320,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML registration confirmed; runtime measurements not performed"],
     }
 
 
@@ -1372,7 +1345,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemorySystemLearn',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

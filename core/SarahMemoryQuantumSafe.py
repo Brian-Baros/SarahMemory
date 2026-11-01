@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryQuantumSafe.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 Governed quantum-safe / quantum-inspired algorithms for SarahMemory AiOS.
@@ -45,7 +44,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -95,11 +94,19 @@ def normalize_qubit(alpha: complex, beta: complex) -> Dict[str, Any]:
     # never claims to be a quantum computer. It is useful for reasoning about
     # superposition, probability, and confidence weighting.
     """
-    norm = math.sqrt(abs(alpha) ** 2 + abs(beta) ** 2)
+    try:
+        alpha, beta = complex(alpha), complex(beta)
+        if not all(math.isfinite(x) for x in (alpha.real, alpha.imag, beta.real, beta.imag)):
+            raise ValueError("nonfinite_amplitude")
+        norm = math.hypot(abs(alpha), abs(beta))
+    except (TypeError, ValueError, OverflowError) as exc:
+        return {"ok": False, "error": "invalid_or_nonfinite_qubit_amplitude", "hardware_control": False}
     if norm <= 0:
         alpha, beta, norm = 1 + 0j, 0 + 0j, 1.0
     a = alpha / norm
     b = beta / norm
+    if not all(math.isfinite(v) for v in (a.real, a.imag, b.real, b.imag)):
+        return {"ok": False, "error": "nonfinite_normalization", "hardware_control": False}
     out = {
         "ok": True,
         "alpha": [a.real, a.imag],
@@ -120,6 +127,8 @@ def apply_single_qubit_gate(alpha: complex, beta: complex, gate: str = "H") -> D
     # cannot operate external devices or change machine state.
     """
     st = normalize_qubit(alpha, beta)
+    if not st.get("ok"):
+        return st
     a = complex(st["alpha"][0], st["alpha"][1])
     b = complex(st["beta"][0], st["beta"][1])
     g = (gate or "H").strip().upper()
@@ -145,6 +154,8 @@ def apply_single_qubit_gate(alpha: complex, beta: complex, gate: str = "H") -> D
 
 def bloch_vector(alpha: complex, beta: complex) -> Dict[str, Any]:
     st = normalize_qubit(alpha, beta)
+    if not st.get("ok"):
+        return st
     a = complex(st["alpha"][0], st["alpha"][1])
     b = complex(st["beta"][0], st["beta"][1])
     x = 2 * (a.conjugate() * b).real
@@ -161,7 +172,12 @@ def qft_small_vector(values: Sequence[complex]) -> Dict[str, Any]:
     # SARAHMEMORY_PATCH_NOTE: Limited to 64 amplitudes to avoid CPU spikes. This
     # is for educational/planning math, not real quantum execution.
     """
-    vec = [complex(v) for v in _bounded_sequence(values, MAX_VECTOR_LEN)]
+    try:
+        vec = [complex(v) for v in _bounded_sequence(values, MAX_VECTOR_LEN)]
+    except (ValueError, TypeError, OverflowError):
+        return {"ok": False, "error": "invalid_amplitude", "hardware_control": False}
+    if not all(math.isfinite(z.real) and math.isfinite(z.imag) for z in vec):
+        return {"ok": False, "error": "nonfinite_amplitude", "hardware_control": False}
     n = len(vec)
     if n <= 0:
         return {"ok": False, "error": "empty_vector"}
@@ -183,7 +199,7 @@ def quantum_interference_rank(options: Sequence[Dict[str, Any]]) -> Dict[str, An
 
     Expected option fields: name, positive, negative, confidence, risk.
     """
-    opts = _bounded_sequence(options, MAX_OPTIONS)
+    opts = list(options or [])[:MAX_OPTIONS]
     ranked = []
     for opt in opts:
         name = str(opt.get("name") or opt.get("id") or "option")
@@ -244,7 +260,7 @@ def quantum_walk_rank(nodes: Sequence[str], edges: Sequence[Tuple[str, str]], st
     # SARAHMEMORY_PATCH_NOTE: Bounded graph scoring only. It can help choose which
     # local evidence node or repair ticket to inspect first without invoking a cloud.
     """
-    ns = [str(n) for n in _bounded_sequence(nodes, MAX_OPTIONS)]
+    ns = [str(n) for n in list(nodes or [])[:MAX_OPTIONS]]
     if not ns:
         return {"ok": False, "error": "empty_graph"}
     idx = {n: i for i, n in enumerate(ns)}
@@ -281,6 +297,13 @@ def governance_balance_score(signals: Dict[str, float]) -> Dict[str, Any]:
     # scalar recommendation. It cannot authorize execution; it only reports whether
     # the system appears balanced, strained, or blocked.
     """
+    if not isinstance(signals, dict) or any(k not in signals for k in ("safety", "security", "user_authority", "runtime")):
+        return {"ok": False, "score": None, "verdict": "REQUIRE_USER", "signals": dict(signals or {}) if isinstance(signals, dict) else {}, "hardware_control": False, "reason": "missing_governance_evidence"}
+    try:
+        if any(not math.isfinite(float(value)) for value in signals.values()):
+            raise ValueError("nonfinite_signal")
+    except (TypeError, ValueError, OverflowError):
+        return {"ok": False, "score": None, "verdict": "REQUIRE_USER", "signals": dict(signals), "hardware_control": False, "reason": "invalid_governance_evidence"}
     safe = max(0.0, min(1.0, float(signals.get("safety", 0.5))))
     secure = max(0.0, min(1.0, float(signals.get("security", 0.5))))
     user = max(0.0, min(1.0, float(signals.get("user_authority", 1.0))))
@@ -608,22 +631,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Expose adapter presence without fabricating operational measurements."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "UNKNOWN",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter registered; live operational measurements not verified"],
     }
 
 
@@ -633,7 +656,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryQuantumSafe',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

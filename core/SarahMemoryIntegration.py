@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryIntegration.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,8 +13,8 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
+
 SarahMemory v9.0 - Integration & Main Menu System
 Integration with Enhanced Features
 ===============================================================================
@@ -41,7 +41,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -113,6 +113,11 @@ def execute_action_ticket(ticket: dict, *, confirm: bool = False) -> dict:
     if requires_confirm and not confirm:
         return {"ok": False, "action": action, "needs_confirm": True, "error": "confirmation_required"}
 
+    # `confirm` is a UI event, not an authenticated OperatorCore receipt.
+    # All mutations are held pending a governed execution bridge.
+    read_only_actions = {"scan_file", "file_scan", "scan_dir", "scan_directory", "dir_scan"}
+    if action not in read_only_actions:
+        return {"ok": False, "action": action, "error": "operator_core_execution_receipt_required", "needs_confirm": True}
     if _FS is None:
         return {"ok": False, "action": action, "error": "SarahMemoryFilesystem not available"}
 
@@ -182,13 +187,13 @@ def execute_action_ticket(ticket: dict, *, confirm: bool = False) -> dict:
         if action in ("scan_file", "file_scan"):
             if _FS_SCANNER is None:
                 return {"ok": False, "action": action, "error": "FileScanner unavailable"}
-            data = _FS_SCANNER.scan_file(args.get("file_path", ""), quarantine_on_threat=bool(args.get("quarantine_on_threat", True)))
+            data = _FS_SCANNER.scan_file(args.get("file_path", ""), quarantine_on_threat=False)
             return {"ok": True, "action": action, "result": data}
 
         if action in ("scan_dir", "scan_directory", "dir_scan"):
             if _FS_SCANNER is None:
                 return {"ok": False, "action": action, "error": "FileScanner unavailable"}
-            data = _FS_SCANNER.scan_directory(args.get("directory", ""), recursive=bool(args.get("recursive", True)), quarantine_on_threat=bool(args.get("quarantine_on_threat", True)))
+            data = _FS_SCANNER.scan_directory(args.get("directory", ""), recursive=bool(args.get("recursive", True)), quarantine_on_threat=False)
             return {"ok": True, "action": action, "result": {"items": data}}
 
         if action in ("quarantine_restore", "restore_quarantine"):
@@ -337,76 +342,13 @@ def _call_main_process_cleanup() -> bool:
 
 
 def _kill_api_port_fallback(port: int) -> None:
-    """Best-effort port/PID cleanup for the local Flask API child process."""
-    try:
-        pids = set()
-        for raw in (
-            os.environ.get("SARAHMEMORY_LOCAL_API_PID"),
-            os.environ.get("SARAHMEMORY_API_PID"),
-        ):
-            if raw and str(raw).strip().isdigit():
-                pids.add(int(str(raw).strip()))
+    """Do not terminate OS processes based on a port or unverified PID markers.
 
-        for path in _runtime_pid_paths():
-            try:
-                if path.endswith("local_api.pid") and os.path.exists(path):
-                    raw = open(path, "r", encoding="utf-8", errors="ignore").read().strip()
-                    if raw.isdigit():
-                        pids.add(int(raw))
-            except Exception:
-                pass
-
-        if os.name == "nt":
-            try:
-                out = subprocess.check_output(["netstat", "-ano", "-p", "tcp"], text=True, errors="ignore")
-            except Exception:
-                out = ""
-            needle = f":{int(port)}"
-            for line in out.splitlines():
-                if needle in line and "LISTENING" in line.upper():
-                    parts = line.split()
-                    if parts and parts[-1].isdigit():
-                        pids.add(int(parts[-1]))
-
-            for pid in sorted(pids):
-                if pid <= 0 or pid == os.getpid():
-                    continue
-                try:
-                    info = subprocess.check_output(
-                        ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                        text=True,
-                        errors="ignore",
-                    ).strip()
-                    image = info.split(",")[0].strip('"').lower() if info else ""
-                    if image and ("python" in image or "wsgi" in image or "gunicorn" in image):
-                        subprocess.run(
-                            ["taskkill", "/PID", str(pid), "/T", "/F"],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            timeout=3.0,
-                        )
-                except Exception:
-                    pass
-        else:
-            import signal
-            for pid in sorted(pids):
-                if pid <= 0 or pid == os.getpid():
-                    continue
-                try:
-                    os.killpg(pid, signal.SIGTERM)
-                except Exception:
-                    try:
-                        os.kill(pid, signal.SIGTERM)
-                    except Exception:
-                        pass
-    except Exception:
-        pass
-    finally:
-        try:
-            os.environ.pop("SARAHMEMORY_LOCAL_API_PID", None)
-            os.environ.pop("SARAHMEMORY_API_PID", None)
-        except Exception:
-            pass
+    SarahMemoryMain's owned lifecycle cleanup is the authorized shutdown path.
+    A configuration flag alone cannot grant authority to kill a process.
+    """
+    logger.warning("Unverified API port/PID kill fallback refused for port %s", port)
+    return None
 
 
 def _join_sarahmemory_threads(timeout_each: float = 0.75) -> None:
@@ -456,11 +398,14 @@ def _start_runtime_services_once() -> None:
     except Exception:
         host, port = "127.0.0.1", 8000
 
+    # API readiness observation must never fetch an arbitrary network host.
+    if str(host) not in ("localhost", "127.0.0.1", "::1"):
+        host = "127.0.0.1"
     status_url = f"http://{host}:{port}/api/status"
     api_ok = False
     try:
         import requests  # type: ignore
-        for _ in range(40):  # ~10s @ 0.25s
+        for _ in range(4):  # bounded optional readiness probe
             if terminate_flag.is_set():
                 break
             try:
@@ -593,8 +538,9 @@ def bootstrap_startup():
             if host and user and pw:
                 try:
                     logger.info("[v9.0][BOOTSTRAP] Attempting remote dataset sync...")
-                    sync_dataset_bidirectional(local, host, user, pw, remote)
-                    logger.info("[v9.0][BOOTSTRAP] Remote dataset sync completed")
+                    sync_ok = sync_dataset_bidirectional()
+                    if not sync_ok:
+                        logger.warning("[v9.0][BOOTSTRAP] Plaintext FTP sync disabled; no remote data changed")
                 except Exception as se:
                     logger.warning(f"[v9.0][BOOTSTRAP] Dataset sync skipped: {se}")
         except Exception as e:
@@ -638,244 +584,25 @@ def hash_file(filepath):
     return sha256.hexdigest()
 
 
+
 def upload_with_progress(ftp, filepath, filename):
-    """
-    v9.0: Upload file to FTP server with progress bar.
-    
-    Args:
-        ftp: FTP connection object
-        filepath: Local file path
-        filename: Remote filename
-    """
-    filesize = os.path.getsize(filepath)
-    bar = tqdm(total=filesize, unit='B', unit_scale=True, 
-               desc=f"[v9.0] Uploading {filename}", ncols=80)
-    start = time.time()
-    
-    try:
-        with open(filepath, 'rb') as f:
-            def callback(chunk):
-                bar.update(len(chunk))
-            ftp.storbinary(f"STOR {filename}", f, 1024, callback=callback)
-    except Exception as e:
-        bar.close()
-        logger.error(f"[v9.0][UPLOAD ERROR] {filename} failed: {type(e).__name__}: {e}")
-        return
-    
-    bar.close()
-    elapsed = time.time() - start
-    logger.info(f"[v9.0][UPLOAD COMPLETE] {filename} ({filesize} bytes) in {elapsed:.2f} sec")
+    """Legacy plaintext FTP writer disabled; use a separately governed secure adapter."""
+    logger.warning("Legacy FTP upload refused: encrypted transport and operator receipt required")
+    return False
 
 
 # =============================================================================
 # BIDIRECTIONAL DATASET SYNCHRONIZATION
 # =============================================================================
+
 def sync_dataset_bidirectional():
+    """Refuse legacy plaintext FTP sync. No remote filename is trusted or written.
+
+    A future approved TLS/SFTP adapter must handle pinned identity, bounded
+    transfer, collision safety and SQLite-consistent snapshot custody.
     """
-    v9.0 Enhanced: Bidirectional dataset sync with FTP server.
-    
-    Features:
-    - Respects SAFE_MODE / LOCAL_ONLY and 'is_offline()' if present
-    - Uses FTP settings from SarahMemoryGlobals.py
-    - Skips sync when FTP_BACKUP_SCHEDULE is "never" or not due yet
-    - Compares hashes and uploads/downloads changed files only
-    - Writes a .last_ftp_backup.txt stamp on success
-    """
-    logger.info("[v9.0][SYNC] Starting bidirectional dataset synchronization...")
-    
-    # =========================================================================
-    # SAFETY CHECKS
-    # =========================================================================
-    offline = False
-    safe_mode = False
-    
-    try:
-        if hasattr(config, "is_offline"):
-            offline = config.is_offline()
-    except Exception:
-        offline = False
-    
-    try:
-        safe_mode = getattr(config, "SAFE_MODE", False) or getattr(config, "LOCAL_ONLY_MODE", False)
-    except Exception:
-        safe_mode = False
-    
-    if safe_mode or offline:
-        logger.info("[v9.0][SYNC] Skipping dataset sync due to safe mode or offline status.")
-        return
-
-    # =========================================================================
-    # PATH AND CONFIG SETUP
-    # =========================================================================
-    data_dir = getattr(config, "DATA_DIR", os.path.join(os.getcwd(), "data"))
-    local_dir = getattr(config, "DATASETS_DIR", 
-                       os.path.join(os.getcwd(), "data", "memory", "datasets"))
-    os.makedirs(local_dir, exist_ok=True)
-
-    ftp_host = getattr(config, "FTP_HOST", "ftp.sarahmemory.com")
-    ftp_port = int(getattr(config, "FTP_PORT", 21))
-    ftp_user = getattr(config, "FTP_USER", "anonymous")
-    ftp_pass = getattr(config, "FTP_PASS", "")
-    remote_dir = (getattr(config, "FTP_REMOTE_DIR", None) or 
-                 getattr(config, "FTP_REMOTE_DATASETS_DIR", 
-                        "/public_html/api/data/memory/datasets"))
-
-    # =========================================================================
-    # SCHEDULE GATE
-    # =========================================================================
-    schedule_kind = getattr(config, "FTP_BACKUP_SCHEDULE", "weekly")
-    
-    try:
-        from datetime import datetime, timedelta
-        days = getattr(config, "schedule_to_days", lambda k: 7)(schedule_kind)
-        stamp_file = os.path.join(local_dir, ".last_ftp_backup.txt")
-        
-        if days == 0:  # "never"
-            logger.info(f"[v9.0][SYNC] FTP backup skipped (policy: {schedule_kind}).")
-            return
-        
-        should_run = True
-        try:
-            with open(stamp_file, "r", encoding="utf-8") as sf:
-                last = datetime.fromisoformat(sf.read().strip())
-            should_run = (datetime.now() - last).days >= days
-        except Exception:
-            should_run = True
-        
-        if not should_run:
-            logger.info(f"[v9.0][SYNC] FTP backup skipped (next run not due; policy: {schedule_kind}).")
-            return
-    
-    except Exception as _sched_e:
-        logger.warning(f"[v9.0][SYNC] Schedule gate error (continuing): {_sched_e}")
-
-    # =========================================================================
-    # FTP SYNC
-    # =========================================================================
-    try:
-        logger.info(f"[v9.0][SYNC] Connecting to FTP server at {ftp_host}:{ftp_port}...")
-        ftp = FTP(timeout=45)
-        ftp.connect(ftp_host, ftp_port)
-        ftp.login(ftp_user, ftp_pass)
-        
-        # Change to remote directory (create if needed)
-        try:
-            ftp.cwd(remote_dir)
-        except error_perm:
-            # Try to create the remote path if missing
-            parts = [p for p in remote_dir.split("/") if p]
-            cur = ""
-            for p in parts:
-                cur += "/" + p
-                try:
-                    ftp.cwd(cur)
-                except error_perm:
-                    try:
-                        ftp.mkd(cur)
-                        ftp.cwd(cur)
-                    except error_perm:
-                        pass
-            ftp.cwd(remote_dir)
-
-        # Hash helper
-        def _hash_file(fp):
-            import hashlib
-            h = hashlib.sha256()
-            with open(fp, "rb") as f:
-                for b in iter(lambda: f.read(65536), b""):
-                    h.update(b)
-            return h.hexdigest()
-
-        # Collect file lists
-        try:
-            remote_list = ftp.nlst()
-        except Exception:
-            remote_list = []
-        
-        local_list = [f for f in os.listdir(local_dir) 
-                     if os.path.isfile(os.path.join(local_dir, f))]
-        combined = sorted(set(remote_list + local_list))
-
-        tmp_dl = os.path.join(local_dir, ".tmp_download")
-        if os.path.exists(tmp_dl):
-            try:
-                os.remove(tmp_dl)
-            except Exception:
-                pass
-
-        # Sync each file
-        for fname in combined:
-            if fname in [".", "..", ".ftpquota", ".htaccess", ".last_ftp_backup.txt"]:
-                continue
-            
-            lp = os.path.join(local_dir, fname)
-            local_exists = os.path.isfile(lp)
-            remote_exists = fname in remote_list
-
-            local_hash = _hash_file(lp) if local_exists else None
-            remote_hash = None
-            
-            if remote_exists:
-                try:
-                    with open(tmp_dl, "wb") as f:
-                        ftp.retrbinary(f"RETR {fname}", f.write)
-                    remote_hash = _hash_file(tmp_dl)
-                except error_perm as ep:
-                    logger.warning(f"[v9.0][FTP RETR SKIP] {fname}: {ep}")
-                    remote_hash = None
-
-            # Compare and sync
-            if local_hash != remote_hash:
-                if not local_exists and remote_exists:
-                    logger.info(f"[v9.0][DOWNLOAD] {fname} missing locally. Downloading...")
-                    try:
-                        with open(lp, "wb") as wf, open(tmp_dl, "rb") as rf:
-                            wf.write(rf.read())
-                    except Exception as e:
-                        logger.error(f"[v9.0][DOWNLOAD ERROR] {fname}: {e}")
-                
-                elif local_exists:
-                    logger.info(f"[v9.0][UPLOAD] Updating remote: {fname}")
-                    size = os.path.getsize(lp)
-                    bar = tqdm(total=size, unit='B', unit_scale=True, 
-                              desc=f"[v9.0] Uploading {fname}", ncols=80)
-                    try:
-                        with open(lp, "rb") as rf:
-                            def _cb(chunk):
-                                bar.update(len(chunk))
-                            ftp.storbinary(f"STOR {fname}", rf, 1024, callback=_cb)
-                    except Exception as e:
-                        logger.error(f"[v9.0][UPLOAD ERROR] {fname}: {e}")
-                    finally:
-                        bar.close()
-                else:
-                    logger.info(f"[v9.0][SYNC] Skipping {fname} (no local or remote?)")
-            else:
-                logger.info(f"[v9.0][MATCH] {fname} already synced.")
-
-            # Cleanup temp
-            try:
-                if os.path.exists(tmp_dl):
-                    os.remove(tmp_dl)
-            except Exception:
-                pass
-
-        ftp.quit()
-        
-        # Write success stamp
-        try:
-            from datetime import datetime
-            with open(os.path.join(local_dir, ".last_ftp_backup.txt"), "w", encoding="utf-8") as sf:
-                sf.write(datetime.now().isoformat())
-        except Exception as _e:
-            logger.warning(f"[v9.0][SYNC] Could not write last backup stamp: {_e}")
-        
-        logger.info("[v9.0][SYNC COMPLETE] Bi-directional dataset sync finished.")
-
-    except all_errors as e:
-        logger.warning(f"[v9.0][SYNC ERROR] Dataset sync failed: {type(e).__name__}: {e}")
-    except Exception as e:
-        logger.warning(f"[v9.0][SYNC ERROR] {type(e).__name__}: {e}")
+    logger.warning("Dataset FTP synchronization disabled: secure governed transport unavailable")
+    return False
 
 
 # =============================================================================
@@ -1389,7 +1116,7 @@ if __name__ == "__main__":
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryIntegration',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Infrastructure',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -1407,22 +1134,16 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Report only observed SML registration state; no fabricated performance scores."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "unverified_runtime", "availability": None,
+        "integrity": None, "performance": None, "reliability": None,
+        "confidence": 0.0, "latency_ms": None, "stability": None,
+        "compatibility": None, "notes": ["SML registration present; runtime health not measured"],
     }
 
 
@@ -1432,7 +1153,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryIntegration',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

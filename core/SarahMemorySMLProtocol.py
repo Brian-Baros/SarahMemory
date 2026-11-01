@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemorySMLProtocol.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-09-09
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,9 +13,8 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
-
 ===============================================================================
+
 SarahMemory SML/QSML Universal Natural Programming Language / Governed Cognitive Substrate
 
 PURPOSE:
@@ -134,6 +133,9 @@ def sml_is_information_question(text: str) -> bool:
     """
     t = sml_normalize_user_text(text)
     if not t:
+        return False
+    # Imperative intent embedded in an interrogative requires independent routing review.
+    if re.search(r"\b(delete|remove|run|execute|install|deploy|transfer|send|publish|disable|shutdown|format|erase|wipe|start|stop)\b", t) and re.match(r"^(how|can|could|would|will|please)\b", t):
         return False
     if re.match(r"^(what|who|when|where|why|how|which)\b", t):
         return True
@@ -4440,17 +4442,25 @@ class SarahMemorySMLProtocol:
         return packet
 
     def authorize_packet(self, packet: SMLPacket, *, decision: str, granted_authority: Optional[Sequence[str]] = None, organ: str = "GovernanceOrgan", reasons: Optional[Sequence[str]] = None) -> SMLPacket:
-        decision_val = str(decision)
-        if decision_val not in {x.value for x in GovernanceDecision}:
-            decision_val = GovernanceDecision.PENDING.value
-        packet.governance["decision"] = decision_val
-        packet.governance["reasons"] = list(reasons or packet.governance.get("reasons") or [])
-        if granted_authority is not None:
-            packet.authority["granted"] = sorted(_coerce_set(granted_authority))
-        packet.current_omega = "Ω060"
-        packet.cognitive_state = CognitiveState.AUTHORIZED.value if decision_val == GovernanceDecision.APPROVED.value else packet.cognitive_state
-        packet.add_history(organ, "authorize_packet", "Ω060", decision_val)
-        packet.add_ledger_entry("Ω060", organ, decision_val, "Authority checked")
+        """Record a non-executing protocol decision, not an authenticated grant.
+
+        Actual positive authority receipts can only be issued by existing
+        governance owners outside the SML compiler/packet plane.
+        """
+        requested = str(decision)
+        valid = {x.value for x in GovernanceDecision}
+        if requested not in valid:
+            requested = GovernanceDecision.PENDING.value
+        decision_val = GovernanceDecision.REQUIRE_USER.value if requested == GovernanceDecision.APPROVED.value else requested
+        packet.governance['decision'] = decision_val
+        notes = list(reasons or packet.governance.get('reasons') or [])
+        if requested == GovernanceDecision.APPROVED.value:
+            notes.append('SML cannot authenticate execution grants; independent governance receipt required')
+        packet.governance['reasons'] = notes
+        packet.authority['granted'] = sorted({Authority.READ.value} & _coerce_set(granted_authority or packet.authority.get('granted') or []))
+        packet.current_omega = 'Ω060'
+        packet.add_history(organ, 'authorize_packet', 'Ω060', decision_val)
+        packet.add_ledger_entry('Ω060', organ, decision_val, 'Unverified protocol authority proposal')
         packet.seal()
         return packet
 

@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryMusicGenerator.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 SarahMemory Music Generator - Music Production & Synthesis Suite
@@ -211,7 +210,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -235,6 +234,8 @@ from enum import Enum
 from collections import defaultdict
 import hashlib
 import struct
+import uuid
+import tempfile
 
 # Audio processing
 import numpy as np
@@ -443,22 +444,25 @@ class MusicTheory:
     
     @staticmethod
     def note_name_to_midi(note_name: str, octave: int = 4) -> int:
-        """Convert note name (e.g., 'C#') and octave to MIDI number"""
-        note_name = note_name.upper()
-        
-        # Handle flats
-        if 'B' in note_name and len(note_name) > 1:
-            note_name = note_name.replace('B', '#')
-            # Convert flat to sharp equivalent
-            idx = NOTE_NAMES_FLAT.index(note_name[0] + 'b')
-            note_name = NOTE_NAMES[idx]
-        
-        if note_name not in NOTE_NAMES:
-            raise ValueError(f"Invalid note name: {note_name}")
-        
-        note_index = NOTE_NAMES.index(note_name)
-        return (octave + 1) * 12 + note_index
-    
+        """Handle sharps and conventional flat notation, without guessing bad notes."""
+        raw = str(note_name or "").strip()
+        if not raw or raw[0].upper() not in "ABCDEFG":
+            raise ValueError("Invalid note name")
+        canonical = raw[0].upper() + raw[1:]
+        if len(canonical) == 2 and canonical[1] in "bB":
+            idx = NOTE_NAMES_FLAT.index(canonical[0] + "b")
+            canonical = NOTE_NAMES[idx]
+        elif len(canonical) == 2 and canonical[1] == "#":
+            pass
+        elif len(canonical) != 1:
+            raise ValueError("Invalid note name")
+        if canonical not in NOTE_NAMES:
+            raise ValueError("Invalid note name")
+        note_number = (int(octave) + 1) * 12 + NOTE_NAMES.index(canonical)
+        if not 0 <= note_number <= 127:
+            raise ValueError("MIDI note out of range")
+        return note_number
+
     @staticmethod
     def midi_to_note_name(midi_note: int) -> Tuple[str, int]:
         """Convert MIDI note number to note name and octave"""
@@ -1550,7 +1554,7 @@ class MusicStudio:
         Returns:
             MusicProject instance
         """
-        project_id = f"music_{int(time.time())}_{hashlib.md5(name.encode()).hexdigest()[:8]}"
+        project_id = f"music_{uuid.uuid4().hex}"
         project = MusicProject(project_id, name, tempo, key, time_signature, self.sample_rate)
         self.projects[project_id] = project
         
@@ -1560,7 +1564,10 @@ class MusicStudio:
     def load_project(self, filepath: str) -> Optional[MusicProject]:
         """Load project from file"""
         try:
-            with open(filepath, 'r') as f:
+            resolved = Path(filepath).expanduser().resolve()
+            if resolved.suffix.lower() != '.smp' or not resolved.is_relative_to(Path(MUSIC_PROJECTS_DIR).resolve()) or resolved.is_symlink() or resolved.stat().st_size > 4 * 1024 * 1024:
+                return None
+            with open(resolved, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
             project = MusicProject.from_dict(data)
@@ -1578,11 +1585,27 @@ class MusicStudio:
         """Save project to file"""
         try:
             if filepath is None:
-                filename = f"{project.name.replace(' ', '_')}_{project.project_id}.smp"
+                filename = f"{project.project_id}.smp"
                 filepath = os.path.join(MUSIC_PROJECTS_DIR, filename)
             
-            with open(filepath, 'w') as f:
-                json.dump(project.to_dict(), f, indent=2)
+            target = Path(filepath).expanduser().resolve()
+            root = Path(MUSIC_PROJECTS_DIR).resolve()
+            if target.suffix.lower() != '.smp' or not target.is_relative_to(root) or target.is_symlink():
+                return False
+            root.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(project.to_dict(), indent=2)
+            if len(payload.encode('utf-8')) > 4 * 1024 * 1024:
+                return False
+            with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=root, suffix='.tmp', delete=False) as tmp:
+                tmp.write(payload)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+                staged = tmp.name
+            try:
+                os.replace(staged, target)
+            finally:
+                if os.path.exists(staged):
+                    os.unlink(staged)
             
             logging.info(f"[MusicStudio] Saved project '{project.name}' to {filepath}")
             return True
@@ -1754,10 +1777,26 @@ class MusicStudio:
                 filename = f"{project.name.replace(' ', '_')}_{timestamp}.wav"
                 output_path = os.path.join(MUSIC_EXPORTS_DIR, filename)
             
-            # Render project
+            # Validate before expensive DSP, file writes, or path traversal.
+            target = Path(output_path).expanduser().resolve()
+            root = Path(MUSIC_EXPORTS_DIR).resolve()
+            if target.suffix.lower() != ".wav" or not target.is_relative_to(root) or target.is_symlink():
+                return False
+            if not (0 <= float(project.duration) <= 300):
+                return False  # Bounded audio rendering (maximum five minutes per job)
+            if str(format).upper() != "WAV":
+                return False
+            root.mkdir(parents=True, exist_ok=True)
+            # Render project only after all preflight conditions are accepted.
             audio = project.render()
-            
+            if getattr(audio, 'size', 0) > 300 * self.sample_rate * 2:
+                return False
             # Convert to appropriate format
+            if str(format).upper() != "WAV":
+                logging.error("Unsupported export container: %s (only WAV encoding implemented)", format)
+                return False
+            if str(output_path).lower().endswith(".wav") is False:
+                return False
             if format.upper() == "WAV":
                 self._export_wav(audio, output_path, project.sample_rate)
             else:
@@ -1773,13 +1812,21 @@ class MusicStudio:
             return False
     
     def _export_wav(self, audio: np.ndarray, filepath: str, sample_rate: int):
-        """Export audio as WAV file"""
-        # Convert float audio to 16-bit PCM
-        audio_int16 = (audio * 32767).astype(np.int16)
-        
-        with wave.open(filepath, 'w') as wf:
-            wf.setnchannels(1)  # Mono
-            wf.setsampwidth(2)  # 16-bit
+        """Write bounded verified PCM to the approved creative export root only."""
+        root = Path(MUSIC_EXPORTS_DIR).resolve()
+        target = Path(filepath).expanduser().resolve()
+        if target.suffix.lower() != ".wav" or not target.is_relative_to(root) or target.is_symlink():
+            raise PermissionError("WAV export destination is outside the creative workspace")
+        if sample_rate not in SUPPORTED_SAMPLE_RATES:
+            raise ValueError("unsupported PCM sample rate")
+        values = np.asarray(audio)
+        if values.ndim != 1 or values.size > 300 * sample_rate or not np.isfinite(values).all():
+            raise ValueError("unbounded, invalid or non-finite audio")
+        root.mkdir(parents=True, exist_ok=True)
+        audio_int16 = (np.clip(values, -1.0, 1.0) * 32767).astype(np.int16)
+        with wave.open(str(target), 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
             wf.setframerate(sample_rate)
             wf.writeframes(audio_int16.tobytes())
     
@@ -2075,22 +2122,23 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    import copy
+    return copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter present; runtime health and integration not independently measured"],
     }
 
 
@@ -2100,7 +2148,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryMusicGenerator',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": sml_get_metadata(),
         "health": sml_health(),
     }
 

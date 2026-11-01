@@ -1,13 +1,19 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryAvatarBuilder.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v9.0.0
-Date: 2026-04-15
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
+Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
 SarahMemory-AvatarBuilder.py
@@ -51,6 +57,12 @@ from __future__ import annotations
 
 import os
 import sys
+import uuid
+import tempfile
+import hashlib
+import copy
+import re
+from pathlib import Path
 import json
 import math
 import argparse
@@ -67,8 +79,11 @@ from typing import List, Tuple, Optional, Dict, Any
 
 try:
     from PIL import Image, ImageFilter, ImageOps, ImageChops, ImageStat
-except Exception as e:
-    raise RuntimeError("Pillow is required for SM-AVATARBUILD.py. Install with: pip install pillow") from e
+    _PIL_AVAILABLE = True
+except ImportError:
+    # Runtime GLB inspection must work on headless servers without Pillow.
+    Image = ImageFilter = ImageOps = ImageChops = ImageStat = None
+    _PIL_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # SarahMemory globals integration (best-effort, never hard-fail)
@@ -96,6 +111,185 @@ if not logger.handlers:
     handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - [SM-AVATARBUILD] %(message)s"))
     logger.addHandler(handler)
 logger.propagate = False
+
+
+# v9.1.0a: bounded deterministic asset utility; no autonomous execution authority.
+MODULE_VERSION = "9.1.0a"
+_BUILD_STATUS_LOCK = threading.RLock()
+_BLENDER_AUTHORIZATION_CTX = threading.local()
+_BUILD_STATUS = {"last_result": "not_run", "last_error": "", "last_finished": "", "builds": 0, "failures": 0}
+
+
+def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        return min(maximum, max(minimum, int(os.environ.get(name, str(default)))))
+    except (ValueError, OverflowError, TypeError):
+        return default
+
+
+def _max_pixels() -> int:
+    return _bounded_int_env("SARAH_AVATAR_BUILDER_MAX_PIXELS", 16000000, 65536, 64000000)
+
+
+def _require_pillow() -> None:
+    if not _PIL_AVAILABLE:
+        raise RuntimeError("Pillow is required for 2D avatar processing (pip install pillow). 3D inspection remains available.")
+
+
+def _validate_image_size(size: Tuple[int, int]) -> None:
+    w, h = int(size[0]), int(size[1])
+    if w <= 0 or h <= 0 or w * h > _max_pixels():
+        raise ValueError("avatar image dimensions outside allowed pixel budget")
+
+
+def _canonical_child(path: str, root: str, *, must_exist: bool = False) -> str:
+    base = Path(root).expanduser().resolve()
+    child = Path(path).expanduser().resolve(strict=must_exist)
+    if child != base and base not in child.parents:
+        raise ValueError("asset path escapes the approved output root")
+    return str(child)
+
+
+def _safe_asset_name(name: str) -> str:
+    name = str(name or "").strip()
+    if not name or len(name) > 100 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) or name in {".", ".."}:
+        raise ValueError("invalid avatar artifact name")
+    return name
+
+
+def _asset_path(root: str, filename: str) -> str:
+    _safe_asset_name(filename)
+    candidate = os.path.join(os.path.abspath(root), filename)
+    _canonical_child(candidate, root)
+    return candidate
+
+
+def _validate_output_root(root: str) -> str:
+    if not isinstance(root, (str, os.PathLike)) or not str(root).strip():
+        raise ValueError("output directory is required")
+    resolved = Path(root).expanduser().resolve()
+    if not resolved.is_dir():
+        raise FileNotFoundError("output directory does not exist")
+    return str(resolved)
+
+
+def _safe_finite(value: Any, default: float, low: float, high: float) -> float:
+    try:
+        v = float(value)
+        if not math.isfinite(v):
+            raise ValueError("nonfinite")
+        return max(low, min(high, v))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as src:
+        for block in iter(lambda: src.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _write_atomic(path: str, content: str) -> None:
+    parent = os.path.dirname(os.path.abspath(path))
+    ensure_dir(parent)
+    _canonical_child(path, parent)
+    fd, staged = tempfile.mkstemp(prefix=".smbuilder_", suffix=".tmp", dir=parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(staged, path)
+    finally:
+        if os.path.exists(staged):
+            os.unlink(staged)
+
+
+def _build_result(ok: bool, error: str = "") -> None:
+    with _BUILD_STATUS_LOCK:
+        _BUILD_STATUS["builds"] += 1
+        _BUILD_STATUS["failures"] += int(not ok)
+        _BUILD_STATUS["last_result"] = "verified" if ok else "failed"
+        _BUILD_STATUS["last_error"] = str(error)[:240]
+        _BUILD_STATUS["last_finished"] = datetime.now().isoformat()
+
+
+def _check_blender_operator_optin() -> None:
+    if os.environ.get("SARAH_AVATAR_BUILDER_ALLOW_BLENDER", "").strip().lower() not in {"1", "true", "yes", "on"} or os.environ.get("SARAH_AVATAR_BUILDER_USER_CONSENTED", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        raise PermissionError("explicit Blender build opt-in and user-consent request are required")
+
+
+def _authorize_blender_build(action: str, target: str, blender_binary: str = "") -> Tuple[Dict[str, Any], Any]:
+    # Configuration requests a build; only OperatorCore may authorize it.
+    explicit = os.environ.get("SARAH_AVATAR_BUILDER_ALLOW_BLENDER", "").strip().lower() in {"1", "true", "yes", "on"}
+    consent = os.environ.get("SARAH_AVATAR_BUILDER_USER_CONSENTED", "").strip().lower() in {"1", "true", "yes", "on"}
+    if not explicit or not consent:
+        raise PermissionError("Blender build requires explicit operator opt-in and consent, followed by OperatorCore authorization")
+    try:
+        from SarahMemoryOperatorCore import authorize_external_domain_action
+    except Exception as exc:
+        raise PermissionError("OperatorCore authorization unavailable") from exc
+    proposed = {
+        "action_type": "avatar_asset_build", "capability_name": "avatar.asset.build",
+        "target": target, "target_ref": target, "blender_binary": os.path.realpath(blender_binary) if blender_binary else "",
+        "risk_level": "TIER_2_BOUNDED_LOCAL_OPERATION",
+        "required_permissions": ["FilesystemWrite", "ProcessExecute"],
+        "verification_checks": [{"name": "glb_structure_valid", "required": True}],
+        "expected_result": "A newly created structurally validated GLB is promoted to the configured asset directory",
+        "preconditions": ["OperatorCore authorization", "bounded subprocess", "staged output"],
+        "rollback_plan": [{"name": "retain_prior_asset", "required": True}],
+        "touches_filesystem": True, "touches_network": False,
+        "dry_run": False, "apply": True,
+    }
+    try:
+        auth = authorize_external_domain_action(
+            "Build local visual-only avatar assets using Blender", origin="SarahMemoryAvatarBuilder",
+            proposed_action=proposed, meta={"local_only": True, "execution_authority": False},
+            user_consented=consent,
+        )
+    except Exception as exc:
+        raise PermissionError("OperatorCore failed to authorize Blender build") from exc
+    if not isinstance(auth, dict) or auth.get("decision") != "ALLOW" or auth.get("allow") is not True or auth.get("domain_execution_authorized") is not True:
+        raise PermissionError("OperatorCore denied Blender build")
+    _BLENDER_AUTHORIZATION_CTX.operator_review = auth
+    return auth, proposed
+
+
+def _record_blender_outcome(auth: Dict[str, Any], ok: bool, *, artifact: str = "", error: str = "") -> None:
+    _BLENDER_AUTHORIZATION_CTX.operator_review = None
+    try:
+        from SarahMemoryOperatorCore import record_external_domain_action_result
+        record_external_domain_action_result(
+            auth, {"ok": ok, "artifact": os.path.basename(artifact), "error": error[:200], "execution_authority": False},
+            verified=ok, origin="SarahMemoryAvatarBuilder",
+        )
+    except Exception:
+        logger.warning("OperatorCore build result receipt unavailable")
+
+
+def _promote_verified_asset(staged: str, final: str) -> str:
+    # Never overwrite an active asset until the newly staged GLB is structurally verified.
+    proof = _read_glb_header(staged)
+    if not proof.get("valid_glb_structure") or not proof.get("has_mesh"):
+        raise ValueError("staged GLB failed structural and mesh validation")
+    parent = os.path.dirname(os.path.abspath(final))
+    _canonical_child(final, parent)
+    backup = ""
+    if os.path.lexists(final):
+        backups = list(Path(parent).glob(Path(final).name + ".rollback.*"))
+        if len(backups) >= _bounded_int_env("SARAH_AVATAR_BUILDER_MAX_ROLLBACKS", 3, 1, 20):
+            raise RuntimeError("rollback backup budget exhausted; manually archive existing backups")
+        backup = final + ".rollback." + uuid.uuid4().hex[:12]
+        os.replace(final, backup)
+    try:
+        os.replace(staged, final)
+    except BaseException:
+        if backup:
+            os.replace(backup, final)
+        raise
+    return backup
 
 
 # ---------------------------------------------------------------------------
@@ -168,20 +362,27 @@ def ensure_dir(path: str) -> None:
 
 
 def open_rgba(path: str) -> Image.Image:
-    img = Image.open(path)
-    return img.convert("RGBA")
+    _require_pillow()
+    with Image.open(path) as img:
+        _validate_image_size(img.size)
+        return img.convert("RGBA")
 
 
 def save_png(img: Image.Image, path: str) -> None:
+    _require_pillow()
+    _validate_image_size(img.size)
     ensure_dir(os.path.dirname(path))
     img.save(path, format="PNG", optimize=True)
 
 
 def crop_grid(sheet: Image.Image, rows: int, cols: int) -> List[Image.Image]:
-    if rows <= 0 or cols <= 0:
-        raise ValueError("rows and cols must be > 0")
-
+    _require_pillow()
     w, h = sheet.size
+    _validate_image_size((w, h))
+    if not isinstance(rows, int) or not isinstance(cols, int) or rows <= 0 or cols <= 0 or rows > h or cols > w:
+        raise ValueError("rows/cols must fit within the source image")
+    if rows * cols > _bounded_int_env("SARAH_AVATAR_BUILDER_MAX_FRAMES", 64, 1, 256):
+        raise ValueError("sprite frame budget exceeded")
     frame_w = w // cols
     frame_h = h // rows
     frames: List[Image.Image] = []
@@ -200,21 +401,24 @@ def extract_column(img: Image.Image, column_index_1_based: int) -> Image.Image:
     col = max(1, int(column_index_1_based))
     width, height = img.size
 
-    # If wide enough, treat as strip columns.
-    # Default assumption: 4 columns when image is much wider than a single portrait.
-    if width >= height:
-        # detect plausible number of columns
+    _validate_image_size(img.size)
+    # A square/portrait image is a single suit reference, not a four-column strip.
+    if width >= height * 2 and width >= 4:
         possible_cols = 4
+        if col > possible_cols:
+            raise ValueError("suit column exceeds available strip columns")
         col_w = width // possible_cols
         left = (col - 1) * col_w
-        right = left + col_w
-        if right <= width:
-            return img.crop((left, 0, right, height)).convert("RGBA")
-
+        return img.crop((left, 0, left + col_w, height)).convert("RGBA")
+    if col != 1:
+        raise ValueError("requested suit column but source is not a valid multi-column strip")
     return img.convert("RGBA")
 
 
 def resize_cover(img: Image.Image, size: Tuple[int, int]) -> Image.Image:
+    _require_pillow()
+    _validate_image_size(img.size)
+    _validate_image_size(size)
     target_w, target_h = size
     src_w, src_h = img.size
     src_ratio = src_w / src_h
@@ -234,6 +438,9 @@ def resize_cover(img: Image.Image, size: Tuple[int, int]) -> Image.Image:
 
 
 def resize_contain(img: Image.Image, size: Tuple[int, int]) -> Image.Image:
+    _require_pillow()
+    _validate_image_size(img.size)
+    _validate_image_size(size)
     target_w, target_h = size
     src_w, src_h = img.size
 
@@ -255,20 +462,17 @@ def build_vertical_gradient_mask(width: int, height: int, start_ratio: float, en
     if end_y <= start_y:
         end_y = start_y + 1
 
-    mask = Image.new("L", (width, height), 0)
-    px = mask.load()
-
+    _validate_image_size((width, height))
+    rows = bytearray()
     for y in range(height):
         if y <= start_y:
             alpha = 255
         elif y >= end_y:
             alpha = 0
         else:
-            t = (y - start_y) / float(end_y - start_y)
-            alpha = int(255 * (1.0 - t))
-        for x in range(width):
-            px[x, y] = alpha
-
+            alpha = int(255 * (1.0 - (y - start_y) / float(end_y - start_y)))
+        rows.extend(bytes((alpha,)) * width)
+    mask = Image.frombytes("L", (width, height), bytes(rows))
     return mask.filter(ImageFilter.GaussianBlur(radius=8))
 
 
@@ -287,7 +491,9 @@ def extract_face_hair_region(frame: Image.Image, cfg: BuildConfig) -> Tuple[Imag
 
     # Strengthen alpha in upper region.
     alpha = base_mask.point(lambda v: max(0, min(255, int(v * 1.15))))
-    overlay.putalpha(alpha)
+    # Preserve the source transparency; never make fully transparent artwork opaque.
+    original_alpha = overlay.getchannel("A")
+    overlay.putalpha(ImageChops.multiply(original_alpha, alpha))
 
     if cfg.sharpen_face:
         rgb = overlay.convert("RGB").filter(ImageFilter.UnsharpMask(radius=1.2, percent=115, threshold=2))
@@ -309,18 +515,15 @@ def isolate_suit_base(suit_ref: Image.Image, target_size: Tuple[int, int], cfg: 
     cleaned = ref.copy()
 
     # Fade top area slightly so face overlays blend cleaner.
-    fade_mask = Image.new("L", (target_w, target_h), 255)
-    px = fade_mask.load()
-    fade_end = int(target_h * cfg.neck_y_ratio)
-
-    for y in range(fade_end):
+    fade_end = max(0, min(target_h, int(target_h * _safe_finite(cfg.neck_y_ratio, 0.335, 0.0, 1.0))))
+    fade_rows = bytearray()
+    for y in range(target_h):
         t = y / max(1, fade_end)
-        alpha = int(255 * min(1.0, max(0.0, t * 1.5)))
-        for x in range(target_w):
-            px[x, y] = alpha
-
-    fade_mask = fade_mask.filter(ImageFilter.GaussianBlur(radius=cfg.feather_radius))
-    cleaned.putalpha(fade_mask)
+        alpha = int(255 * min(1.0, max(0.0, t * 1.5))) if y < fade_end else 255
+        fade_rows.extend(bytes((alpha,)) * target_w)
+    fade_mask = Image.frombytes("L", (target_w, target_h), bytes(fade_rows))
+    fade_mask = fade_mask.filter(ImageFilter.GaussianBlur(radius=max(0, min(64, int(cfg.feather_radius)))))
+    cleaned.putalpha(ImageChops.multiply(cleaned.getchannel("A"), fade_mask))
     return cleaned
 
 
@@ -331,10 +534,11 @@ def composite_frame(suit_base: Image.Image, face_overlay: Image.Image) -> Image.
 
 
 def make_sprite_sheet(frames: List[Image.Image], rows: int, cols: int) -> Image.Image:
-    if not frames:
-        raise ValueError("No frames supplied")
-
+    _require_pillow()
+    if not frames or rows < 1 or cols < 1 or len(frames) > rows * cols:
+        raise ValueError("invalid sprite sheet frame grid")
     fw, fh = frames[0].size
+    _validate_image_size((fw * cols, fh * rows))
     sheet = Image.new("RGBA", (fw * cols, fh * rows), (0, 0, 0, 0))
 
     idx = 0
@@ -359,7 +563,7 @@ def build_manifest(
 ) -> Dict[str, Any]:
     return {
         "builder": "SM-AVATARBUILD",
-        "version": "9.0.0",
+        "version": MODULE_VERSION,
         "built_at": datetime.now().isoformat(),
         "local_only": True,
         "sheet_source": cfg.sheet_path,
@@ -388,7 +592,7 @@ def default_3d_outdir() -> str:
 
 
 def _clamp01(v: float) -> float:
-    return max(0.0, min(1.0, float(v)))
+    return _safe_finite(v, 0.0, 0.0, 1.0)
 
 
 def _average_region_color(
@@ -405,6 +609,9 @@ def _average_region_color(
         x1 = max(x0 + 1, min(w, int(w * box_ratio[2])))
         y1 = max(y0 + 1, min(h, int(h * box_ratio[3])))
         region = img.crop((x0, y0, x1, y1)).convert("RGB")
+        # Bound color sampling independently of source image dimensions.
+        if region.width * region.height > 65536:
+            region.thumbnail((256, 256))
         pixels = list(region.getdata())
         if predicate is not None:
             filtered = [p for p in pixels if predicate(p)]
@@ -488,17 +695,17 @@ def extract_concept_palette(concept_image: str) -> Dict[str, Any]:
 def _resolve_real_blender_binary(candidate: str) -> str:
     """Return blender.exe instead of blender-launcher.exe when possible."""
     candidate = os.path.abspath(os.path.expanduser(candidate))
-    if os.path.basename(candidate).lower() != "blender-launcher.exe":
+    basename = os.path.basename(candidate).lower()
+    if basename not in {"blender", "blender.exe", "blender-launcher.exe"}:
+        raise ValueError("only the Blender executable is permitted")
+    if basename != "blender-launcher.exe":
+        if not os.path.isfile(candidate):
+            raise FileNotFoundError("Blender binary is not a regular file")
         return candidate
     sibling = os.path.join(os.path.dirname(candidate), "blender.exe")
     if os.path.exists(sibling):
         return os.path.abspath(sibling)
-    parent = os.path.dirname(os.path.dirname(candidate))
-    for root, _dirs, files in os.walk(parent):
-        if any(f.lower() == "blender.exe" for f in files):
-            resolved = os.path.join(root, "blender.exe")
-            if os.path.exists(resolved):
-                return os.path.abspath(resolved)
+    # Do not recurse through Program Files or drive roots during startup.
     raise RuntimeError(
         "blender-launcher.exe was supplied, but the real blender.exe was not found. "
         "Use blender.exe directly for background GLB builds."
@@ -582,7 +789,7 @@ import json
 import bpy
 from mathutils import Vector
 
-CFG = json.loads(r"""{settings_json}""")
+CFG = json.loads({settings_json!r})
 POLY_TARGET = max(90000, min(2000000, int(CFG.get('poly_target', 2000000) or 2000000)))
 DETAIL_SCALE = max(1.0, min(3.2, (POLY_TARGET / 400000.0) ** 0.38))
 AUTHORING_2M = POLY_TARGET >= 1500000
@@ -987,7 +1194,7 @@ def generate_blend_export_script(settings: Dict[str, Any]) -> str:
 import os
 import json
 import bpy
-CFG = json.loads(r"""{settings_json}""")
+CFG = json.loads({settings_json!r})
 
 try:
     backend = str(CFG.get('gpu_backend') or 'AUTO').upper()
@@ -1024,7 +1231,11 @@ def _terminate_process_tree(proc: subprocess.Popen) -> None:
                 check=False,
             )
         else:
-            proc.kill()
+            import signal
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()
     except Exception:
         try:
             proc.kill()
@@ -1033,248 +1244,270 @@ def _terminate_process_tree(proc: subprocess.Popen) -> None:
 
 
 def run_blender_python(blender_path: str, script_path: str, timeout_seconds: int, blend_path: str = "") -> subprocess.CompletedProcess:
-    cmd = [blender_path, "--background"]
+    """Bounded local Blender subprocess. Authorization belongs to the calling build lane."""
+    if not bool(getattr(_BLENDER_AUTHORIZATION_CTX, "authorized", False)):
+        raise PermissionError("direct Blender subprocess execution requires an authorized builder operation")
+    if not os.path.isfile(blender_path) or not os.path.isfile(script_path):
+        raise FileNotFoundError("Blender executable/script missing")
+    cmd = [blender_path, "--background", "--disable-autoexec"]
     if blend_path:
+        if not os.path.isfile(blend_path):
+            raise FileNotFoundError("source blend missing")
         cmd.append(blend_path)
     cmd.extend(["--python", script_path])
-    logger.info("Running Blender: %s", " ".join([f'\"{c}\"' if ' ' in c else c for c in cmd]))
-
-    timeout_seconds = max(30, int(timeout_seconds or 2700))
-    creationflags = 0
-    if os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
-
+    timeout_seconds = max(30, min(_bounded_int_env("SARAH_AVATAR_BUILDER_MAX_TIMEOUT", 2700, 30, 7200), int(timeout_seconds or 2700)))
+    output_max = _bounded_int_env("SARAH_AVATAR_BUILDER_MAX_LOG_BYTES", 2 * 1024 * 1024, 65536, 16 * 1024 * 1024)
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+    logger.info("Starting governed local Blender build: %s", os.path.basename(blender_path))
     proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        universal_newlines=True,
-        creationflags=creationflags,
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=False,
+        creationflags=creationflags, start_new_session=(os.name != "nt"),
     )
-    lines: List[str] = []
-    q: queue.Queue[str] = queue.Queue()
-
+    # A dedicated reader avoids deadlocks if the child floods the stdout pipe.
+    lines = []
+    used = 0
+    q: queue.Queue = queue.Queue(maxsize=256)
+    reader_drops = [0]
     def _reader() -> None:
         try:
             assert proc.stdout is not None
-            for line in proc.stdout:
-                q.put(line)
-        except Exception as exc:
-            q.put(f"[SM-AVATARBUILD] output reader stopped: {exc}\n")
-
-    t = threading.Thread(target=_reader, daemon=True)
-    t.start()
+            for raw in iter(lambda: proc.stdout.read(4096), b""):
+                try:
+                    q.put_nowait(raw)
+                except queue.Full:
+                    reader_drops[0] += 1
+        except Exception:
+            reader_drops[0] += 1
+        finally:
+            try:
+                if proc.stdout is not None:
+                    proc.stdout.close()
+            except Exception:
+                pass
+    threading.Thread(target=_reader, daemon=True, name="SarahAvatarBlenderLog").start()
     started = time.monotonic()
-    last_heartbeat = started
-    while proc.poll() is None:
+    truncated = False
+    while proc.poll() is None or not q.empty():
         try:
-            line = q.get(timeout=0.5)
-            lines.append(line)
-            logger.info(line.rstrip())
+            chunk = q.get(timeout=0.15)
+            remaining = output_max - used
+            if remaining > 0:
+                clipped = chunk[:remaining]
+                used += len(clipped)
+                lines.append(clipped.decode("utf-8", "replace"))
+            if len(chunk) > remaining:
+                truncated = True
         except queue.Empty:
             pass
-        now = time.monotonic()
-        if now - last_heartbeat >= 30:
-            logger.info("Blender still running... elapsed=%ss timeout=%ss", int(now - started), timeout_seconds)
-            last_heartbeat = now
-        if now - started > timeout_seconds:
+        if proc.poll() is None and time.monotonic() - started > timeout_seconds:
             _terminate_process_tree(proc)
-            stdout = "".join(lines) + f"\n[ERROR] Blender timeout after {timeout_seconds} seconds.\n"
-            return subprocess.CompletedProcess(cmd, 124, stdout, "")
-
-    while True:
-        try:
-            line = q.get_nowait()
-        except queue.Empty:
-            break
-        lines.append(line)
-        logger.info(line.rstrip())
-
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=3)
+            return subprocess.CompletedProcess(cmd, 124, "".join(lines) + "\n[ERROR] Blender timeout.\n", "")
+    if truncated or reader_drops[0]:
+        lines.append("\n[INFO] Blender output clipped by bounded capture budget.\n")
     return subprocess.CompletedProcess(cmd, int(proc.returncode or 0), "".join(lines), "")
 
+
+def _run_authorized_blender(blender_path: str, script_path: str, timeout_seconds: int, blend_path: str = "") -> subprocess.CompletedProcess:
+    review = getattr(_BLENDER_AUTHORIZATION_CTX, "operator_review", None)
+    if not isinstance(review, dict) or review.get("decision") != "ALLOW" or review.get("allow") is not True or review.get("domain_execution_authorized") is not True:
+        raise PermissionError("missing approved OperatorCore build review")
+    if bool(getattr(_BLENDER_AUTHORIZATION_CTX, "authorized", False)):
+        raise PermissionError("nested Blender execution prohibited")
+    _BLENDER_AUTHORIZATION_CTX.authorized = True
+    try:
+        return run_blender_python(blender_path, script_path, timeout_seconds, blend_path=blend_path)
+    finally:
+        _BLENDER_AUTHORIZATION_CTX.authorized = False
+        _BLENDER_AUTHORIZATION_CTX.operator_review = None
+
+
 def write_text(path: str, content: str) -> None:
-    ensure_dir(os.path.dirname(path))
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
+    _write_atomic(path, content)
 
 
 def build_3d_avatar(cfg: Avatar3DBuildConfig) -> Dict[str, Any]:
-    """
-    Build the SarahMemory 3D avatar GLB locally using Blender.
-
-    The supplied concept image drives the design palette and the procedural avatar
-    recipe. This creates a real GLB file, not a 2D sprite. It is a deterministic
-    concept-proxy builder, not an AI image-to-mesh reconstruction system.
-    """
-    ensure_dir(cfg.outdir)
+    """Build a new GLB in isolation, validate it, then promote preserving rollback."""
+    outdir = os.path.abspath(cfg.outdir)
+    name = _safe_asset_name(os.path.splitext(os.path.basename(cfg.avatar_name))[0])
+    glb_path = _asset_path(outdir, name + ".glb")
+    blend_path = _asset_path(outdir, name + ".blend") if cfg.save_blend else ""
+    preview_path = _asset_path(outdir, name + "_preview.png") if cfg.render_preview else ""
+    log_path = _asset_path(outdir, name + "_blender_build.log")
+    manifest_path = _asset_path(outdir, name + "_manifest.json")
+    script_final = _asset_path(outdir, name + "_blender_build.py")
+    _check_blender_operator_optin()
     blender = find_blender_executable(cfg.blender_path)
-    avatar_name = os.path.splitext(os.path.basename(cfg.avatar_name))[0]
-    glb_path = os.path.join(cfg.outdir, f"{avatar_name}.glb")
-    blend_path = os.path.join(cfg.outdir, f"{avatar_name}.blend") if cfg.save_blend else ""
-    preview_path = os.path.join(cfg.outdir, f"{avatar_name}_preview.png") if cfg.render_preview else ""
-    script_path = os.path.join(cfg.outdir, f"{avatar_name}_blender_build.py")
-    log_path = os.path.join(cfg.outdir, f"{avatar_name}_blender_build.log")
-    manifest_path = os.path.join(cfg.outdir, f"{avatar_name}_manifest.json")
-
-    palette = extract_concept_palette(cfg.concept_image)
-    settings = {
-        "builder": "SM-AVATARBUILD.py",
-        "mode": "build_3d_avatar",
-        "concept_image": os.path.abspath(cfg.concept_image) if cfg.concept_image else "",
-        "outdir": os.path.abspath(cfg.outdir),
-        "glb_path": os.path.abspath(glb_path),
-        "blend_path": os.path.abspath(blend_path) if blend_path else "",
-        "preview_path": os.path.abspath(preview_path) if preview_path else "",
-        "render_preview": bool(cfg.render_preview),
-        "gpu_backend": str(cfg.gpu_backend or "AUTO").upper(),
-        "poly_target": int(cfg.poly_target),
-        "authoring_poly_policy": "10M cinematic authoring target is allowed for governed GoldStandard sculpt/detail tests; lower LODs can be generated for weak machines.",
-        "vfx_enabled": bool(cfg.vfx_enabled),
-        "vfx_quality": str(cfg.vfx_quality or "cinematic_2m"),
-        "vfx_intensity": float(cfg.vfx_intensity),
-        "palette": _jsonable_palette(palette),
-        "runtime_contract": "TRUE_3D_GOLD_MESH_RUNTIME",
-        "runtime_geometry": "TRUE_3D_GLB_MESH",
-        "gold_reference_role": "visual_reference_only_not_geometry",
-        "simulation_before_execution": True,
-    }
-
-    write_text(script_path, generate_blender_avatar_script(settings))
-    result = run_blender_python(blender, script_path, cfg.timeout_seconds)
-    write_text(log_path, (result.stdout or "") + "\n--- STDERR ---\n" + (result.stderr or ""))
-
-    ok = result.returncode == 0 and os.path.exists(glb_path) and os.path.getsize(glb_path) > 0
-    manifest = {
-        "builder": "SM-AVATARBUILD",
-        "version": "9.0.0",
-        "built_at": datetime.now().isoformat(),
-        "local_only": True,
-        "mode": "build_3d_avatar",
-        "ok": bool(ok),
-        "concept_image": os.path.abspath(cfg.concept_image) if cfg.concept_image else "",
-        "concept_image_exists": bool(cfg.concept_image and os.path.exists(cfg.concept_image)),
-        "avatar_name": avatar_name,
-        "output_dir": os.path.abspath(cfg.outdir),
-        "glb": os.path.basename(glb_path) if os.path.exists(glb_path) else None,
-        "blend": os.path.basename(blend_path) if blend_path and os.path.exists(blend_path) else None,
-        "preview": os.path.basename(preview_path) if preview_path and os.path.exists(preview_path) else None,
-        "blender_path": blender,
-        "gpu_backend_requested": str(cfg.gpu_backend or "AUTO").upper(),
-        "poly_target": int(cfg.poly_target),
-        "authoring_poly_policy": "10M cinematic authoring target is allowed for governed GoldStandard sculpt/detail tests; lower LODs can be generated for weak machines.",
-        "vfx_enabled": bool(cfg.vfx_enabled),
-        "vfx_quality": str(cfg.vfx_quality or "cinematic_2m"),
-        "vfx_intensity": float(cfg.vfx_intensity),
-        "palette": _jsonable_palette(palette),
-        "runtime_contract": "TRUE_3D_GOLD_MESH_RUNTIME",
-        "runtime_geometry": "TRUE_3D_GLB_MESH" if ok else "BUILD_FAILED",
-        "gold_reference_role": "visual_reference_only_not_geometry",
-        "body_volume_upgrade": {
-            "torso": "front_back_side_volume",
-            "hips": "side_and_rear_mass",
-            "legs": "thigh_calf_side_back_volume",
-            "boots": "toe_heel_shaft_platform_volume",
-            "head": "front_and_back_volume",
-            "hair": "cap_back_side_strands",
-        },
-        "animation_contract": {
-            "frontend_hooks": ["idle_breathing", "blink", "eye_follow", "mouth_lipsync", "wave", "walk_in_place"],
-            "glb_exported_clips": False,
-            "rig_status": "procedural_mesh_named_parts_armature_future",
-        },
-        "construct_runtime": {
-            "enabled": True,
-            "visual_environment": "construct_stage_floor_and_orbit_ring",
-            "object_metadata_ready": True,
-            "vfx_organs_ready": True,
-            "simulation_before_execution": True,
-            "execution_authority": False,
-            "physical_actuation_allowed_here": False,
-        },
-        "vfx_organ_contract": {
-            "contract": "SARAHMEMORY_AVATAR_VFX_ORGANS_V1",
-            "enabled": bool(cfg.vfx_enabled),
-            "quality": str(cfg.vfx_quality or "cinematic_2m"),
-            "intensity": float(cfg.vfx_intensity),
-            "visual_only": True,
-            "execution_authority": False,
-            "organs": ["aura", "neuralPulse", "voiceWave", "constructGrid", "governanceHalo", "shieldShell", "emotionBloom", "dataRibbons", "constructOrbit", "particles"],
-        },
-        "blender_returncode": result.returncode,
-        "blender_log": os.path.basename(log_path),
-        "blender_script": os.path.basename(script_path) if cfg.keep_blender_script else None,
-        "notes": [
-            "Creates a deterministic concept-inspired 3D GLB proxy from the supplied model image.",
-            "The image is used for palette/style extraction and as the design target, not as impossible one-click perfect geometry.",
-            "Runtime output is the .glb file for AvatarPanel / Three.js loading.",
-            "Gold-standard images are reference material only; primary 3D geometry is the GLB mesh.",
-            "This builder emits named mesh parts and construct-stage metadata for frontend animation/simulation hooks.",
-        ],
-    }
-    write_text(manifest_path, json.dumps(manifest, indent=2))
-
-    if not cfg.keep_blender_script:
-        try:
-            os.remove(script_path)
-        except Exception:
-            pass
-
-    if not ok:
-        raise RuntimeError(
-            f"Blender 3D avatar build failed. See log: {log_path}"
-        )
-
-    logger.info("3D avatar GLB created: %s", glb_path)
-    return manifest
+    if not os.path.isfile(blender):
+        raise FileNotFoundError("Blender executable not found")
+    auth, _ = _authorize_blender_build("build_3d_avatar", glb_path, blender)
+    try:
+        ensure_dir(outdir)
+        outdir = _validate_output_root(outdir)
+        with tempfile.TemporaryDirectory(prefix=".smbuilder_3d_", dir=outdir) as staged_dir:
+            staged_glb = os.path.join(staged_dir, name + ".glb")
+            staged_blend = os.path.join(staged_dir, name + ".blend") if cfg.save_blend else ""
+            staged_preview = os.path.join(staged_dir, name + "_preview.png") if cfg.render_preview else ""
+            staged_script = os.path.join(staged_dir, name + "_blender_build.py")
+            palette = extract_concept_palette(cfg.concept_image)
+            settings = {
+                "builder": "SM-AVATARBUILD.py", "mode": "build_3d_avatar",
+                "concept_image": os.path.abspath(cfg.concept_image) if cfg.concept_image else "",
+                "outdir": staged_dir, "glb_path": staged_glb, "blend_path": staged_blend,
+                "preview_path": staged_preview, "render_preview": bool(cfg.render_preview),
+                "gpu_backend": str(cfg.gpu_backend or "AUTO").upper(),
+                "poly_target": max(90000, min(2000000, int(cfg.poly_target))),
+                "vfx_enabled": bool(cfg.vfx_enabled),
+                "vfx_quality": str(cfg.vfx_quality or "goldstandard_entity"),
+                "vfx_intensity": _safe_finite(cfg.vfx_intensity, 0.92, 0.05, 1.5),
+                "palette": _jsonable_palette(palette),
+                "runtime_contract": "TRUE_3D_GOLD_MESH_RUNTIME",
+                "runtime_geometry": "TRUE_3D_GLB_MESH", "simulation_before_execution": True,
+            }
+            write_text(staged_script, generate_blender_avatar_script(settings))
+            result = _run_authorized_blender(blender, staged_script, cfg.timeout_seconds)
+            write_text(log_path, (result.stdout or "") + "\n--- STDERR ---\n" + (result.stderr or ""))
+            if result.returncode != 0:
+                raise RuntimeError("Blender process exited unsuccessfully")
+            proof = _read_glb_header(staged_glb)
+            if not proof.get("valid_glb_structure") or not proof.get("has_mesh"):
+                raise RuntimeError("Blender did not produce a fresh, valid GLB mesh: " + str(proof.get("error") or "missing/invalid"))
+            digest = _file_sha256(staged_glb)
+            manifest = {
+                "builder": "SM-AVATARBUILD", "version": MODULE_VERSION, "built_at": datetime.now().isoformat(),
+                "local_only": True, "mode": "build_3d_avatar", "ok": True,
+                "concept_image": settings["concept_image"], "concept_image_exists": bool(cfg.concept_image and os.path.isfile(cfg.concept_image)),
+                "avatar_name": name, "output_dir": outdir, "glb": name + ".glb",
+                "blend": os.path.basename(blend_path) if staged_blend and os.path.isfile(staged_blend) else None,
+                "preview": os.path.basename(preview_path) if staged_preview and os.path.isfile(staged_preview) else None,
+                "blender_path": blender, "gpu_backend_requested": settings["gpu_backend"],
+                "poly_target": int(cfg.poly_target), "effective_detail_target": settings["poly_target"],
+                "actual_polygon_count": None, "rig_status": "procedural_mesh_named_parts_armature_future",
+                "vfx_enabled": bool(cfg.vfx_enabled), "vfx_organs_ready": bool(cfg.vfx_enabled),
+                "vfx_quality": settings["vfx_quality"], "vfx_intensity": settings["vfx_intensity"],
+                "palette": settings["palette"], "runtime_contract": "TRUE_3D_GOLD_MESH_RUNTIME",
+                "runtime_geometry": "TRUE_3D_GLB_MESH", "execution_authority": False,
+                "physical_actuation_allowed_here": False,
+                "animation_contract": {"frontend_hooks": ["idle_breathing", "blink", "eye_follow", "mouth_lipsync", "wave", "walk_in_place"], "glb_exported_clips": False, "rig_status": "procedural_mesh_named_parts_armature_future"},
+                "validation": {"level": "glb_v2_chunks_json_and_mesh", "mesh_count": proof["mesh_count"], "node_count": proof["node_count"], "glb_size_bytes": proof["size_bytes"], "sha256": digest, "browser_rendering_verified": False},
+                "blender_returncode": result.returncode, "blender_log": os.path.basename(log_path),
+                "blender_script": os.path.basename(script_final) if cfg.keep_blender_script else None,
+                "notes": ["Procedural 3D proxy, not image-to-mesh reconstruction", "Physical actuation is never authorized here"],
+            }
+            # Validate everything before replacing the previously active GLB.
+            backup = _promote_verified_asset(staged_glb, glb_path)
+            promoted_aux = []
+            try:
+                if staged_blend and os.path.isfile(staged_blend) and os.path.getsize(staged_blend) > 0:
+                    promoted_aux.append((blend_path, _promote_optional_asset(staged_blend, blend_path)))
+                if staged_preview and os.path.isfile(staged_preview) and os.path.getsize(staged_preview) > 0:
+                    promoted_aux.append((preview_path, _promote_optional_asset(staged_preview, preview_path)))
+                if cfg.keep_blender_script:
+                    promoted_aux.append((script_final, _promote_optional_asset(staged_script, script_final)))
+                write_text(manifest_path, json.dumps(manifest, indent=2, ensure_ascii=False))
+            except BaseException:
+                for prior_path, prior_backup in reversed(promoted_aux):
+                    _restore_active_artifact(prior_path, prior_backup)
+                _restore_active_artifact(glb_path, backup)
+                raise
+        _record_blender_outcome(auth, True, artifact=glb_path)
+        _build_result(True)
+        logger.info("3D avatar GLB verified and promoted: %s", glb_path)
+        return manifest
+    except Exception as exc:
+        _record_blender_outcome(auth, False, error=str(exc))
+        _build_result(False, str(exc))
+        raise
 
 
 def export_blend_to_glb(cfg: BlendExportConfig) -> Dict[str, Any]:
-    """Export an existing .blend source file into a runtime .glb."""
-    if not os.path.exists(cfg.blend_path):
-        raise FileNotFoundError(f"Blend file not found: {cfg.blend_path}")
-    ensure_dir(cfg.outdir)
+    """Export an approved local .blend into a validated, staged GLB."""
+    if not os.path.isfile(cfg.blend_path):
+        raise FileNotFoundError("Blend file not found: " + str(cfg.blend_path))
+    outdir = os.path.abspath(cfg.outdir)
+    name = _safe_asset_name(os.path.splitext(os.path.basename(cfg.avatar_name))[0])
+    glb_path = _asset_path(outdir, name + ".glb")
+    log_path = _asset_path(outdir, name + "_blend_export.log")
+    script_final = _asset_path(outdir, name + "_blend_export.py")
+    manifest_path = _asset_path(outdir, name + "_manifest.json")
+    _check_blender_operator_optin()
     blender = find_blender_executable(cfg.blender_path)
-    avatar_name = os.path.splitext(os.path.basename(cfg.avatar_name))[0]
-    glb_path = os.path.join(cfg.outdir, f"{avatar_name}.glb")
-    script_path = os.path.join(cfg.outdir, f"{avatar_name}_blend_export.py")
-    log_path = os.path.join(cfg.outdir, f"{avatar_name}_blend_export.log")
-    manifest_path = os.path.join(cfg.outdir, f"{avatar_name}_manifest.json")
+    auth, _ = _authorize_blender_build("export_blend_to_glb", glb_path, blender)
+    try:
+        ensure_dir(outdir)
+        outdir = _validate_output_root(outdir)
+        with tempfile.TemporaryDirectory(prefix=".smbuilder_export_", dir=outdir) as staged_dir:
+            staged_glb = os.path.join(staged_dir, name + ".glb")
+            staged_script = os.path.join(staged_dir, name + "_blend_export.py")
+            settings = {"builder": "SM-AVATARBUILD.py", "mode": "export_blend_to_glb", "blend_path": os.path.abspath(cfg.blend_path), "glb_path": staged_glb, "gpu_backend": str(cfg.gpu_backend or "AUTO").upper()}
+            write_text(staged_script, generate_blend_export_script(settings))
+            result = _run_authorized_blender(blender, staged_script, cfg.timeout_seconds, blend_path=os.path.abspath(cfg.blend_path))
+            write_text(log_path, (result.stdout or "") + "\n--- STDERR ---\n" + (result.stderr or ""))
+            if result.returncode != 0:
+                raise RuntimeError("Blender export exited unsuccessfully")
+            proof = _read_glb_header(staged_glb)
+            if not proof.get("valid_glb_structure") or not proof.get("has_mesh"):
+                raise RuntimeError("Blender export did not create a valid new GLB mesh")
+            manifest = {
+                "builder": "SM-AVATARBUILD", "version": MODULE_VERSION, "built_at": datetime.now().isoformat(),
+                "local_only": True, "mode": "export_blend_to_glb", "ok": True,
+                "source_blend": os.path.abspath(cfg.blend_path), "output_dir": outdir,
+                "glb": name + ".glb", "blender_path": blender, "gpu_backend_requested": settings["gpu_backend"],
+                "blender_returncode": result.returncode, "blender_log": os.path.basename(log_path),
+                "blender_script": os.path.basename(script_final), "execution_authority": False,
+                "validation": {"level": "glb_v2_chunks_json_and_mesh", "mesh_count": proof["mesh_count"], "sha256": _file_sha256(staged_glb), "browser_rendering_verified": False},
+            }
+            backup = _promote_verified_asset(staged_glb, glb_path)
+            promoted_aux = []
+            try:
+                promoted_aux.append((script_final, _promote_optional_asset(staged_script, script_final)))
+                write_text(manifest_path, json.dumps(manifest, indent=2, ensure_ascii=False))
+            except BaseException:
+                for prior_path, prior_backup in reversed(promoted_aux):
+                    _restore_active_artifact(prior_path, prior_backup)
+                _restore_active_artifact(glb_path, backup)
+                raise
+        _record_blender_outcome(auth, True, artifact=glb_path)
+        _build_result(True)
+        return manifest
+    except Exception as exc:
+        _record_blender_outcome(auth, False, error=str(exc))
+        _build_result(False, str(exc))
+        raise
 
-    settings = {
-        "builder": "SM-AVATARBUILD.py",
-        "mode": "export_blend_to_glb",
-        "blend_path": os.path.abspath(cfg.blend_path),
-        "glb_path": os.path.abspath(glb_path),
-        "gpu_backend": str(cfg.gpu_backend or "AUTO").upper(),
-    }
-    write_text(script_path, generate_blend_export_script(settings))
-    result = run_blender_python(blender, script_path, cfg.timeout_seconds, blend_path=os.path.abspath(cfg.blend_path))
-    write_text(log_path, (result.stdout or "") + "\n--- STDERR ---\n" + (result.stderr or ""))
 
-    ok = result.returncode == 0 and os.path.exists(glb_path) and os.path.getsize(glb_path) > 0
-    manifest = {
-        "builder": "SM-AVATARBUILD",
-        "version": "9.0.0",
-        "built_at": datetime.now().isoformat(),
-        "local_only": True,
-        "mode": "export_blend_to_glb",
-        "ok": bool(ok),
-        "source_blend": os.path.abspath(cfg.blend_path),
-        "output_dir": os.path.abspath(cfg.outdir),
-        "glb": os.path.basename(glb_path) if os.path.exists(glb_path) else None,
-        "blender_path": blender,
-        "gpu_backend_requested": str(cfg.gpu_backend or "AUTO").upper(),
-        "blender_returncode": result.returncode,
-        "blender_log": os.path.basename(log_path),
-        "blender_script": os.path.basename(script_path),
-    }
-    write_text(manifest_path, json.dumps(manifest, indent=2))
-    if not ok:
-        raise RuntimeError(f"Blend export failed. See log: {log_path}")
-    logger.info("Existing .blend exported to GLB: %s", glb_path)
-    return manifest
+def _restore_active_artifact(path: str, backup: str) -> None:
+    if backup:
+        if os.path.isfile(path):
+            os.unlink(path)
+        os.replace(backup, path)
+    elif os.path.isfile(path):
+        os.unlink(path)
+
+
+def _promote_optional_asset(src: str, dst: str) -> str:
+    """Promote staged auxiliary output without losing an existing target."""
+    parent = os.path.dirname(os.path.abspath(dst))
+    _canonical_child(dst, parent)
+    backup = ""
+    if os.path.lexists(dst):
+        backups = list(Path(parent).glob(Path(dst).name + ".rollback.*"))
+        if len(backups) >= _bounded_int_env("SARAH_AVATAR_BUILDER_MAX_ROLLBACKS", 3, 1, 20):
+            raise RuntimeError("auxiliary rollback budget exhausted")
+        backup = dst + ".rollback." + uuid.uuid4().hex[:12]
+        os.replace(dst, backup)
+    try:
+        os.replace(src, dst)
+    except BaseException:
+        if backup:
+            os.replace(backup, dst)
+        raise
+    return backup
+
 
 # ---------------------------------------------------------------------------
 # Core builder
@@ -1284,70 +1517,88 @@ class AvatarBuildEngine:
         self.cfg = cfg
 
     def run(self) -> Dict[str, Any]:
-        ensure_dir(self.cfg.outdir)
-
-        logger.info("Loading sprite sheet: %s", self.cfg.sheet_path)
-        logger.info("Loading suit reference: %s", self.cfg.suit_ref_path)
-
-        sheet = open_rgba(self.cfg.sheet_path)
-        suit_ref = open_rgba(self.cfg.suit_ref_path)
-
-        # Optional multi-column suit source selection.
-        suit_ref = extract_column(suit_ref, self.cfg.suit_column)
-
-        frames = crop_grid(sheet, self.cfg.rows, self.cfg.cols)
-        if not frames:
-            raise RuntimeError("No frames extracted from sprite sheet")
-
-        frame_w, frame_h = frames[0].size
-        target_size = (frame_w, frame_h)
-
-        logger.info("Extracted %s frames at %sx%s", len(frames), frame_w, frame_h)
-
-        suit_base = isolate_suit_base(suit_ref, target_size, self.cfg)
-        suit_path = os.path.join(self.cfg.outdir, self.cfg.suit_name)
-        save_png(suit_base, suit_path)
-
-        built_frames: List[Image.Image] = []
-        frame_records: List[FrameRecord] = []
-
-        for idx, frame in enumerate(frames, start=1):
-            face_overlay, _mask = extract_face_hair_region(frame, self.cfg)
-
-            if self.cfg.export_face_only:
-                face_only_path = os.path.join(self.cfg.outdir, f"face_only_{idx:02d}.png")
-                save_png(face_overlay, face_only_path)
-
-            composed = composite_frame(suit_base, face_overlay)
-            frame_name = self._default_frame_name(idx)
-            frame_file = f"{frame_name}.png"
-            frame_path = os.path.join(self.cfg.outdir, frame_file)
-            save_png(composed, frame_path)
-
-            built_frames.append(composed)
-            frame_records.append(
-                FrameRecord(
-                    index=idx,
-                    name=frame_name,
-                    filename=frame_file,
-                    width=composed.size[0],
-                    height=composed.size[1],
-                )
-            )
-
-        sheet_path = None
-        if self.cfg.export_sheet:
-            sprite_sheet = make_sprite_sheet(built_frames, self.cfg.rows, self.cfg.cols)
-            sheet_path = os.path.join(self.cfg.outdir, self.cfg.sheet_name)
-            save_png(sprite_sheet, sheet_path)
-
-        manifest = build_manifest(self.cfg, suit_path, frame_records, sheet_path)
-        manifest_path = os.path.join(self.cfg.outdir, self.cfg.manifest_name)
-        with open(manifest_path, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2)
-
-        logger.info("Avatar asset build complete: %s", self.cfg.outdir)
-        return manifest
+        _require_pillow()
+        cfg = self.cfg
+        ensure_dir(cfg.outdir)
+        root = _validate_output_root(cfg.outdir)
+        for name in (cfg.suit_name, cfg.sheet_name, cfg.manifest_name):
+            _safe_asset_name(name)
+        try:
+            sheet = open_rgba(cfg.sheet_path)
+            suit_ref = open_rgba(cfg.suit_ref_path)
+            suit_ref = extract_column(suit_ref, cfg.suit_column)
+            frames = crop_grid(sheet, cfg.rows, cfg.cols)
+            if not frames:
+                raise RuntimeError("No frames extracted")
+            frame_w, frame_h = frames[0].size
+            if frame_w * frame_h * len(frames) > _max_pixels():
+                raise ValueError("combined sprite frame pixel budget exceeded")
+            suit_base = isolate_suit_base(suit_ref, (frame_w, frame_h), cfg)
+            with tempfile.TemporaryDirectory(prefix=".smbuilder_2d_", dir=root) as stage:
+                save_png(suit_base, os.path.join(stage, cfg.suit_name))
+                built_frames = []
+                records = []
+                for idx, frame in enumerate(frames, start=1):
+                    overlay, _mask = extract_face_hair_region(frame, cfg)
+                    if cfg.export_face_only:
+                        save_png(overlay, os.path.join(stage, f"face_only_{idx:02d}.png"))
+                    composed = composite_frame(suit_base, overlay)
+                    name = self._default_frame_name(idx)
+                    filename = _safe_asset_name(f"{name}.png")
+                    save_png(composed, os.path.join(stage, filename))
+                    built_frames.append(composed)
+                    records.append(FrameRecord(index=idx, name=name, filename=filename, width=frame_w, height=frame_h))
+                sheet_path = None
+                if cfg.export_sheet:
+                    compiled = make_sprite_sheet(built_frames, cfg.rows, cfg.cols)
+                    sheet_path = _asset_path(root, cfg.sheet_name)
+                    save_png(compiled, os.path.join(stage, cfg.sheet_name))
+                manifest = build_manifest(cfg, _asset_path(root, cfg.suit_name), records, sheet_path)
+                manifest["version"] = MODULE_VERSION
+                manifest["deterministic_pixel_outputs"] = True
+                manifest["execution_authority"] = False
+                # Output bytes deterministic; built_at deliberately reports wall clock.
+                manifest["timestamp_is_non_deterministic"] = True
+                manifest["sha256"] = {
+                    n: _file_sha256(os.path.join(stage, n))
+                    for n in os.listdir(stage) if n.endswith(".png")
+                }
+                write_text(os.path.join(stage, cfg.manifest_name), json.dumps(manifest, indent=2, ensure_ascii=False))
+                # Preflight all destination paths and rollback budget before mutation.
+                artifacts = list(os.listdir(stage))
+                previous = []
+                for n in artifacts:
+                    dst = _asset_path(root, n)
+                    if os.path.lexists(dst):
+                        previous.append(dst)
+                        backups = list(Path(root).glob(Path(dst).name + ".rollback.*"))
+                        if len(backups) >= _bounded_int_env("SARAH_AVATAR_BUILDER_MAX_ROLLBACKS", 3, 1, 20):
+                            raise RuntimeError("2D artifact rollback budget exhausted")
+                promoted = []
+                try:
+                    for n in artifacts:
+                        dst = _asset_path(root, n)
+                        backup = ""
+                        if os.path.lexists(dst):
+                            backup = dst + ".rollback." + uuid.uuid4().hex[:12]
+                            os.replace(dst, backup)
+                        try:
+                            os.replace(os.path.join(stage, n), dst)
+                        except BaseException:
+                            if backup:
+                                os.replace(backup, dst)
+                            raise
+                        promoted.append((dst, backup))
+                except BaseException:
+                    for dst, backup in reversed(promoted):
+                        _restore_active_artifact(dst, backup)
+                    raise
+            _build_result(True)
+            logger.info("Avatar asset build complete: %s", root)
+            return manifest
+        except Exception as exc:
+            _build_result(False, str(exc))
+            raise
 
     @staticmethod
     def _default_frame_name(idx: int) -> str:
@@ -1383,32 +1634,102 @@ def _default_runtime_avatar_dir() -> str:
 
 
 def _read_glb_header(path: str) -> Dict[str, Any]:
+    """Bounded binary GLB v2 structure inspection; not a browser rendering test."""
     result: Dict[str, Any] = {
-        "path": os.path.abspath(path) if path else "",
-        "exists": bool(path and os.path.isfile(path)),
-        "size_bytes": 0,
-        "valid_glb_header": False,
-        "version": None,
-        "declared_length": None,
+        "path": os.path.abspath(path) if path else "", "exists": bool(path and os.path.isfile(path)),
+        "size_bytes": 0, "valid_glb_header": False, "valid_glb_structure": False,
+        "has_mesh": False, "mesh_count": 0, "node_count": 0,
+        "version": None, "declared_length": None,
     }
     if not result["exists"]:
         return result
     try:
-        result["size_bytes"] = int(os.path.getsize(path))
+        size = os.path.getsize(path)
+        result["size_bytes"] = size
+        if size > _bounded_int_env("SARAH_AVATAR_BUILDER_MAX_GLB_BYTES", 512 * 1024 * 1024, 1024 * 1024, 2147483648):
+            raise ValueError("GLB exceeds configured size budget")
+        if size < 20:
+            return result
         with open(path, "rb") as fh:
             header = fh.read(12)
-        if len(header) == 12:
             magic, version, declared_length = struct.unpack("<4sII", header)
             result["version"] = int(version)
             result["declared_length"] = int(declared_length)
-            result["valid_glb_header"] = bool(
-                magic == b"glTF"
-                and version == 2
-                and declared_length <= result["size_bytes"]
-                and result["size_bytes"] >= 20
-            )
-    except Exception as exc:
-        result["error"] = str(exc)
+            if magic != b"glTF" or version != 2 or declared_length != size or size % 4:
+                return result
+            result["valid_glb_header"] = True
+            offset = 12
+            json_document = None
+            bin_chunk_size = 0
+            chunk_index = 0
+            while offset < size:
+                if size - offset < 8:
+                    raise ValueError("truncated GLB chunk header")
+                chunk_length, chunk_type = struct.unpack("<I4s", fh.read(8))
+                offset += 8
+                if chunk_length % 4 or chunk_length > size - offset:
+                    raise ValueError("invalid GLB chunk length")
+                if chunk_index == 0:
+                    if chunk_type != b"JSON":
+                        raise ValueError("first GLB chunk must be JSON")
+                    if chunk_length > _bounded_int_env("SARAH_AVATAR_BUILDER_MAX_GLB_JSON", 16 * 1024 * 1024, 1024, 64 * 1024 * 1024):
+                        raise ValueError("GLB JSON budget exceeded")
+                    raw_json = fh.read(chunk_length)
+                    json_document = json.loads(raw_json.decode("utf-8").rstrip(" \t\r\n\x00"))
+                else:
+                    if chunk_index != 1 or chunk_type != b"BIN\x00":
+                        raise ValueError("unexpected GLB chunk type/order")
+                    bin_chunk_size = chunk_length
+                    fh.seek(chunk_length, os.SEEK_CUR)
+                offset += chunk_length
+                chunk_index += 1
+            if offset != size or not isinstance(json_document, dict):
+                raise ValueError("incomplete GLB JSON document")
+            asset = json_document.get("asset")
+            if not isinstance(asset, dict) or str(asset.get("version")) != "2.0":
+                raise ValueError("invalid glTF 2.0 asset descriptor")
+            meshes = json_document.get("meshes")
+            nodes = json_document.get("nodes")
+            result["mesh_count"] = len(meshes) if isinstance(meshes, list) else 0
+            result["node_count"] = len(nodes) if isinstance(nodes, list) else 0
+            accessors = json_document.get("accessors")
+            views = json_document.get("bufferViews")
+            buffers = json_document.get("buffers")
+            scene_nodes = json_document.get("scenes")
+            scene_valid = bool(isinstance(scene_nodes, list) and scene_nodes and isinstance(nodes, list) and nodes and any(
+                isinstance(scene, dict) and isinstance(scene.get("nodes"), list) and any(
+                    isinstance(node_id, int) and 0 <= node_id < len(nodes) for node_id in scene.get("nodes", [])
+                ) for scene in scene_nodes
+            ))
+            buffer_valid = bool(isinstance(buffers, list) and len(buffers) == 1 and isinstance(buffers[0], dict)
+                and isinstance(buffers[0].get("byteLength"), int) and 0 < buffers[0]["byteLength"] <= bin_chunk_size
+                and isinstance(views, list) and views and isinstance(accessors, list) and accessors)
+            def valid_accessor(accessor_id):
+                if not buffer_valid or not isinstance(accessor_id, int) or not 0 <= accessor_id < len(accessors):
+                    return False
+                accessor = accessors[accessor_id]
+                if not isinstance(accessor, dict) or not isinstance(accessor.get("bufferView"), int):
+                    return False
+                view_id = accessor["bufferView"]
+                if not 0 <= view_id < len(views):
+                    return False
+                view = views[view_id]
+                return bool(isinstance(view, dict) and view.get("buffer") == 0
+                    and isinstance(view.get("byteLength"), int) and view["byteLength"] > 0
+                    and isinstance(view.get("byteOffset", 0), int) and view.get("byteOffset", 0) >= 0
+                    and view.get("byteOffset", 0) + view["byteLength"] <= buffers[0]["byteLength"]
+                    and isinstance(accessor.get("count"), int) and accessor["count"] > 0)
+            primitives_present = bool(isinstance(meshes, list) and any(
+                isinstance(mesh, dict) and isinstance(mesh.get("primitives"), list) and any(
+                    isinstance(prim, dict) and isinstance(prim.get("attributes"), dict)
+                    and valid_accessor(prim["attributes"].get("POSITION"))
+                    for prim in mesh.get("primitives", [])
+                ) for mesh in meshes
+            ))
+            result["has_mesh"] = bool(result["mesh_count"] and primitives_present and scene_valid)
+            result["valid_glb_structure"] = True
+    except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError, struct.error) as exc:
+        result["error"] = str(exc)[:200]
     return result
 
 
@@ -1435,26 +1756,41 @@ def inspect_realtime_avatar_assets(asset_dir: str = "", avatar_name: str = "Sara
         os.path.join(root, "SarahMemoryAvatar_RigBootstrap.blend"),
     ]
 
-    glb_path = next((path for path in glb_candidates if os.path.isfile(path)), glb_candidates[0])
-    manifest_path = next((path for path in manifest_candidates if os.path.isfile(path)), "")
-    blend_path = next((path for path in blend_candidates if os.path.isfile(path)), "")
-    glb = _read_glb_header(glb_path)
+    def approved(path: str) -> bool:
+        try:
+            _canonical_child(path, root)
+            return os.path.isfile(path)
+        except (OSError, ValueError):
+            return False
+    glb_path = next((path for path in glb_candidates if approved(path)), glb_candidates[0])
+    manifest_path = next((path for path in manifest_candidates if approved(path)), "")
+    blend_path = next((path for path in blend_candidates if approved(path)), "")
+    glb = _read_glb_header(glb_path) if approved(glb_path) else {
+        "path": os.path.abspath(glb_path), "exists": False, "size_bytes": 0,
+        "valid_glb_header": False, "valid_glb_structure": False, "has_mesh": False,
+        "mesh_count": 0, "version": None, "declared_length": None,
+        "error": "asset_missing_or_outside_approved_root",
+    }
     manifest: Dict[str, Any] = {}
     manifest_error = ""
     if manifest_path:
         try:
+            if os.path.getsize(manifest_path) > _bounded_int_env("SARAH_AVATAR_BUILDER_MAX_MANIFEST_BYTES", 1048576, 1024, 8388608):
+                raise ValueError("manifest exceeds size limit")
             with open(manifest_path, "r", encoding="utf-8") as fh:
                 loaded = json.load(fh)
             manifest = loaded if isinstance(loaded, dict) else {}
         except Exception as exc:
             manifest_error = str(exc)
 
-    shape_keys = manifest.get("shape_keys") if isinstance(manifest.get("shape_keys"), list) else []
-    bones = manifest.get("bones") if isinstance(manifest.get("bones"), list) else []
+    shape_keys = (manifest.get("shape_keys") or [])[:256] if isinstance(manifest.get("shape_keys"), list) else []
+    bones = (manifest.get("bones") or [])[:256] if isinstance(manifest.get("bones"), list) else []
     panel_contract = manifest.get("avatar_panel_contract") if isinstance(manifest.get("avatar_panel_contract"), dict) else {}
     animation_contract = manifest.get("animation_contract") if isinstance(manifest.get("animation_contract"), dict) else {}
-    actions = manifest.get("actions") if isinstance(manifest.get("actions"), list) else []
-    runtime_ready = bool(glb.get("valid_glb_header"))
+    panel_contract = {str(k)[:80]: str(v)[:200] if isinstance(v, str) else v for k, v in list(panel_contract.items())[:64]}
+    animation_contract = {str(k)[:80]: str(v)[:200] if isinstance(v, str) else v for k, v in list(animation_contract.items())[:64]}
+    actions = (manifest.get("actions") or [])[:256] if isinstance(manifest.get("actions"), list) else []
+    runtime_ready = bool(glb.get("valid_glb_structure") and glb.get("has_mesh") and approved(glb_path))
 
     return {
         "ok": True,
@@ -1477,6 +1813,8 @@ def inspect_realtime_avatar_assets(asset_dir: str = "", avatar_name: str = "Sara
         "animation_contract": animation_contract,
         "avatar_panel_contract": panel_contract,
         "runtime_ready": runtime_ready,
+        "validation_level": "glb_container_json_and_mesh_only",
+        "browser_rendering_verified": False,
         "runtime_mode": "lazy_glb_webgl",
         "realtime_expression_hooks": ["blink", "mouth_lipsync", "eye_follow", "idle_breathing", "expression", "speaking", "listening"],
         "load_policy": "load_only_when_avatar_3d_mode_selected",
@@ -1498,8 +1836,8 @@ def get_avatar_builder_capabilities(blender_path: str = "") -> Dict[str, Any]:
     return {
         "ok": True,
         "module": "SarahMemoryAvatarBuilder",
-        "version": "9.0.0",
-        "pillow_available": Image is not None,
+        "version": MODULE_VERSION,
+        "pillow_available": _PIL_AVAILABLE,
         "blender_available": bool(resolved_blender),
         "blender_path": resolved_blender,
         "blender_error": blender_error,
@@ -1507,6 +1845,7 @@ def get_avatar_builder_capabilities(blender_path: str = "") -> Dict[str, Any]:
         "runtime_format": "GLB/GLTF 2.0",
         "runtime_inspection": inspect_realtime_avatar_assets(),
         "import_side_effect_free": True,
+        "build_status": dict(_BUILD_STATUS),
         "execution_authority": False,
     }
 
@@ -1660,7 +1999,7 @@ if __name__ == "__main__":
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryAvatarBuilder',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-sml-0.2",
     "category": 'Presentation',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -1678,22 +2017,24 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Report known capabilities without fabricating measured operational metrics."""
+    with _BUILD_STATUS_LOCK:
+        status = dict(_BUILD_STATUS)
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Available" if _PIL_AVAILABLE else "Degraded",
+        "availability": 1.0 if _PIL_AVAILABLE else 0.5,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.65,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Builds require explicit OperatorCore authorization; GLB inspection operates offline", "Build status: " + status["last_result"]],
     }
 
 
@@ -1703,7 +2044,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryAvatarBuilder',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": copy.deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

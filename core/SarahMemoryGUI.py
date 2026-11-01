@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryGUI.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 """
 
@@ -38,7 +37,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -145,10 +144,14 @@ import datetime
 # import openai
 import socket
 import glob
-from PyQt5 import QtWidgets, QtGui, QtCore, QtOpenGL
-from PyQt5.QtGui import QImage, QPainter, QPixmap
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QFileDialog, QPushButton, QLabel, QHBoxLayout
-from PyQt5.QtOpenGL import QGLWidget
+try:
+    from PyQt5 import QtWidgets, QtGui, QtCore, QtOpenGL
+    from PyQt5.QtGui import QImage, QPainter, QPixmap
+    from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QFileDialog, QPushButton, QLabel, QHBoxLayout
+    from PyQt5.QtOpenGL import QGLWidget
+except ImportError:
+    QtWidgets = QtGui = QtCore = QtOpenGL = None
+    QImage = QPainter = QPixmap = QApplication = QMainWindow = QWidget = QVBoxLayout = QFileDialog = QPushButton = QLabel = QHBoxLayout = QGLWidget = None
 # import bpy # if using Blender scripting context
 # import unreal # if calling Unreal from Python - only works in Unreal's embedded Python
 # Try to import torch for DLSS simulation; if unavailable, set to None.
@@ -217,11 +220,11 @@ research_log_path = os.path.join(config.BASE_DIR, "data", "logs", "research.log"
 research_path_logger = logging.getLogger("ResearchPathLogger")
 research_path_logger.setLevel(logging.DEBUG)
 
-research_file_handler = logging.FileHandler(research_log_path, mode='a', encoding='utf-8')
+research_file_handler = logging.NullHandler()
 research_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
 if not research_path_logger.hasHandlers():
-    research_file_handler = logging.FileHandler(research_log_path, mode='a', encoding='utf-8')
+    research_file_handler = logging.NullHandler()
     formatter = logging.Formatter('%(asctime)s - %(message)s')
     research_file_handler.setFormatter(formatter)
     research_path_logger.addHandler(research_file_handler)
@@ -416,7 +419,7 @@ def _sm_extract_presentation_bundle(bundle):
             # legacy image_url support -> artifact
             img_url = bundle.get("image_url")
             if img_url and not any((a or {}).get("url") == img_url for a in artifacts if isinstance(a, dict)):
-                artifacts.append({"type": "image", "url": img_url, "display_ready": True, "download_ready": True})
+                artifacts.append({"type": "image", "url": img_url, "display_ready": False, "download_ready": False, "verification": "unverified"})
             presented = (
                 bundle.get("presentation_reply")
                 or bundle.get("reply")
@@ -695,10 +698,8 @@ class VideoPanel:
         self.screen_preview = tk.Label(self.frame, text="Desktop Mirror", bg="black")
         self.screen_preview.grid(row=2, column=0, sticky="nsew")
 
-        self.local_camera = cv2.VideoCapture(0)
-        if not self.local_camera.isOpened():
-            logger.error("Failed to open local camera.")
-            self.local_camera = None
+        # Never open a camera from widget construction. appvision/MSDC owns access.
+        self.local_camera = None
 
         self.remote_camera = None
         self.local_photo = None
@@ -784,13 +785,13 @@ class VideoPanel:
                 now = time.time()
                 retry_due = getattr(self, "_next_cam_retry_ts", 0)
                 if now >= retry_due:
-                    cap = cv2.VideoCapture(0, cv2.CAP_MSMF)
+                    cap = None  # direct camera acquisition forbidden in classic GUI
                     if not (cap and cap.isOpened()):
                         # Try DirectShow as fallback
                         if cap:
                             try: cap.release()
                             except Exception: pass
-                        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+                        cap = None  # no backend bypass
 
                     if cap and cap.isOpened():
                         ok, _ = cap.read()
@@ -831,30 +832,15 @@ class VideoPanel:
 
         # Always keep the loop alive (only if widget still exists)
         if self.frame.winfo_exists():
-            self.frame.after(30, self.update_video)
+            self.frame.after(750, self.update_video)
+
 
 
 
 
     def update_desktop_mirror(self):
-
-        try:
-        # If we're headless or pyautogui failed to import, skip.
-            if not globals().get("_SM_HAVE_PYAUTOGUI", False) or pyautogui is None:
-                return
-
-            screenshot = pyautogui.screenshot()
-            screenshot = screenshot.resize((320, 240))
-
-            photo = ImageTk.PhotoImage(screenshot, master=tk._default_root)
-            self.desktop_label.configure(image=photo)
-            self.desktop_label.image = photo
-
-        except Exception as e:
-            logger.error(f"Desktop mirror update failed: {e}")
-
-    # Schedule the next update
-        self.frame.after(5000, self.update_desktop_mirror)
+        """Legacy direct screenshot capture is disabled; Desktop owner supplies frames."""
+        return None
 
     def host_room(self):
         pwd = simpledialog.askstring("Host Room", "Enter a password for your room:")
@@ -1045,24 +1031,10 @@ class ChatPanel:
         perform_scan_capture()
         log_gui_event("Manual Scan", "User clicked scan button.")
 
+
     def capture_desktop_loop(self):
-        import time
-        while True:
-            try:
-                screenshot = pyautogui.screenshot()
-                img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
-                small = cv2.resize(img, (100, 60))
-                img_pil = Image.fromarray(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
-                photo = ImageTk.PhotoImage(img_pil)
-                self.screen_preview.configure(image=photo)
-                self.screen_preview.image = photo
-                from SarahMemoryAvatar import ultra_detect_objects
-                tags = ultra_detect_objects(img)
-                if hasattr(config, 'status_bar'):
-                    config.status_bar.set_status(f"Desktop View: {', '.join(tags[:3])}")
-            except Exception as e:
-                logger.warning(f"Screen capture error: {e}")
-            time.sleep(15)
+        """No unapproved desktop mirroring from the classic GUI worker."""
+        return None
 
     def send_message(self, event=None):
         # -- exit guard hf4 --
@@ -2565,7 +2537,8 @@ def run_gui():
                                 not _sm_has_display()):
                             img = Image.new("RGB", (640, 160), (10, 12, 16))
                         else:
-                            img = pyautogui.screenshot()
+                            # Legacy UI adapter has no authenticated Desktop capture grant.
+                            img = Image.new("RGB", (640, 160), (10, 12, 16))
                     except Exception:
                         img = Image.new("RGB", (640, 160), (10, 12, 16))
 
@@ -4246,7 +4219,7 @@ def visual_query(self, text: str):
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryGUI',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Presentation',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -4264,22 +4237,16 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Report only observed SML registration state; no fabricated performance scores."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "unverified_runtime", "availability": None,
+        "integrity": None, "performance": None, "reliability": None,
+        "confidence": 0.0, "latency_ms": None, "stability": None,
+        "compatibility": None, "notes": ["SML registration present; runtime health not measured"],
     }
 
 
@@ -4289,7 +4256,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryGUI',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

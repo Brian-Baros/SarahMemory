@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryFacialRecognition.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 """
 
@@ -38,7 +37,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -94,13 +93,10 @@ def _throttle_event(key: str, seconds: float = 60.0) -> bool:
         return True
 
 
-def _facial_direct_camera_enabled() -> bool:
-    """Hard gate for legacy direct cv2.VideoCapture paths. Default OFF.
 
-    The governed WebUI path passes frames through appvision/MSDC instead of
-    letting FacialRecognition own the webcam.
-    """
-    return bool(FACIAL_DIRECT_CAMERA_ENABLED)
+def _facial_direct_camera_enabled() -> bool:
+    """Camera ownership stays with approved appvision/MSDC flow, never direct cv2."""
+    return False
 
 def _facial_simulated_learning_enabled() -> bool:
     """Hard gate for legacy random-vector training. Default OFF to prevent DB bloat."""
@@ -210,82 +206,13 @@ if not logger_fr.hasHandlers():
 
 CASCADE_PATH = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"  # Define cascade path
 def add_vector(vector):
-    """Add a vector to the VSM FAISS index (shared across SystemLearn + FacialRecognition).
+    """Hold biometric vector enrollment pending an authenticated consent receipt.
 
-    v9.0.0 Fixes:
-      - Enforces a single VECTOR_DIM across the platform (default 384).
-      - Normalizes and reshapes vectors to (1, VECTOR_DIM) float32 before indexing.
-      - Writes index to disk atomically and logs events to DATASETS_DIR/system_logs.db.
+    Source vector values are insufficient to prove consent, identity binding, or
+    revocability. Preserve the function for legacy callers but do not persist.
     """
-    global VECTOR_MEMORY, index
-    timestamp = datetime.now().isoformat()
-    try:
-        v = np.asarray(vector, dtype="float32").reshape(-1)
-
-        if v.shape[0] != int(VECTOR_DIM):
-            msg = f"Vector dimension mismatch: Expected {VECTOR_DIM}, got {v.shape[0]}"
-            try:
-                logger_vsm.error(msg)
-            except Exception:
-                pass
-            try:
-                log_vsm_event("Add Vector Error", msg)
-            except Exception:
-                pass
-            return False
-
-        norm = float(np.linalg.norm(v))
-        if norm > 0.0:
-            v = v / norm
-
-        if faiss_available:
-            index_file = os.path.join(config.DATASETS_DIR, "vector_index.faiss")
-            try:
-                os.makedirs(config.DATASETS_DIR, exist_ok=True)
-            except Exception:
-                pass
-
-            if os.path.exists(index_file):
-                idx = faiss.read_index(index_file)
-            else:
-                idx = faiss.IndexFlatL2(int(VECTOR_DIM))
-
-            idx.add(v.reshape(1, -1))
-            index = idx
-
-            tmp_file = index_file + ".tmp"
-            faiss.write_index(idx, tmp_file)
-            try:
-                os.replace(tmp_file, index_file)
-            except Exception:
-                faiss.write_index(idx, index_file)
-
-            log_event("VSM", f"Vector added via FAISS at {timestamp}")
-            try:
-                log_vsm_event("Add Vector", f"Vector added ({VECTOR_DIM}d) at {timestamp}")
-            except Exception:
-                pass
-            return True
-
-        VECTOR_MEMORY.append(v.tolist())
-        log_event("VSM", f"Vector added via fallback engine at {timestamp}")
-        try:
-            log_vsm_event("Add Vector", f"Vector added via fallback ({VECTOR_DIM}d) at {timestamp}")
-        except Exception:
-            pass
-        return True
-
-    except Exception as e:
-        try:
-            log_event("VSM", f"Error adding vector: {e}")
-        except Exception:
-            pass
-        try:
-            log_vsm_event("Add Vector Exception", f"Exception: {e}")
-        except Exception:
-            pass
-        return False
-
+    logger_fr.warning("Vector enrollment requires verified user consent; no vector persisted")
+    return False
 
 
 def find_similar_vectors(query_vector, top_k=5):
@@ -427,7 +354,7 @@ def detect_faces_dnn(frame):
                                 label = model.names[cls]
                                 if conf >= CONFIDENCE_THRESHOLD and label.lower() in TARGET_LABELS:
                                     x1, y1, x2, y2 = map(int, box.xyxy[0])
-                                    detections.append(frame[y1:y2, x1:x2])
+                                    detections.append((max(0, x1), max(0, y1), max(0, x2-x1), max(0, y2-y1)))
                         logger_fr.info(f"{model_name} (YOLO) detected {len(detections)} object(s).")
                         if detections:
                             return detections
@@ -446,7 +373,7 @@ def detect_faces_dnn(frame):
                             if conf >= CONFIDENCE_THRESHOLD:
                                 label = str(int(cls))  # Placeholder label map
                                 if label in TARGET_LABELS or label == "0":  # crude match to "person"
-                                    detections.append(frame[int(y1):int(y2), int(x1):int(x2)])
+                                    detections.append((max(0, int(x1)), max(0, int(y1)), max(0, int(x2-x1)), max(0, int(y2-y1))))
                         logger_fr.info(f"{model_name} (ONNX) detected {len(detections)} object(s).")
                         if detections:
                             return detections
@@ -464,7 +391,7 @@ def detect_faces_dnn(frame):
                             if conf >= CONFIDENCE_THRESHOLD:
                                 label = str(int(cls))
                                 if label in TARGET_LABELS or label == "0":
-                                    detections.append(frame[int(y1):int(y2), int(x1):int(x2)])
+                                    detections.append((max(0, int(x1)), max(0, int(y1)), max(0, int(x2-x1)), max(0, int(y2-y1))))
                         logger_fr.info(f"{model_name} (TorchScript) detected {len(detections)} object(s).")
                         if detections:
                             return detections
@@ -492,18 +419,15 @@ IDENTITY_PROFILES = {
     2: {"name": "Victoria", "emotion": "neutral"}
 }
 
+
 def recognize_identity_from_vector(query_vector):
+    """Do not convert a nearest-neighbor index into an authenticated identity.
+
+    Identity requires verified enrollment, threshold, revocable consent and a
+    registry-binding receipt unavailable in this legacy callable signature.
     """
-    Recognizes user by comparing input face vector to known stored ones.
-    Returns name and emotion.
-    """
-    distances, indices = query_similar(query_vector, k=1)
-    if distances is not None and indices is not None:
-        closest_id = int(indices[0][0])
-        profile = IDENTITY_PROFILES.get(closest_id, {"name": "Unknown", "emotion": "neutral"})
-        log_facial_event("Recognized Identity", f"Matched to: {profile['name']} (Emotion: {profile['emotion']})")
-        return profile
-    return {"name": "Unknown", "emotion": "neutral"}
+    return {"name": "Unknown", "emotion": "neutral", "recognized": False,
+            "reason": "verified_identity_registry_unavailable"}
 
 # ------------------------- Personality Greeting Export -------------------------
 
@@ -604,8 +528,9 @@ def analyze_face_frame(frame, allow_identity: bool = False, allow_learning: bool
         result["identity"]["attempted"] = True
         result["identity"]["recognized"] = False
         result["identity"]["reason"] = "real_face_embedding_pipeline_not_verified"
-    if allow_learning and _facial_simulated_learning_enabled():
-        result["learning_stored"] = bool(contribute_facial_data_to_learning())
+    if allow_learning:
+        result["learning_stored"] = False
+        result.setdefault("warnings", []).append("learning_requires_authenticated_enrollment_consent")
     return result
 
 
@@ -617,6 +542,9 @@ def start_facial_recognition_monitor(interval=1.0):
     """
     if not _facial_direct_camera_enabled():
         log_facial_event("Direct Camera Monitor Blocked", "Use appvision/MSDC governed frame path instead of FacialRecognition owning webcam.")
+        return False
+    if not _facial_direct_camera_enabled():
+        logger_fr.warning("Direct camera monitor unavailable without governed camera authorization")
         return False
     import threading
     def monitor():
@@ -645,34 +573,15 @@ def start_facial_recognition_monitor(interval=1.0):
 # Additional integration for storing recognized face vectors per user
 USER_DB = os.path.join(DATASETS_DIR, "user_profiles.db")
 
+
 def store_face_profile(user_id, vector, label, emotion):
+    """Do not persist personal biometric vectors without validated consent.
+
+    Existing four arguments do not carry a trusted consent or identity receipt.
+    The governed enrollment owner must supply a separate authenticated path.
     """
-    Store labeled face vector into user_profiles.db under specific user ID.
-    """
-    try:
-        conn = sqlite3.connect(USER_DB)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS face_profiles (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT,
-                timestamp TEXT,
-                label TEXT,
-                emotion TEXT,
-                vector BLOB
-            )
-        """)
-        timestamp = datetime.now().isoformat()
-        vector_blob = sqlite3.Binary(np.array(vector, dtype=np.float32).tobytes())
-        cursor.execute("""
-            INSERT INTO face_profiles (user_id, timestamp, label, emotion, vector)
-            VALUES (?, ?, ?, ?, ?)
-        """, (user_id, timestamp, label, emotion, vector_blob))
-        conn.commit()
-        conn.close()
-        logger_fr.info(f"Stored vector for {label} in user_profiles.db.")
-    except Exception as e:
-        logger_fr.error(f"Error storing face profile: {e}")
+    logger_fr.warning("Face-profile enrollment denied: authenticated consent receipt unavailable")
+    return False
 
 
 # ------------------------- Vector Similarity Memory (VSM) Module -------------------------
@@ -803,6 +712,9 @@ if __name__ == '__main__':
         if face_cascade is None:
             logger_fr.error("Face cascade not loaded. Exiting module test.")
             sys.exit(1)
+        if not _facial_direct_camera_enabled():
+            logger_fr.error("Standalone webcam test requires governed camera authorization")
+            sys.exit(1)
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
             error_msg = "Unable to access the webcam."
@@ -880,7 +792,7 @@ def get_eyeglasses_cascade_path():
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryFacialRecognition',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Unknown',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -898,22 +810,16 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Report only observed SML registration state; no fabricated performance scores."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "unverified_runtime", "availability": None,
+        "integrity": None, "performance": None, "reliability": None,
+        "confidence": 0.0, "latency_ms": None, "stability": None,
+        "compatibility": None, "notes": ["SML registration present; runtime health not measured"],
     }
 
 
@@ -923,7 +829,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryFacialRecognition',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

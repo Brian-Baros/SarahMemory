@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryResearch.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 WORLD-CLASS ENTERPRISE RESEARCH ENGINE
@@ -105,7 +104,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -122,6 +121,7 @@ import os
 import re
 import time
 import hashlib
+import math
 import html
 import logging
 import sqlite3
@@ -130,7 +130,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Tuple, Any, Union, Set
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -345,6 +346,7 @@ class ResearchSource(Enum):
     WEB_WIKIHOW = "web_wikihow"
     WEB_QUORA = "web_quora"
     WEB_ARCHIVE = "web_archive"
+    WEB_WEATHER = "web_weather"
     API_OPENAI = "api_openai"
     API_META = "api_meta"
     API_CLAUDE = "api_claude"
@@ -487,7 +489,12 @@ def get_cached_result(query: str) -> Optional[ResearchResult]:
         if cache_key in research_cache:
             result, expiry_time = research_cache[cache_key]
             
-            if time.time() < expiry_time:
+            # Live public claims must never inherit the hour-long generic TTL.
+            # Fetch age is bounded even when an older cache entry was created
+            # before this correction.
+            freshness = bool(re.search(r"\b(current|currently|today|right now|latest|weather|forecast|temperature|news|headlines|stock price)\b", str(query or "").lower()))
+            fresh_enough = not freshness or (time.time() - float(getattr(result, "timestamp", 0.0) or 0.0)) <= 300
+            if time.time() < expiry_time and fresh_enough:
                 metrics.record_cache_hit()
                 research_debug_logger.debug(f"[CACHE HIT] Query: {query}")
                 return result
@@ -733,14 +740,16 @@ def _external_research_allowed(kind: str = "web") -> bool:
     DB/local model lanes remain available.
     """
     try:
-        if bool(getattr(config, "LOCAL_ONLY_MODE", True)):
+        if str(getattr(config, "LOCAL_ONLY_MODE", True)).strip().lower() not in {"false", "0", "no", "off"}:
+            return False
+        if str(getattr(config, "SAFE_MODE", False)).strip().lower() in {"true", "1", "yes", "on"}:
             return False
         if str(os.getenv("SARAH_FORCE_OFFLINE", "")).strip().lower() in ("1", "true", "yes", "on"):
             return False
         k = str(kind or "web").strip().lower()
         if k == "api":
-            return bool(getattr(config, "API_RESEARCH_ENABLED", False))
-        return bool(getattr(config, "WEB_RESEARCH_ENABLED", False))
+            return str(getattr(config, "API_RESEARCH_ENABLED", False)).strip().lower() in {"true", "1", "yes", "on"}
+        return str(getattr(config, "WEB_RESEARCH_ENABLED", False)).strip().lower() in {"true", "1", "yes", "on"}
     except Exception:
         return False
 
@@ -776,6 +785,10 @@ def _runtime_is_cloud() -> bool:
 
 def _cloud_research_allowed() -> Tuple[bool, str]:
     try:
+        if str(getattr(config, "LOCAL_ONLY_MODE", True)).strip().lower() not in {"false", "0", "no", "off"}:
+            return False, "local_only_mode"
+        if str(getattr(config, "SAFE_MODE", False)).strip().lower() in {"true", "1", "yes", "on"}:
+            return False, "safe_mode"
         if not bool(getattr(config, "SARAHMEMORY_CLOUD_NODE_DISCOVERY_ENABLED", True)):
             return False, "cloud_node_discovery_disabled"
         if str(os.getenv("SARAH_FORCE_OFFLINE", "")).strip().lower() in ("1", "true", "yes", "on"):
@@ -784,9 +797,9 @@ def _cloud_research_allowed() -> Tuple[bool, str]:
             return False, "cloud_runtime_recursion_guard"
         if not _cloud_node_base_url():
             return False, "cloud_node_base_url_missing"
-        explicitly_enabled = bool(getattr(config, "SARAHMEMORY_CLOUD_NODE_RESEARCH_ENABLED", False))
-        online_armed = bool(getattr(config, "SARAHMEMORY_ONLINE_SESSION_ARMED", False))
-        existing_research_gate = bool(getattr(config, "WEB_RESEARCH_ENABLED", False) or getattr(config, "API_RESEARCH_ENABLED", False))
+        explicitly_enabled = str(getattr(config, "SARAHMEMORY_CLOUD_NODE_RESEARCH_ENABLED", False)).strip().lower() in {"true", "1", "yes", "on"}
+        online_armed = str(getattr(config, "SARAHMEMORY_ONLINE_SESSION_ARMED", False)).strip().lower() in {"true", "1", "yes", "on"}
+        existing_research_gate = _external_research_allowed("web") or _external_research_allowed("api")
         if explicitly_enabled or online_armed or existing_research_gate:
             return True, "allowed"
         return False, "cloud_research_not_armed"
@@ -1030,6 +1043,16 @@ def _query_needs_cloud_research(query: str, result: Optional[Dict[str, Any]] = N
         "news", "live", "web", "internet", "online", "search", "look up",
         "price", "weather", "score", "schedule", "version", "release",
     )
+    # A verified domain-specific live source is the end of this read-only
+    # lookup. Do not request a cloud/paid model after authoritative weather
+    # data has already been retrieved successfully.
+    if isinstance(result, dict):
+        meta = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        if (str(result.get("source") or "") == "web_weather"
+                and str(meta.get("source_family") or "") == "weather_api"
+                and str(meta.get("observed_at") or "")
+                and float(result.get("confidence") or 0.0) > 0.0):
+            return False
     if any(marker in q for marker in current_markers):
         return True
     if not isinstance(result, dict):
@@ -1621,15 +1644,20 @@ class WebResearch:
     
     @staticmethod
     async def fetch_json(url: str, params: Optional[Dict] = None, timeout: int = HTTP_TIMEOUT_MEDIUM) -> Optional[Dict]:
-        """Fetch JSON response from URL."""
+        """Fetch bounded JSON from an existing configured provider URL."""
         if aiohttp is None:
             logger.warning("[WEB] aiohttp unavailable; JSON fetch skipped for %s", url)
             return None
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=timeout) as response:
+                async with session.get(url, params=params, timeout=timeout, allow_redirects=False) as response:
                     if response.status == 200:
-                        return await response.json()
+                        raw = await response.content.read(262145)
+                        if len(raw) > 262144:
+                            logger.warning("[WEB] JSON response exceeded limit for %s", url)
+                            return None
+                        parsed = json.loads(raw.decode("utf-8"))
+                        return parsed if isinstance(parsed, dict) else None
                     else:
                         logger.warning(f"[WEB] HTTP {response.status} for {url}")
                         return None
@@ -1683,6 +1711,170 @@ class WebResearch:
         return query
     
     @staticmethod
+    async def _fetch_current_weather(query: str) -> Optional[ResearchResult]:
+        """Fetch real observations/nowcast via public Open-Meteo data services.
+
+        Never use IP-derived location: the user must specify a place. The two
+        read-only HTTPS requests run only inside the existing WEB research gate.
+        Missing, ambiguous, or malformed provider data is NOT fabricated.
+        """
+        if not re.search(r"\b(weather|temperature|conditions|forecast|rain|precipitation)\b", query, re.I):
+            return None
+        match = re.search(
+            r"\b(?:in|for|at)\s+([A-Za-z][A-Za-z .,'-]{1,95}?)\s*(?:[?!;.]|\s+and\b|$)",
+            query,
+            re.I,
+        )
+        if not match:
+            return None
+        place = re.sub(r"\s+(?:today|tonight|now|right now|currently)$", "", match.group(1).strip(" ,. "), flags=re.I)
+        if not place:
+            return None
+        parts = [part.strip() for part in place.split(",") if part.strip()]
+        city = parts[0] if parts else ""
+        if not city or len(city) < 2:
+            return None
+        # Match every supplied geographic qualifier against provider identity.
+        # Never assume a country or guess between same-named locations.
+        qualifiers = [part.casefold() for part in parts[1:]]
+        geo = await WebResearch.fetch_json(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": city, "count": 100, "language": "en", "format": "json"},
+            timeout=HTTP_TIMEOUT_SHORT,
+        )
+        places = geo.get("results") if isinstance(geo, dict) else None
+        if not isinstance(places, list) or not places:
+            return None
+        candidates = [x for x in places if isinstance(x, dict) and
+                      str(x.get("name") or "").strip().lower() == city.lower()]
+        if qualifiers:
+            candidates = [x for x in candidates if all(q in {
+                str(x.get(field) or "").strip().casefold()
+                for field in ("admin1", "admin2", "admin3", "admin4", "country", "country_code")
+            } for q in qualifiers)]
+        if not candidates:
+            return None
+        # Do not silently select between several different candidate locations.
+        if len({(x.get("latitude"), x.get("longitude")) for x in candidates}) > 1:
+            return None
+        candidate = candidates[0]
+        try:
+            latitude = float(candidate["latitude"])
+            longitude = float(candidate["longitude"])
+        except (KeyError, ValueError, TypeError):
+            return None
+        # Reject non-finite or out-of-range provider coordinates before an
+        # external forecast request. Never forward NaN/Infinity to the API.
+        if not (math.isfinite(latitude) and math.isfinite(longitude)
+                and -90 <= latitude <= 90 and -180 <= longitude <= 180):
+            return None
+        source_url = "https://api.open-meteo.com/v1/forecast"
+        weather = await WebResearch.fetch_json(
+            source_url,
+            params={
+                "latitude": latitude, "longitude": longitude,
+                "current": "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m",
+                "hourly": "precipitation_probability",
+                "forecast_days": 2,
+                "temperature_unit": "fahrenheit", "wind_speed_unit": "mph", "timezone": "auto",
+            },
+            timeout=HTTP_TIMEOUT_SHORT,
+        )
+        reading = weather.get("current") if isinstance(weather, dict) else None
+        if not isinstance(reading, dict):
+            return None
+        observed_at = reading.get("time")
+        value = reading.get("temperature_2m")
+        if (not isinstance(observed_at, str) or isinstance(value, bool)
+                or not isinstance(value, (float, int)) or not math.isfinite(value)):
+            return None
+        try:
+            provider_timezone = str(weather.get("timezone") or "")
+            observed_local = datetime.fromisoformat(observed_at)
+            if observed_local.tzinfo is None:
+                observed_local = observed_local.replace(tzinfo=ZoneInfo(provider_timezone))
+            observed_utc = observed_local.astimezone(timezone.utc)
+            age_seconds = (datetime.now(timezone.utc) - observed_utc).total_seconds()
+            if not (-900 <= age_seconds <= 7200):
+                logger.warning("[WEB WEATHER] Provider current reading outside freshness window")
+                return None
+        except (ValueError, TypeError, KeyError):
+            logger.warning("[WEB WEATHER] Provider timestamp or timezone invalid")
+            return None
+        conditions = {
+            0: "clear", 1: "mainly clear", 2: "partly cloudy", 3: "overcast",
+            45: "fog", 48: "rime fog", 51: "light drizzle", 53: "drizzle", 55: "heavy drizzle",
+            61: "light rain", 63: "rain", 65: "heavy rain", 71: "light snow",
+            73: "snow", 75: "heavy snow", 80: "light rain showers", 81: "rain showers",
+            82: "heavy rain showers", 95: "thunderstorm", 96: "thunderstorm with hail",
+            99: "severe thunderstorm with hail",
+        }
+        code = reading.get("weather_code")
+        description = conditions.get(code, f"weather code {code}" if code is not None else "conditions unavailable")
+        location = ", ".join(str(part) for part in (candidate.get("name"), candidate.get("admin1"), candidate.get("country")) if part)
+        text = f"{location}: {value}°F, {description}. Observed/model time: {observed_at} ({weather.get('timezone') or 'local time'})."
+        extra = []
+        for field, label, unit in (("apparent_temperature", "Feels like", "°F"),
+                                   ("relative_humidity_2m", "Humidity", "%"),
+                                   ("wind_speed_10m", "Wind", "mph")):
+            v = reading.get(field)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
+                extra.append(f"{label}: {v}{unit}")
+        if extra:
+            text += " " + "; ".join(extra) + "."
+        # Optional forecast, never a substitute for the fresh current reading.
+        # Use only the provider's next future hourly slot, with validated units,
+        # matching array positions, and the location's published timezone.
+        next_hour_probability = None
+        next_hour_at = None
+        hourly = weather.get("hourly") if isinstance(weather, dict) else None
+        if isinstance(hourly, dict):
+            times = hourly.get("time")
+            probabilities = hourly.get("precipitation_probability")
+            if isinstance(times, list) and isinstance(probabilities, list):
+                now_utc = datetime.now(timezone.utc)
+                candidates = []
+                for forecast_time, probability in zip(times, probabilities):
+                    if (not isinstance(forecast_time, str)
+                            or isinstance(probability, bool)
+                            or not isinstance(probability, (int, float))
+                            or not math.isfinite(probability)
+                            or not (0 <= probability <= 100)):
+                        continue
+                    try:
+                        local_at = datetime.fromisoformat(forecast_time)
+                        if local_at.tzinfo is None:
+                            local_at = local_at.replace(tzinfo=ZoneInfo(provider_timezone))
+                        forecast_utc = local_at.astimezone(timezone.utc)
+                    except (ValueError, TypeError, KeyError):
+                        continue
+                    if now_utc < forecast_utc <= now_utc + timedelta(minutes=90):
+                        candidates.append((forecast_utc, forecast_time, probability))
+                if candidates:
+                    _, next_hour_at, next_hour_probability = min(candidates, key=lambda row: row[0])
+                    text += (f" Next hourly precipitation probability: "
+                             f"{next_hour_probability}% at {next_hour_at} "
+                             f"({provider_timezone}).")
+        text += " Source: Open-Meteo (https://open-meteo.com/); model-derived current conditions, not an on-site observation."
+        return ResearchResult(
+            source=ResearchSource.WEB_WEATHER,
+            content=text,
+            confidence=0.86,
+            query=query,
+            intent="weather_current",
+            metadata={"source_family": "weather_api", "provider": "open_meteo",
+                      "source_url": source_url, "geocoding_url": "https://geocoding-api.open-meteo.com/v1/search",
+                      "observed_at": observed_at, "observed_at_utc": observed_utc.isoformat(),
+                      "age_minutes_at_retrieval": round(age_seconds / 60, 1),
+                      "retrieved_at": datetime.now(timezone.utc).isoformat(),
+                      "latitude": latitude, "longitude": longitude,
+                      "observation_type": "model_derived_current_conditions",
+                      "location": location, "method": "web_weather_live",
+                      "next_hour_precipitation_probability": next_hour_probability,
+                      "next_hour_forecast_at": next_hour_at},
+        )
+
+    @staticmethod
     async def fetch_sources(query: str) -> Optional[ResearchResult]:
         """
         Fetch information from multiple web sources concurrently.
@@ -1694,12 +1886,32 @@ class WebResearch:
             ResearchResult with synthesized information
         """
         start_time = time.time()
-        
-        # Check cache first
-        cache_key = hashlib.md5(query.encode()).hexdigest()
-        if cache_key in research_cache:
-            cached_result, expiry = research_cache[cache_key]
-            if time.time() < expiry:
+        # Enforce policy even for callers that bypass parallel_research.
+        # This method is a retrieval capability, not an authorization grant.
+        if not _external_research_allowed("web"):
+            logger.info("[WEB RESEARCH] Retrieval denied by active WEB policy")
+            return None
+
+        # Current weather is a structured public-data retrieval, not an LLM
+        # synthesis problem. The caller's WEB gate has already been checked.
+        if re.search(r"\b(weather|temperature|conditions|forecast|rain|precipitation)\b", query, re.I):
+            try:
+                live_weather = await WebResearch._fetch_current_weather(query)
+                if live_weather is not None:
+                    live_weather.latency_ms = int((time.time() - start_time) * 1000)
+                    return live_weather
+            except Exception as exc:
+                logger.warning("[WEB WEATHER] Live source failed: %s", exc)
+
+        # Cache reads must honor the active WEB gate and source lane. Use the
+        # locked TTL/freshness helper rather than accessing the shared cache
+        # dictionary directly; never return local/API evidence as WEB evidence.
+        cached_result = get_cached_result(query)
+        if cached_result:
+            cached_source = (cached_result.source.value
+                             if isinstance(cached_result.source, ResearchSource)
+                             else str(cached_result.source))
+            if cached_source.startswith("web_"):
                 return cached_result
         
         clean_query = WebResearch.preprocess_query(query)
@@ -2231,7 +2443,7 @@ class APIResearch:
 # PARALLEL RESEARCH COORDINATOR
 # ============================================================================
 
-async def parallel_research(query: str) -> ResearchResult:
+async def parallel_research(query: str, mode: str = "any") -> ResearchResult:
     """
     Execute parallel research across all available sources.
     
@@ -2245,25 +2457,46 @@ async def parallel_research(query: str) -> ResearchResult:
         ResearchResult with best available information
     """
     start_time = time.time()
+    mode = str(mode or "any").strip().lower()
+    if mode not in {"any", "local", "web", "api"}:
+        mode = "any"
+    cache_query = f"{mode}\x00{query}"
     
     # Check cache first
-    cached = get_cached_result(query)
+    cached = get_cached_result(cache_query)
     if cached:
-        logger.info(f"[RESEARCH] Cache hit for query: '{query}'")
-        return cached
+        source = cached.source.value if isinstance(cached.source, ResearchSource) else str(cached.source)
+        source_allowed = (
+            (source.startswith("web_") and mode in {"any", "web"} and _external_research_allowed("web"))
+            or (source.startswith("api_") and mode in {"any", "api"} and _external_research_allowed("api"))
+            or (source.startswith("local_") and mode in {"any", "local"}
+                and bool(getattr(config, "LOCAL_DATA_ENABLED", False)))
+        )
+        if source_allowed:
+            logger.info(f"[RESEARCH] Cache hit for query: '{query}' in mode {mode}")
+            return cached
     
-    # Check for duplicate active query
-    query_key = get_cache_key(query)
+    # Check for duplicate active query. Never await while holding a
+    # threading.Lock: doing so can deadlock the event loop when the owner
+    # completes and tries to release its registration. Only the owner may
+    # remove that registration; a duplicate is a non-owning observer.
+    query_key = get_cache_key(cache_query)
     with active_queries_lock:
-        if query_key in active_queries:
-            logger.info(f"[RESEARCH] Duplicate query in progress: '{query}'")
-            # Wait a bit and check cache again
-            await asyncio.sleep(0.5)
-            cached = get_cached_result(query)
-            if cached:
-                return cached
-        else:
+        owns_query_slot = query_key not in active_queries
+        if owns_query_slot:
             active_queries.add(query_key)
+    if not owns_query_slot:
+        logger.info(f"[RESEARCH] Duplicate query in progress: '{query}'")
+        # Preserve the existing bounded cache retry without holding the lock.
+        await asyncio.sleep(0.5)
+        cached = get_cached_result(cache_query)
+        if cached:
+            source = cached.source.value if isinstance(cached.source, ResearchSource) else str(cached.source)
+            if ((source.startswith("web_") and mode in {"any", "web"} and _external_research_allowed("web"))
+                    or (source.startswith("api_") and mode in {"any", "api"} and _external_research_allowed("api"))
+                    or (source.startswith("local_") and mode in {"any", "local"}
+                        and bool(getattr(config, "LOCAL_DATA_ENABLED", False)))):
+                return cached
     
     try:
         # Classify intent
@@ -2273,13 +2506,13 @@ async def parallel_research(query: str) -> ResearchResult:
         # Define parallel tasks
         async def local_task():
             """Local research task."""
-            if config.LOCAL_DATA_ENABLED:
+            if mode in {"any", "local"} and config.LOCAL_DATA_ENABLED:
                 return await asyncio.to_thread(LocalResearch.search, query, intent)
             return None
         
         async def web_task():
             """Web research task."""
-            if _external_research_allowed("web"):
+            if mode in {"any", "web"} and _external_research_allowed("web"):
                 try:
                     return await WebResearch.fetch_sources(query)
                 except Exception as e:
@@ -2288,14 +2521,40 @@ async def parallel_research(query: str) -> ResearchResult:
         
         async def api_task():
             """API research task."""
-            if _external_research_allowed("api"):
+            if mode in {"any", "api"} and _external_research_allowed("api"):
                 return await asyncio.to_thread(APIResearch.query, query, intent)
             return None
         
-        # Execute all tasks in parallel
-        logger.info(f"[RESEARCH] Starting parallel search for: '{query}'")
-        results = await asyncio.gather(local_task(), web_task(), api_task(), return_exceptions=True)
-        
+        # Governed fallback: local evidence first for timeless queries; for
+        # freshness-sensitive questions web evidence must precede local model
+        # answers. Paid/model APIs run only after a web miss, never alongside it.
+        fresh = bool(re.search(r"\b(current|currently|today|right now|latest|weather|forecast|temperature|news|headlines|stock price)\b", query.lower()))
+        logger.info("[RESEARCH] Staged source acquisition (fresh=%s): %s", fresh, query)
+        results = [None, None, None]
+        if not fresh:
+            try:
+                results[0] = await local_task()
+            except Exception as exc:
+                results[0] = exc
+        local_useful = isinstance(results[0], ResearchResult) and results[0].confidence > 0.0 and bool(results[0].content.strip())
+        if fresh or not local_useful:
+            try:
+                results[1] = await web_task()
+            except Exception as exc:
+                results[1] = exc
+            web_useful = isinstance(results[1], ResearchResult) and results[1].confidence > 0.0 and bool(results[1].content.strip())
+            if not web_useful:
+                try:
+                    results[2] = await api_task()
+                except Exception as exc:
+                    results[2] = exc
+        if fresh and not isinstance(results[1], ResearchResult) and not isinstance(results[2], ResearchResult):
+            # Local evidence remains a candidate, never final live authority.
+            try:
+                results[0] = await local_task()
+            except Exception as exc:
+                results[0] = exc
+
         # Process results (filter None and exceptions)
         valid_results = []
         for i, result in enumerate(results):
@@ -2309,6 +2568,16 @@ async def parallel_research(query: str) -> ResearchResult:
         # claim-specific authority selection, not simple confidence sorting.
         if valid_results:
             evidence_court = _sml_evidence_court_for_results(query, valid_results)
+            if fresh and not isinstance(evidence_court, dict):
+                return ResearchResult(
+                    source=ResearchSource.NONE,
+                    content="Current-source evidence could not be adjudicated because SML Evidence Court was unavailable.",
+                    confidence=0.0,
+                    query=query,
+                    intent=intent,
+                    latency_ms=int((time.time() - start_time) * 1000),
+                    metadata={"method": "sml_evidence_court_unavailable"},
+                )
             best_result = None
             if isinstance(evidence_court, dict):
                 accepted = ((evidence_court.get("court_2") or {}) if isinstance(evidence_court.get("court_2"), dict) else {}).get("accepted_artifact")
@@ -2344,7 +2613,7 @@ async def parallel_research(query: str) -> ResearchResult:
             metrics.record_success(best_result.source, total_latency)
             
             # Cache result
-            cache_result(query, best_result)
+            cache_result(cache_query, best_result, ttl=300 if fresh else CACHE_TTL_SECONDS)
             
             _src_value = best_result.source.value if hasattr(best_result.source, "value") else str(best_result.source)
             logger.info(f"[RESEARCH SUCCESS] Source: {_src_value}, "
@@ -2369,9 +2638,10 @@ async def parallel_research(query: str) -> ResearchResult:
         )
     
     finally:
-        # Remove from active queries
-        with active_queries_lock:
-            active_queries.discard(query_key)
+        # A duplicate must not erase another request's active registration.
+        if owns_query_slot:
+            with active_queries_lock:
+                active_queries.discard(query_key)
 
 
 # ============================================================================
@@ -2415,21 +2685,21 @@ def get_local_research_data(query: str, intent: Optional[str] = None, *, allow_l
                 "metadata": {"method": "local_only", "local_data_enabled": False},
             }
 
-        original_llm_flag = None
-        if not allow_local_llm:
-            try:
-                original_llm_flag = getattr(config, "LOCAL_LLM_API", None)
-                setattr(config, "LOCAL_LLM_API", False)
-            except Exception:
-                original_llm_flag = None
-        try:
+        # The legacy LOCAL_LLM_API flag belongs to SarahMemoryGlobals and is not
+        # safe to flip for one request in a multi-request server. When callers
+        # disallow local LLM, avoid invoking a path that could invoke it.
+        if allow_local_llm:
             result = LocalResearch.search(q, resolved_intent)
-        finally:
-            if original_llm_flag is not None:
-                try:
-                    setattr(config, "LOCAL_LLM_API", original_llm_flag)
-                except Exception:
-                    pass
+        else:
+            # Search ordinary local evidence without changing process-global flags
+            # or invoking _search_llm_ensemble in a concurrent server.
+            result = None
+            for method_name in ("_search_qa_cache", "_search_personality", "_search_sqlite_dataset_pool", "_search_vector_memory", "_search_datasets", "_search_websym"):
+                method = getattr(LocalResearch, method_name, None)
+                if callable(method):
+                    result = method(q, resolved_intent)
+                    if result:
+                        break
 
         if result and isinstance(result, ResearchResult):
             result = _research_source_label(result, "local_only")
@@ -2456,15 +2726,15 @@ def get_local_research_data(query: str, intent: Optional[str] = None, *, allow_l
         return {
             "source": "local_error",
             "intent": resolved_intent,
-            "data": f"Local research failed: {e}",
-            "snippet": f"Local research failed: {e}",
+            "data": "",
+            "snippet": "",
             "confidence": 0.0,
             "latency_ms": int((time.time() - started) * 1000),
             "metadata": {"method": "local_only", "error": str(e)},
         }
 
 
-def get_research_data(query: str) -> Dict[str, Any]:
+def get_research_data(query: str, *, mode: str = "any") -> Dict[str, Any]:
     """
     Main entry point for research operations (backward compatible).
     
@@ -2482,11 +2752,20 @@ def get_research_data(query: str) -> Dict[str, Any]:
     
     try:
         # Run parallel research
-        result = asyncio.run(parallel_research(query))
+        result = asyncio.run(parallel_research(query, mode=mode))
         
         # Convert to legacy dictionary format
         out = result.to_dict()
-        if _query_needs_cloud_research(query, out) and not _runtime_is_cloud():
+        out.setdefault("metadata", {})
+        if isinstance(out.get("metadata"), dict):
+            out["metadata"]["requested_mode"] = str(mode or "any").strip().lower()
+            out["metadata"]["web_allowed"] = _external_research_allowed("web")
+            out["metadata"]["external_api_allowed"] = _external_research_allowed("api")
+            out["metadata"]["local_only_policy"] = str(getattr(config, "LOCAL_ONLY_MODE", True)).strip().lower() not in {"false", "0", "no", "off"}
+            out["metadata"]["safe_mode_policy"] = str(getattr(config, "SAFE_MODE", False)).strip().lower() in {"true", "1", "yes", "on"}
+            out["metadata"]["force_offline_policy"] = str(os.getenv("SARAH_FORCE_OFFLINE", "")).strip().lower() in {"true", "1", "yes", "on"}
+        online_policy = str(getattr(config, "LOCAL_ONLY_MODE", True)).strip().lower() in {"false", "0", "no", "off"}
+        if str(mode or "any").strip().lower() == "any" and online_policy and _query_needs_cloud_research(query, out) and not _runtime_is_cloud():
             cloud = get_cloud_research_data(query)
             if bool(cloud.get("ok")) and str(cloud.get("data") or "").strip():
                 return cloud
@@ -2510,7 +2789,9 @@ def get_research_data(query: str) -> Dict[str, Any]:
         return {
             "source": "error",
             "intent": "unknown",
-            "data": f"Research failed: {str(e)}",
+            "data": "",
+            "snippet": "",
+            "metadata": {"error": type(e).__name__, "completed": False},
             "confidence": 0.0
         }
 
@@ -2891,22 +3172,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Expose adapter presence without fabricating operational measurements."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "UNKNOWN",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter registered; live operational measurements not verified"],
     }
 
 
@@ -2916,7 +3197,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryResearch',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

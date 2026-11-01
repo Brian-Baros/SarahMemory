@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryEnergetics.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 SarahMemory Energetics Organ v9.0.0
@@ -65,7 +64,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -111,7 +110,7 @@ except Exception:  # pragma: no cover
     _Adaptive = None  # type: ignore
 
 MODULE_NAME = "SarahMemoryEnergetics"
-MODULE_VERSION = "9.0.0"
+MODULE_VERSION = "9.1.0a"
 
 POWER_OFF = "OFF"
 POWER_LOW = "LOW_POWER"
@@ -350,7 +349,10 @@ class SarahMemoryEnergetics:
         # but live authority is separately blocked by the constitutional body-awareness checklist.
         domain = _safe_lower(body_domain or self.default_body_domain).replace("-", "_") or "pc_edge"
         domain = BODY_PROFILE_ALIASES.get(domain, domain)
-        return dict(self.body_profiles.get(domain) or self.body_profiles["pc_edge"])
+        profile = self.body_profiles.get(domain)
+        if profile is None:
+            return {'unknown_body_domain': True, 'body_domain': domain, 'critical_organs': [], 'reserve_keys': [], 'full_power_requires': [], 'safe_low_power': ['defer_unverified_body_actions']}
+        return dict(profile)
 
     def _constitution_status(self, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Read SarahMemoryGlobals hazardous-energy constitution.
@@ -703,6 +705,12 @@ class SarahMemoryEnergetics:
         }
         physical_action_requested = physical_active or any(token in action or token in phase_key for token in physical_action_tokens)
         profile = self.body_profile(body)
+        if profile.get('unknown_body_domain') and physical_action_requested and not safety_critical:
+            decision = DECISION_DEFER
+            ok = False
+            allowed_power_mode = POWER_LOW
+            diagnostics_mode = 'SAFE_DISCOVERY_ONLY'
+            reasons.append('Unknown body profile cannot be certified for physical action.')
         expected_reserves = [str(k) for k in (profile.get("reserve_keys") or [])]
         observed_reserves = internal.get("reserve_vector") if isinstance(internal.get("reserve_vector"), dict) else {}
         missing_critical_reserves = sorted([key for key in expected_reserves if key not in observed_reserves])
@@ -1074,7 +1082,7 @@ def calculate_physics_cost(scenario: Dict[str, Any]) -> Dict[str, Any]:
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryEnergetics',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Unknown',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -1092,22 +1100,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter present; runtime health not independently measured"],
     }
 
 
@@ -1117,7 +1125,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryEnergetics',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

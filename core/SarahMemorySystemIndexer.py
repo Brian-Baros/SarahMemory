@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemorySystemIndexer.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 """
 
@@ -38,7 +37,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -93,7 +92,7 @@ EXCLUDED_DIR_NAMES = {
     "models", "model_cache", ".cache", "dist", "build"
 }
 DEFAULT_MAX_HASH_BYTES = int(os.getenv("SARAH_INDEXER_MAX_HASH_BYTES", str(64 * 1024 * 1024)) or (64 * 1024 * 1024))
-DEFAULT_MAX_FILES_PER_SCAN = int(os.getenv("SARAH_INDEXER_MAX_FILES_PER_SCAN", "5000") or 5000)
+DEFAULT_MAX_FILES_PER_SCAN = max(1, min(5000, int(os.getenv("SARAH_INDEXER_MAX_FILES_PER_SCAN", "5000") or 5000)))
 BATCH_COMMIT_SIZE = int(os.getenv("SARAH_INDEXER_BATCH_COMMIT", "100") or 100)
 
 # Dynamically derive the path to the system index database using SarahMemoryGlobals when available.
@@ -230,6 +229,8 @@ def scan_filesystem_gui(selected_drive, selected_ext):
     processed = 0
     skipped = 0
     inserted = 0
+    scan_started = time.monotonic()
+    dirs_visited = 0
 
     conn = sqlite3.connect(DB_PATH, timeout=10.0)
     cur = conn.cursor()
@@ -237,8 +238,13 @@ def scan_filesystem_gui(selected_drive, selected_ext):
         for mount_point in drives:
             if processed >= DEFAULT_MAX_FILES_PER_SCAN:
                 break
-            for root, dirs, files in os.walk(mount_point):
+            for root, dirs, files in os.walk(mount_point, followlinks=False):
+                dirs_visited += 1
+                if dirs_visited > 2500 or time.monotonic() - scan_started > 30:
+                    dirs[:] = []
+                    break
                 _prune_dirs_in_place(root, dirs)
+                dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]
                 if _path_is_excluded(root):
                     continue
                 for file in files:
@@ -263,7 +269,8 @@ def scan_filesystem_gui(selected_drive, selected_ext):
                         if not file_hash:
                             skipped += 1
                             continue
-                        if not file_already_indexed(full_path, file_hash):
+                        cur.execute("SELECT 1 FROM file_index WHERE file_path=? AND sha256=? LIMIT 1",(full_path,file_hash))
+                        if cur.fetchone() is None:
                             _insert_file_record_cur(cur, full_path, ext, file_size, modified, file_hash)
                             inserted += 1
                             if inserted % max(1, BATCH_COMMIT_SIZE) == 0:
@@ -430,22 +437,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML registration confirmed; runtime measurements not performed"],
     }
 
 
@@ -455,7 +462,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemorySystemIndexer',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryNeuron.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ==============================================================================================================================================================
 
 --------
@@ -60,7 +59,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -248,7 +247,9 @@ def _runtime_int(name: str, default: int) -> int:
 def _bounded_call(key: str, fn, *, timeout_s: float, default: Any = None) -> Dict[str, Any]:
     """Run one helper call behind a hard caller deadline and bounded circuit.
 
-    Python cannot forcibly terminate an arbitrary in-process thread. To prevent
+    This boundary is for side-effect-free cognitive helpers only. A timeout does
+    not cancel arbitrary Python code and must not be used as proof of execution
+    revocation or to run state-changing actions. To prevent
     UI/terminal lockups without spawning unbounded workers, each circuit permits
     only one in-flight daemon call. A timed-out worker is isolated; subsequent
     requests fail fast until it exits and the cooldown expires.
@@ -551,7 +552,8 @@ def _init_db() -> None:
 # -----------------------------------------------------------------------------
 def _flag(name: str, default: bool = False) -> bool:
     try:
-        return bool(getattr(config, name, default))
+        value = getattr(config, name, default)
+        return value if isinstance(value, bool) else str(value).strip().lower() in {"1", "true", "yes", "on"}
     except Exception:
         return default
 
@@ -564,13 +566,20 @@ def _is_local_only() -> bool:
 
 def _request_allows_external_api(meta: Optional[Dict[str, Any]] = None) -> bool:
     """Return True only for a request-scoped UI lane that explicitly allows API/Web."""
-    if _is_safe_mode():
+    if _is_safe_mode() or _is_local_only():
         return False
+    # Global feature gates must be enabled; request metadata never grants network.
     m = meta if isinstance(meta, dict) else {}
     lane = str(m.get("lane") or m.get("api_mode") or m.get("mode") or "").strip().lower()
     if lane not in {"any", "auto", "web", "api", "cloud"}:
         return False
-    if not bool(m.get("external_api_allowed_by_ui_lane")):
+    if lane in {"api", "cloud"} and not _flag("API_RESEARCH_ENABLED", False):
+        return False
+    if lane == "web" and not _flag("WEB_RESEARCH_ENABLED", False):
+        return False
+    if lane in {"any", "auto"} and not (_flag("WEB_RESEARCH_ENABLED", False) or _flag("API_RESEARCH_ENABLED", False)):
+        return False
+    if m.get("external_api_allowed_by_ui_lane") is not True:
         return False
     if bool(m.get("local_only") or m.get("offline") or m.get("LOCAL_ONLY_MODE") or m.get("force_local_only")):
         return False
@@ -4166,22 +4175,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Expose adapter presence without fabricating operational measurements."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "UNKNOWN",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter registered; live operational measurements not verified"],
     }
 
 
@@ -4191,7 +4200,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryNeuron',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

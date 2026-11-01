@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryExpressOut.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,10 +13,9 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
-EXPRESSIVE OUTPUT ENGINE v9.0.0
+EXPRESSIVE OUTPUT ENGINE v9.1.0
 ============================================
 
 UPGRADE SUMMARY:
@@ -108,7 +107,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -365,56 +364,13 @@ def log_expressive_event(event: str, details: str) -> None:
 # ETHICS FILTER - v8.0 Enhanced
 # =============================================================================
 def ethics_filter(text: str, mood: str = "neutral", context: str = "") -> str:
+    """Preserve canonical response bytes; safety filtering belongs upstream.
+
+    Context and mood may inform a separate presentation layer, but substituting
+    words such as 'kill' or 'dead' can corrupt technical, medical and historical
+    information. Compare-approved answers must remain semantically unchanged.
     """
-    Filter text for ethical appropriateness and contextual sensitivity.
-    v8.0: Enhanced with better pattern matching and context awareness.
-
-    Args:
-        text: Input text to filter
-        mood: Current emotional mood
-        context: Conversational context
-
-    Returns:
-        Filtered text
-    """
-    try:
-        # Inappropriate words/phrases (expanded list)
-        inappropriate_patterns = [
-            r"\bidiot\b", r"\bstupid\b", r"\bdumb\b",
-            r"\bhate\b", r"\bkill\b", r"\bdead\b",
-            r"\bmoron\b", r"\bloser\b"
-        ]
-
-        # Replace inappropriate content
-        filtered = text
-        for pattern in inappropriate_patterns:
-            filtered = re.sub(pattern, "(inappropriate)", filtered, flags=re.I)
-
-        # Context-sensitive adjustments
-        context_lower = (context or "").lower()
-
-        # Tone down enthusiasm in sad contexts
-        if mood in ("joy", "anticipation") and any(
-            word in context_lower
-            for word in ("sad", "death", "died", "passed away", "funeral", "loss", "grief")
-        ):
-            filtered = filtered.replace("!", ".")
-            filtered = re.sub(r"(amazing|wonderful|fantastic|great)", "notable", filtered, flags=re.I)
-            logger.debug(f"[v8.0][Ethics] Toned down {mood} for sad context")
-
-        # Avoid angry expressions in professional contexts
-        if mood == "anger" and any(
-            word in context_lower
-            for word in ("work", "professional", "meeting", "client", "boss")
-        ):
-            filtered = re.sub(r"(angry|furious|mad)", "concerned", filtered, flags=re.I)
-            logger.debug(f"[v8.0][Ethics] Moderated anger for professional context")
-
-        return filtered
-
-    except Exception as e:
-        logger.warning(f"[v8.0][Ethics] Filter error: {e}")
-        return text
+    return str(text or "")
 
 # =============================================================================
 # EMOJI SELECTION - v8.0 Enhanced
@@ -476,7 +432,7 @@ def voice_params_for_mood(mood: str, reduced: bool = False) -> Dict[str, float]:
     mood = (mood or "neutral").lower()
 
     # Get parameters from map
-    return VOICE_PROSODY_MAP.get(mood, VOICE_PROSODY_MAP["neutral"])
+    return dict(VOICE_PROSODY_MAP.get(mood, VOICE_PROSODY_MAP['neutral']))
 
 # =============================================================================
 # EXPRESSIVE OUTPUT FORMATTER - v8.0 Enhanced
@@ -502,7 +458,8 @@ def format_expressive_output(
     """
     try:
         # Check if expressive output is enabled
-        enabled = getattr(config, "EXPRESSIVE_OUTPUT_ENABLED", True)
+        enabled = getattr(config, 'EXPRESSIVE_OUTPUT_ENABLED', True)
+        enabled = enabled.strip().lower() in {'1', 'true', 'yes', 'on'} if isinstance(enabled, str) else enabled is True
 
         # Check for reduced mode
         reduced = False
@@ -521,8 +478,12 @@ def format_expressive_output(
         # Apply ethics filter
         decorated = ethics_filter(text, mood=mood)
 
+        # Preserve canonical answer: avoid inserting unsolicited tokens.
+        channel = str(channel or 'text').lower()
         # Add emoji for text channel (if text is substantial)
-        if channel == "text" and len(text) >= 3:
+        suffix_policy = getattr(config, 'EXPRESSIVE_SUFFIX_ALLOWED', False)
+        suffix_allowed = suffix_policy.strip().lower() in {'1', 'true', 'yes', 'on'} if isinstance(suffix_policy, str) else suffix_policy is True
+        if suffix_allowed and channel == 'text' and len(text) >= 3:
             emoji = _pick_emoji(mood)
             if emoji and emoji not in decorated:
                 decorated = f"{decorated} {emoji}"
@@ -575,6 +536,12 @@ def express_outbound_message(message: str, emotion: str = "neutral") -> str:
         phrase = random.choice(expr["phrases"]) if expr["phrases"] and expr["phrases"][0] else ""
         emoji = random.choice(expr["emojis"]) if expr["emojis"] and expr["emojis"][0] else ""
 
+        # Default is canonical-content preservation. Owner can separately opt in
+        # to suffix decoration (presentation only; never required by Compare).
+        suffix_enabled = getattr(config, 'EXPRESSIVE_SUFFIX_ALLOWED', False)
+        suffix_enabled = suffix_enabled.strip().lower() in {'1', 'true', 'yes', 'on'} if isinstance(suffix_enabled, str) else suffix_enabled is True
+        if not suffix_enabled:
+            return str(message or '')
         # Build expressive message
         expressive_message = message.strip()
 
@@ -731,7 +698,8 @@ def format_output_with_emotion_packet(text: str, emotion_affect_packet: Optional
     constraints = pkt.get("output_constraints") if isinstance(pkt.get("output_constraints"), dict) else {}
     reduced = bool(constraints.get("avoid_humor"))
     try:
-        formatted = format_expressive_output(str(text or ""), mood=mood, channel=channel, footer=False) if 'format_expressive_output' in globals() else str(text or "")
+        formatted_packet = format_expressive_output(str(text or ''), mood=mood, channel=channel, footer='') if 'format_expressive_output' in globals() else {}
+        formatted = str(formatted_packet.get('display_text', text)) if isinstance(formatted_packet, dict) else str(text or '')
     except Exception:
         formatted = str(text or "")
     try:
@@ -755,7 +723,7 @@ def format_output_with_emotion_packet(text: str, emotion_affect_packet: Optional
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryExpressOut',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Unknown',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -773,22 +741,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter present; runtime health not independently measured"],
     }
 
 
@@ -798,7 +766,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryExpressOut',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

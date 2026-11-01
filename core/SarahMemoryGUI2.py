@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryGUI2.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,6 +13,7 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+===============================================================================
 
 WORLD-CLASS GUI ENHANCEMENTS v8.0:
 ===================================
@@ -25,7 +26,7 @@ MAJOR ENHANCEMENTS:
 1. MODERN MATERIAL DESIGN - Google Material Design 3.0 principles
 2. SMOOTH ANIMATIONS - 60 FPS transitions and micro-interactions
 3. ADAPTIVE THEMES - AI-powered theme adaptation to context
-4. ACCESSIBILITY SUITE - WCAG 2.1 AAA compliant features
+4. ACCESSIBILITY SUITE - accessibility-oriented features requiring independent WCAG audit
 5. RESPONSIVE LAYOUT - Fluid scaling for any screen size
 6. GESTURE CONTROLS - Touch-friendly with swipe/pinch support
 7. VOICE UI ENHANCEMENTS - Visual voice feedback system
@@ -56,7 +57,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -214,8 +215,13 @@ class WorldClassThemeManager:
         elif self.current_mode == ThemeMode.DARK:
             return self.dark_colors
         elif self.current_mode == ThemeMode.CUSTOM:
-            # Return custom theme (placeholder for now)
-            return self.dark_colors
+            # Validated custom palette on a detached copy, not mutable defaults.
+            from dataclasses import replace
+            palette = replace(self.dark_colors)
+            for key, value in self.custom_colors.items():
+                if hasattr(palette, key) and isinstance(value, str) and __import__("re").fullmatch(r"#[0-9a-fA-F]{6}", value):
+                    setattr(palette, key, value)
+            return palette
         else:  # AUTO
             # Determine based on system time
             hour = time.localtime().tm_hour
@@ -534,6 +540,7 @@ QWidget {{
         animation.setDuration(200)
         animation.setStartValue(0.0)
         animation.setEndValue(1.0)
+        self._show_animation = animation
         animation.start()
     
     def hide_toast(self):
@@ -545,6 +552,7 @@ QWidget {{
         animation.setStartValue(1.0)
         animation.setEndValue(0.0)
         animation.finished.connect(self.close)
+        self._hide_animation = animation
         animation.start()
 
 class NotificationManager:
@@ -601,7 +609,7 @@ class NotificationManager:
 
 class AccessibilityManager:
     """
-    WCAG 2.1 AAA compliant accessibility features
+    Accessibility helpers (WCAG conformance not independently audited)
     """
     def __init__(self):
         self.high_contrast = False
@@ -618,7 +626,10 @@ class AccessibilityManager:
     def enable_large_text(self, scale: float = 1.5):
         """Enable large text mode"""
         self.large_text = True
-        self.text_scale = scale
+        try:
+            self.text_scale = min(2.0, max(1.0, float(scale)))
+        except (TypeError, ValueError):
+            self.text_scale = 1.5
         logger.info(f"[Accessibility] Large text enabled (scale: {scale})")
     
     def enable_screen_reader(self):
@@ -927,7 +938,11 @@ class GestureRecognizer:
         
         self.touch_start = None
         self.touch_current = None
-        
+        for handler in tuple(self.gestures.get(gesture, ())):
+            try:
+                handler()
+            except Exception as exc:
+                logger.warning("Gesture callback failed: %s", exc)
         return gesture
     
     def register_gesture_handler(self, gesture: str, handler: Callable):
@@ -1087,7 +1102,7 @@ if __name__ == "__main__":
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryGUI2',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Presentation',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -1105,22 +1120,16 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Report only observed SML registration state; no fabricated performance scores."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "unverified_runtime", "availability": None,
+        "integrity": None, "performance": None, "reliability": None,
+        "confidence": 0.0, "latency_ms": None, "stability": None,
+        "compatibility": None, "notes": ["SML registration present; runtime health not measured"],
     }
 
 
@@ -1130,7 +1139,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryGUI2',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

@@ -1,8 +1,9 @@
 """--== SarahMemory Project ==--
 File: SarahMemoryCognitiveSelf.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v9.0.0
-Date: 2026-03-28
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
+Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
@@ -13,6 +14,7 @@ https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
 ===============================================================================
+
 PURPOSE:
 - Canonical self-identity and capability-awareness authority for SarahMemory AiOS.
 - Builds the living self-definition packet used by governance, cognition, routing,
@@ -59,6 +61,11 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-11-01"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime / GCAIOS"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Canonical self-identity, lifecycle-awareness, body-map, and capability-awareness authority for SarahMemory AiOS. Supplies governed self-models to CognitiveServices, CognitiveThinker, Neuron, and diagnostics surfaces."
 # --- SARAHMETA END ---
 
@@ -125,7 +132,7 @@ logger.propagate = False
 # -----------------------------------------------------------------------------
 # Constants / defaults
 # -----------------------------------------------------------------------------
-MODULE_VERSION = "9.0.0"
+MODULE_VERSION = "9.1.0a"
 MODULE_NAME = "SarahMemoryCognitiveSelf"
 _SELF_DB_NAME = "cognitive_self.db"
 _MAX_CORE_FILE_SCAN = 1000
@@ -309,9 +316,22 @@ def _self_db_path() -> str:
     return os.path.join(_datasets_dir(), _SELF_DB_NAME)
 
 
+def _strict_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
 def _flag(name: str, default: bool = False) -> bool:
     try:
-        return bool(getattr(config, name, default))
+        value = getattr(config, name, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value == 1
+        return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
     except Exception:
         return default
 
@@ -402,7 +422,7 @@ def _is_core_module_approved(module_name_or_path: str, capability: Optional[str]
             return bool(fn(mn, capability=capability))
     except Exception:
         pass
-    return mn in {os.path.splitext(k)[0] for k in _ROLE_HINTS.keys()}
+    return False  # known file is not approved execution authority
 
 
 def _safe_import_available(module_name: str) -> bool:
@@ -468,7 +488,7 @@ def _ensure_tables() -> None:
             pass
 
 
-def _state_set(key: str, value: Dict[str, Any]) -> None:
+def _state_set(key: str, value: Dict[str, Any]) -> bool:
     con = None
     try:
         _ensure_tables()
@@ -479,8 +499,10 @@ def _state_set(key: str, value: Dict[str, Any]) -> None:
             (str(key), json.dumps(value, ensure_ascii=False), _now_iso()),
         )
         con.commit()
+        return True
     except Exception as e:
         logger.debug("CognitiveSelf state set failed: %s", e)
+        return False
     finally:
         try:
             if con:
@@ -509,7 +531,7 @@ def _state_get(key: str, default: Optional[Dict[str, Any]] = None) -> Dict[str, 
             pass
 
 
-def _event_log(ev: LifecycleEvent) -> None:
+def _event_log(ev: LifecycleEvent) -> bool:
     con = None
     try:
         _ensure_tables()
@@ -527,9 +549,13 @@ def _event_log(ev: LifecycleEvent) -> None:
                 json.dumps(ev.meta or {}, ensure_ascii=False),
             ),
         )
+        # Cap lifecycle evidence in the local DB; central Ledger remains authoritative.
+        cur.execute("DELETE FROM cognitive_self_events WHERE id < (SELECT MAX(id) - 5000 FROM cognitive_self_events)")
         con.commit()
+        return True
     except Exception as e:
         logger.debug("CognitiveSelf event log failed: %s", e)
+        return False
     finally:
         try:
             if con:
@@ -597,8 +623,10 @@ def record_lifecycle_event(event_kind: str, reason: str = "", *, clean: bool = T
         clean=bool(clean),
         meta=dict(meta or {}),
     )
-    _event_log(ev)
-    return asdict(ev)
+    persisted = _event_log(ev)
+    receipt = asdict(ev)
+    receipt["persisted"] = bool(persisted)
+    return receipt
 
 
 def mark_startup(start_reason: str = "startup", *, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -621,7 +649,7 @@ def mark_startup(start_reason: str = "startup", *, meta: Optional[Dict[str, Any]
         "last_reboot_reason": prev.get("last_reboot_reason"),
         "last_job_purpose": prev.get("last_job_purpose"),
     }
-    _state_set("runtime_state", runtime_state)
+    state_persisted = _state_set("runtime_state", runtime_state)
     ev = record_lifecycle_event(
         "startup",
         start_reason,
@@ -633,7 +661,7 @@ def mark_startup(start_reason: str = "startup", *, meta: Optional[Dict[str, Any]
             **dict(meta or {}),
         },
     )
-    return {"ok": True, "runtime_state": runtime_state, "event": ev}
+    return {"ok": bool(state_persisted and ev.get("persisted")), "runtime_state": runtime_state, "event": ev}
 
 
 def mark_shutdown(shutdown_reason: str = "shutdown", *, clean: bool = True, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -646,18 +674,18 @@ def mark_shutdown(shutdown_reason: str = "shutdown", *, clean: bool = True, meta
             "clean_shutdown": bool(clean),
         }
     )
-    _state_set("runtime_state", state)
+    state_persisted = _state_set("runtime_state", state)
     ev = record_lifecycle_event("shutdown", shutdown_reason, clean=bool(clean), meta=meta)
-    return {"ok": True, "runtime_state": state, "event": ev}
+    return {"ok": bool(state_persisted and ev.get("persisted")), "runtime_state": state, "event": ev}
 
 
 def mark_reboot(reboot_reason: str = "reboot", *, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     state = _state_get("runtime_state", {})
     state["last_reboot_reason"] = _safe_text(reboot_reason, 300)
     state["reboot_pending"] = True
-    _state_set("runtime_state", state)
+    state_persisted = _state_set("runtime_state", state)
     ev = record_lifecycle_event("reboot", reboot_reason, clean=True, meta=meta)
-    return {"ok": True, "runtime_state": state, "event": ev}
+    return {"ok": bool(state_persisted and ev.get("persisted")), "runtime_state": state, "event": ev}
 
 
 def update_heartbeat(reason: str = "heartbeat", *, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -668,10 +696,11 @@ def update_heartbeat(reason: str = "heartbeat", *, meta: Optional[Dict[str, Any]
     state["last_seen_ts"] = _now_iso()
     state["last_seen_reason"] = _safe_text(reason, 200)
     state["clean_shutdown"] = False
-    _state_set("runtime_state", state)
+    state_persisted = _state_set("runtime_state", state)
+    event_persisted = True
     if reason and reason != "heartbeat":
-        record_lifecycle_event("heartbeat", reason, clean=True, meta=meta)
-    return {"ok": True, "runtime_state": state}
+        event_persisted = record_lifecycle_event("heartbeat", reason, clean=True, meta=meta).get("persisted") is True
+    return {"ok": bool(state_persisted and event_persisted), "runtime_state": state}
 
 
 def note_job_purpose(job_name: str, purpose: str, *, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -683,9 +712,9 @@ def note_job_purpose(job_name: str, purpose: str, *, meta: Optional[Dict[str, An
         "meta": dict(meta or {}),
     }
     state["last_job_purpose"] = job
-    _state_set("runtime_state", state)
-    record_lifecycle_event("job_purpose", f"{job['job_name']}: {job['purpose']}", clean=True, meta=job)
-    return {"ok": True, "job": job}
+    state_persisted = _state_set("runtime_state", state)
+    event = record_lifecycle_event("job_purpose", f"{job['job_name']}: {job['purpose']}", clean=True, meta=job)
+    return {"ok": bool(state_persisted and event.get("persisted")), "job": job}
 
 
 # -----------------------------------------------------------------------------
@@ -697,10 +726,10 @@ def _build_status(context: Optional[Dict[str, Any]] = None) -> SelfStatus:
     run_mode = str(ctx.get("run_mode") or rm.get("run_mode") or "local")
     device_mode = str(ctx.get("device_mode") or rm.get("device_mode") or "local_agent")
     device_profile = str(ctx.get("device_profile") or rm.get("device_profile") or "Standard")
-    safe_mode = bool(ctx.get("safe_mode", _flag("SAFE_MODE", False)))
-    local_only = bool(ctx.get("local_only", _flag("LOCAL_ONLY_MODE", False)))
-    neosky = bool(ctx.get("neoskymatrix", _flag("NEOSKYMATRIX", False)))
-    devmode = bool(ctx.get("developersmode", _flag("DEVELOPERSMODE", False)))
+    safe_mode = _strict_bool(ctx.get("safe_mode", _flag("SAFE_MODE", False)))
+    local_only = _strict_bool(ctx.get("local_only", _flag("LOCAL_ONLY_MODE", False)))
+    neosky = _strict_bool(ctx.get("neoskymatrix", _flag("NEOSKYMATRIX", False)))
+    devmode = _strict_bool(ctx.get("developersmode", _flag("DEVELOPERSMODE", False)))
     public_web = _public_web(ctx)
     offline = local_only or str(run_mode).lower() == "test"
 
@@ -1034,14 +1063,15 @@ def _build_selfhood_model() -> Dict[str, Any]:
 
 
 def build_cognitive_self_model(context: Optional[Dict[str, Any]] = None, *, force_refresh: bool = False) -> Dict[str, Any]:
+    import copy
     now = time.time()
-    if not force_refresh:
+    ctx = dict(context or {})
+    # Caller-specific context may never reuse a cache built for a different session.
+    if not force_refresh and not ctx:
         cached = _SELF_MODEL_CACHE.get("model")
         ts = float(_SELF_MODEL_CACHE.get("ts") or 0.0)
         if cached and (now - ts) <= _SELF_MODEL_CACHE_TTL:
-            return dict(cached)
-
-    ctx = dict(context or {})
+            return copy.deepcopy(cached)
     runtime = _runtime_meta()
     try:
         active_identity = resolve_active_identity(ctx) if 'resolve_active_identity' in globals() else {}
@@ -1109,14 +1139,19 @@ def build_cognitive_self_model(context: Optional[Dict[str, Any]] = None, *, forc
         },
     }
 
-    _SELF_MODEL_CACHE["ts"] = now
-    _SELF_MODEL_CACHE["model"] = dict(model)
-    _state_set("latest_self_model", model)
-    return model
+    if not ctx:
+        _SELF_MODEL_CACHE["ts"] = now
+        _SELF_MODEL_CACHE["model"] = copy.deepcopy(model)
+        _state_set("latest_self_model", model)
+    return copy.deepcopy(model)
 
 
 def get_latest_cognitive_self_model(*, refresh_if_stale: bool = True, context: Optional[Dict[str, Any]] = None, max_age_sec: int = 60) -> Dict[str, Any]:
-    state = _state_get("latest_self_model", {})
+    # A persisted global model is never a session-scoped model.
+    if context:
+        return build_cognitive_self_model(context=context, force_refresh=True)
+    import copy
+    state = copy.deepcopy(_state_get("latest_self_model", {}))
     if not state:
         return build_cognitive_self_model(context=context, force_refresh=True)
     if not refresh_if_stale:
@@ -1375,47 +1410,15 @@ def set_runtime_identity_name(
     reason: str = "runtime_identity_rename",
 ) -> Dict[str, Any]:
     """Store a user-approved runtime identity override. Does not edit SarahMemoryGlobals.py."""
-    clean = _sm_clean_identity_name(new_name)
-    if not clean or len(clean) < 2:
-        return {"ok": False, "error": "invalid_identity_name", "requested_name": str(new_name or "")}
-    previous = resolve_active_identity({})
-    record = {
-        "enabled": True,
-        "active_name": clean,
-        "previous_name": previous.get("active_name"),
-        "approved_by": str(approved_by or "user")[:120],
-        "source": str(source or "user_command")[:120],
-        "reason": str(reason or "runtime_identity_rename")[:240],
-        "ts": _now_iso(),
-        "audit_id": "identity-" + uuid.uuid4().hex[:12],
-    }
-    _state_set("runtime_identity_override", record)
-    try:
-        _SELF_MODEL_CACHE["ts"] = 0.0
-        _SELF_MODEL_CACHE["model"] = None
-    except Exception:
-        pass
-    return {"ok": True, "identity": resolve_active_identity({}), "audit": record}
+    # Legacy caller has no authenticated consent/approval receipt. Fail closed.
+    return {"ok": False, "error": "authenticated_identity_approval_required",
+            "requested_name": str(new_name or "")[:80], "execution_authority": False}
 
 
 def clear_runtime_identity_name(*, approved_by: str = "user", reason: str = "clear_runtime_identity") -> Dict[str, Any]:
-    prev = resolve_active_identity({})
-    record = {
-        "enabled": False,
-        "active_name": "",
-        "previous_name": prev.get("active_name"),
-        "approved_by": str(approved_by or "user")[:120],
-        "reason": str(reason or "clear_runtime_identity")[:240],
-        "ts": _now_iso(),
-        "audit_id": "identity-clear-" + uuid.uuid4().hex[:12],
-    }
-    _state_set("runtime_identity_override", record)
-    try:
-        _SELF_MODEL_CACHE["ts"] = 0.0
-        _SELF_MODEL_CACHE["model"] = None
-    except Exception:
-        pass
-    return {"ok": True, "identity": resolve_active_identity({}), "audit": record}
+    # Clearing identity also requires verified user authority, not a text claim.
+    return {"ok": False, "error": "authenticated_identity_approval_required",
+            "execution_authority": False}
 
 
 def parse_runtime_identity_rename(text: str) -> Dict[str, Any]:
@@ -1983,22 +1986,22 @@ def gcop_self_state(packet=None, event=None, continuity_state=None, runtime_cont
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
+        "status": "Degraded",
         "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": None,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter importable; end-to-end readiness not tested"],
     }
 
 
@@ -2008,7 +2011,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryCognitiveSelf',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

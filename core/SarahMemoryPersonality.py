@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryPersonality.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v9.0.0
-Date: 2026-07-11
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -144,7 +144,8 @@ except ImportError:
 # Database schema management
 try:
     from SarahMemoryDatabase import ensure_core_schema
-    ensure_core_schema()
+    # Schema migrations belong to the migration owner; not module import.
+    pass
 except Exception:
     pass
 
@@ -328,10 +329,8 @@ def generate_boot_personality_layer():
 
 
 # Execute boot sequence if first boot
-if is_first_boot():
-    generate_boot_emotion_signature()
-    get_today_goals()
-    generate_boot_personality_layer()
+# Boot behavior is invoked by the owning initialization workflow, never by import.
+# No artificial emotion signature is presented as a sensed state.
 
 
 # ============================================================================
@@ -1260,23 +1259,8 @@ def process_interaction(user_input: str) -> str:
             "timestamp": datetime.datetime.now().isoformat()
         })
 
-        # Step 7: Simulate and log emotional metrics
-        try:
-            dummy_emotions = {
-                "joy": random.uniform(0, 1),
-                "fear": random.uniform(0, 1),
-                "trust": random.uniform(0, 1),
-                "anger": random.uniform(0, 1),
-                "surprise": random.uniform(0, 1)
-            }
-            dummy_metrics = {
-                "openness": random.uniform(0.5, 1.0),
-                "balance": random.uniform(-1, 1),
-                "engagement": random.uniform(0, 1)
-            }
-            log_deep_memory_state(intent, dummy_emotions, dummy_metrics)
-        except Exception as e:
-            logger.debug(f"Emotional metrics logging skipped: {e}")
+        # No synthetic emotional metrics are written into persistent memory.
+        # Emotional presentation estimates require measured, source-tagged evidence.
 
         return response
 
@@ -1728,22 +1712,23 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    import copy
+    return copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter present; runtime health and integration not independently measured"],
     }
 
 
@@ -1753,7 +1738,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryPersonality',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": sml_get_metadata(),
         "health": sml_health(),
     }
 

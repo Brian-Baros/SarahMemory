@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahWalletVisualizer.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 """
 
@@ -56,19 +55,22 @@ from datetime import datetime
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
-LEGACY_WALLET_PATH = os.path.join("data", "crypto", "wallet.srh")
+try:
+    import SarahMemoryGlobals as _SM_CONFIG
+    LEGACY_WALLET_PATH = os.path.join(str(_SM_CONFIG.DATA_DIR), "crypto", "wallet.srh")
+except Exception:
+    LEGACY_WALLET_PATH = os.path.join(os.path.dirname(__file__), "data", "crypto", "wallet.srh")
 
 LEDGER_API_BASE = os.environ.get("LEDGER_API_BASE", "").rstrip("/")
 SARAH_NODE_ID    = os.environ.get("SARAH_NODE_ID", "local-node")
 
 def _parse_iso(ts: str) -> datetime:
+    from datetime import timezone
     try:
-        return datetime.fromisoformat(ts.replace("Z","+00:00"))
-    except Exception:
-        try:
-            return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-        except Exception:
-            return datetime.utcnow()
+        dt=datetime.fromisoformat(str(ts).replace('Z','+00:00'))
+    except (TypeError,ValueError):
+        dt=datetime.now(timezone.utc)
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
 
 def _fetch_ledger_wallet() -> dict | None:
     if not LEDGER_API_BASE:
@@ -94,35 +96,24 @@ def _load_legacy_wallet() -> dict | None:
     return None
 
 def _iter_transactions(wallet: dict):
-    """
-    Yield (timestamp: datetime, delta: float) from various schemas:
-      - {'type': 'receive'|'send', 'amount': 1.23, 'timestamp': '...iso...'}
-      - {'delta': +1.23/-1.23, 'ts'|'timestamp': '...'}
-      - {'amount': +/-1.23, 'ts'|'timestamp': '...'}
-    """
-    txs = wallet.get("transactions") or wallet.get("tx") or []
-    for tx in txs:
-        # timestamp
-        ts = tx.get("timestamp") or tx.get("ts") or ""
-        dt = _parse_iso(ts) if ts else datetime.utcnow()
-
-        # delta
-        if "delta" in tx:
-            d = float(tx.get("delta", 0.0))
-        elif "type" in tx and "amount" in tx:
-            amt = float(tx.get("amount", 0.0))
-            t = str(tx.get("type", "")).lower()
-            if t == "receive" or t == "in" or t == "credit":
-                d = amt
-            elif t == "send" or t == "out" or t == "debit":
-                d = -amt
+    """Parse finite transactions; malformed records are not financial evidence."""
+    for tx in (wallet.get('transactions') or wallet.get('tx') or []):
+        if not isinstance(tx,dict): continue
+        try:
+            from decimal import Decimal
+            dt=_parse_iso(tx.get('timestamp') or tx.get('ts') or '')
+            if 'delta' in tx:
+                d=Decimal(str(tx['delta']))
+            elif 'type' in tx and 'amount' in tx:
+                amt=Decimal(str(tx['amount']))
+                typ=str(tx['type']).lower()
+                d=amt if typ in ('receive','in','credit') else -amt if typ in ('send','out','debit') else Decimal(0)
             else:
-                d = amt
-        elif "amount" in tx:
-            d = float(tx.get("amount", 0.0))
-        else:
-            d = 0.0
-        yield dt, d
+                d=Decimal(str(tx.get('amount',0)))
+            if not d.is_finite(): continue
+            yield dt,float(d)
+        except (ValueError,TypeError,ArithmeticError):
+            continue
 
 def load_wallet_any() -> dict | None:
     # Prefer Ledger API
@@ -133,20 +124,20 @@ def load_wallet_any() -> dict | None:
     return _load_legacy_wallet()
 
 def series_from_wallet(wallet: dict):
-    # sort by timestamp, compute running balance
-    rows = list(_iter_transactions(wallet))
-    rows.sort(key=lambda x: x[0])
-    times = []
-    balances = []
-    bal = float(wallet.get("balance") or 0.0)
-    # If no explicit starting balance, infer from first-run convention (0 then add deltas)
-    if math.isclose(bal, 0.0, abs_tol=1e-9):
-        bal = 0.0
-    for dt, delta in rows:
-        bal += float(delta)
-        times.append(dt)
-        balances.append(bal)
-    return times, balances
+    """Closing balance minus total deltas defines the opening balance."""
+    rows=sorted(_iter_transactions(wallet),key=lambda row:row[0])
+    if not rows: return [],[]
+    closing=wallet.get('balance')
+    try:
+        closing=float(closing) if closing is not None else None
+        if closing is not None and not math.isfinite(closing): closing=None
+    except (ValueError,TypeError): closing=None
+    bal=(closing - math.fsum(d for _,d in rows)) if closing is not None else 0.0
+    times,balances=[],[]
+    for dt,delta in rows:
+        bal+=delta
+        times.append(dt); balances.append(bal)
+    return times,balances
 
 def plot_balance(times, balances, title="Wallet Balance Over Time"):
     plt.figure(figsize=(10, 5))
@@ -197,22 +188,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML registration confirmed; runtime measurements not performed"],
     }
 
 
@@ -222,7 +213,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahWalletVisualizer',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

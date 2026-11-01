@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryCleanup.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 """
 
@@ -38,7 +37,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -46,6 +45,7 @@ from __future__ import annotations
 # --- SARAHMETA END ---
 
 import os, sqlite3, shutil, time, traceback, json, re, sys
+import hashlib, uuid, threading, copy, stat, contextlib, logging, zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 import tkinter as tk
@@ -89,7 +89,7 @@ except Exception:
         LOGS_DIR = os.path.join(DATA_DIR, "logs")
 
 BACKUP_DIR = os.path.join(config.DATASETS_DIR, "_backups")
-os.makedirs(BACKUP_DIR, exist_ok=True)
+# Backup directories are created only for an explicitly requested backup.
 
 DBS = {
     "context_history.db": {
@@ -112,20 +112,302 @@ DBS = {
         "path": os.path.join(config.DATASETS_DIR, "system_logs.db"),
         "ranges": [("events","timestamp"), ("response","timestamp"), ("responses","timestamp")]
     },
+    # Additional known datasets: backup/restore only, never blanket SQL clear.
+    "sarah_main.db": {"path": os.path.join(config.DATASETS_DIR, "sarah_main.db"), "ranges": []},
+    "embeddings.db": {"path": os.path.join(config.DATASETS_DIR, "embeddings.db"), "ranges": []},
+    "ailearning.db": {"path": os.path.join(config.DATASETS_DIR, "ailearning.db"), "ranges": []},
 }
 
 
-def _cleanup_audit_event(event_type: str, payload: dict) -> None:
-    """Write a compact cleanup accountability record; never deletes truth records."""
+
+# v9.1.0a: this organ owns local maintenance only, not authorization.
+_MAINTENANCE_LOCK = threading.RLock()
+_MAX_BACKUP_BYTES = 4 * 1024**3
+_MAX_SCAN_ROWS = 5000
+_MAX_QA_RESULTS = 500
+_MAINTENANCE_TIMEOUT_SECONDS = 8.0
+
+
+def _within_root(path: str, root: str, *, allow_root: bool = False) -> str:
+    """Reject symlink traversal, traversal escape and non-regular targets."""
+    root_abs = os.path.abspath(root)
+    path_abs = os.path.abspath(path)
+    if not (path_abs == root_abs if allow_root else os.path.commonpath((root_abs, path_abs)) == root_abs and path_abs != root_abs):
+        raise PermissionError("maintenance_path_outside_approved_root")
+    relative = os.path.relpath(path_abs, root_abs)
+    current = root_abs
+    if os.path.islink(root_abs):
+        raise PermissionError("maintenance_root_symlink_denied")
+    for component in (() if relative == '.' else relative.split(os.sep)):
+        current = os.path.join(current, component)
+        if os.path.islink(current):
+            raise PermissionError("maintenance_symlink_denied")
+    return path_abs
+
+
+def _regular_file(path: str, root: str) -> str:
+    path = _within_root(path, root)
+    st = os.lstat(path)
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink > 1:
+        raise PermissionError("maintenance_non_regular_or_linked_file_denied")
+    return path
+
+
+def _sha256_file(path: str) -> str:
+    dig = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+            dig.update(chunk)
+    return dig.hexdigest()
+
+
+def _sqlite_snapshot(src: str, dst: str) -> dict:
+    """SQLite online backup captures WAL transactions; never copy a live .db raw."""
+    _regular_file(src, config.DATASETS_DIR)
+    if os.path.getsize(src) > _MAX_BACKUP_BYTES:
+        raise ValueError("database_exceeds_backup_budget")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    source = target = None
     try:
-        audit_dir = os.path.join(getattr(config, "DATA_DIR", os.getcwd()), "audit", "cleanup")
+        source = sqlite3.connect('file:' + Path(src).resolve().as_posix() + '?mode=ro', uri=True, timeout=2.0)
+        target = sqlite3.connect(dst, timeout=2.0)
+        started = time.monotonic()
+        def progress(_status, _remaining, _total):
+            if time.monotonic() - started > _MAINTENANCE_TIMEOUT_SECONDS:
+                raise TimeoutError("sqlite_backup_time_budget_exceeded")
+        source.backup(target, pages=128, sleep=0.04, progress=progress)
+        check = target.execute('PRAGMA quick_check').fetchone()
+        if not check or check[0] != 'ok':
+            raise sqlite3.DatabaseError("backup_integrity_check_failed")
+        target.commit()
+    finally:
+        if target is not None:
+            target.close()
+        if source is not None:
+            source.close()
+    return {'bytes': os.path.getsize(dst), 'sha256': _sha256_file(dst)}
+
+
+def _operator_authorize(action: str, target: str, *, user_consented: bool) -> dict:
+    if not user_consented:
+        raise PermissionError("explicit_operator_confirmation_required")
+    try:
+        from SarahMemoryOperatorCore import authorize_external_domain_action
+        decision = authorize_external_domain_action(
+            'Governed SarahMemory maintenance: ' + action,
+            origin='SarahMemoryCleanup',
+            proposed_action={
+                'action_type': action,
+                'capability_name': 'filesystem_maintenance',
+                'target': target,
+                'target_ref': target,
+                'required_permissions': ['filesystem_maintenance', 'operator_approval'],
+                'risk_level': 'high',
+            },
+            meta={'scope': 'local_known_maintenance_targets', 'authority_owner': 'SarahMemoryOperatorCore'},
+            user_consented=True,
+        )
+    except Exception as exc:
+        raise PermissionError('operator_core_authorization_unavailable') from exc
+    if not isinstance(decision, dict) or not all((decision.get('ok') is True, decision.get('allow') is True, decision.get('domain_execution_authorized') is True, str(decision.get('decision')).upper() == 'ALLOW')):
+        raise PermissionError('operator_core_denied_maintenance')
+    return decision
+
+
+@contextlib.contextmanager
+def _exclusive_maintenance():
+    """Serialize maintenance within this process; no cross-process ownership claim."""
+    with _MAINTENANCE_LOCK:
+        yield
+
+
+def _snapshot_logs(bundle: str, manifest: dict) -> None:
+    """Optional bounded logs.zip companion, preserving the legacy archive name."""
+    if not os.path.isdir(config.LOGS_DIR):
+        return
+    path = os.path.join(bundle, 'logs.zip')
+    files = []
+    bytes_total = 0
+    for name in sorted(os.listdir(config.LOGS_DIR))[:200]:
+        candidate = os.path.join(config.LOGS_DIR, name)
+        if not name.lower().endswith(('.log', '.txt')) or not os.path.isfile(candidate):
+            continue
+        try:
+            _regular_file(candidate, config.LOGS_DIR)
+            size = os.path.getsize(candidate)
+            if size > 32 * 1024**2 or bytes_total + size > 256 * 1024**2:
+                manifest.setdefault('warnings', []).append('log_archive_budget_reached')
+                break
+            files.append((name, candidate))
+            bytes_total += size
+        except (OSError, PermissionError):
+            continue
+    if not files:
+        return
+    with zipfile.ZipFile(path, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=3, allowZip64=True) as archive:
+        for name, candidate in files:
+            archive.write(candidate, arcname=name)
+    with zipfile.ZipFile(path) as archive:
+        bad_member = archive.testzip()
+        if bad_member is not None:
+            raise ValueError('log_backup_archive_corrupt')
+    manifest['supplementary'] = [{'name': 'logs.zip', 'bytes': os.path.getsize(path), 'sha256': _sha256_file(path), 'files': len(files)}]
+
+
+def _backup_core(*, names=None, audit=True) -> str:
+    """Build a recoverable verified bundle.  Never touches live production files."""
+    with _exclusive_maintenance():
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        _within_root(BACKUP_DIR, config.DATASETS_DIR)
+        bundle = os.path.join(BACKUP_DIR, 'backup-' + datetime.utcnow().strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:12])
+        os.mkdir(bundle)
+        manifest = {'schema': 'SarahMemory.cleanup.backup.v1', 'created_at': datetime.utcnow().isoformat(), 'files': [], 'purpose': 'SQLite-consistent pre-change backup', 'complete': False}
+        try:
+            source_names = list(DBS) if names is None else list(names)
+            if len(source_names) > 12:
+                raise ValueError('backup_file_count_budget')
+            for name in source_names:
+                if name not in DBS:
+                    raise ValueError('unknown_database_name')
+                source = DBS[name]['path']
+                if not os.path.exists(source):
+                    continue
+                dst = os.path.join(bundle, name)
+                evidence = _sqlite_snapshot(source, dst)
+                if evidence['bytes'] > _MAX_BACKUP_BYTES:
+                    raise ValueError('snapshot_exceeds_backup_budget')
+                manifest['files'].append({'name': name, **evidence})
+            if not manifest['files']:
+                raise FileNotFoundError('no_known_databases_to_back_up')
+            if names is None:
+                _snapshot_logs(bundle, manifest)
+            manifest['complete'] = True
+            temp = os.path.join(bundle, 'backup_manifest.json.tmp')
+            with open(temp, 'w', encoding='utf-8') as fh:
+                json.dump(manifest, fh, indent=2, sort_keys=True)
+            os.replace(temp, os.path.join(bundle, 'backup_manifest.json'))
+        except Exception:
+            shutil.rmtree(bundle, ignore_errors=True)
+            raise
+        if audit:
+            _require_audit_event('backup_created', {'bundle': bundle, 'database_count': len(manifest['files'])})
+        return bundle
+
+
+def _verified_bundle(folder: str) -> list:
+    folder = _within_root(folder, BACKUP_DIR)
+    if not os.path.isdir(folder):
+        raise ValueError('backup_folder_missing')
+    manifest_path = _regular_file(os.path.join(folder, 'backup_manifest.json'), folder)
+    if os.path.getsize(manifest_path) > 128 * 1024:
+        raise ValueError('manifest_too_large')
+    with open(manifest_path, 'r', encoding='utf-8') as fh:
+        manifest = json.load(fh)
+    if not isinstance(manifest, dict) or manifest.get('schema') != 'SarahMemory.cleanup.backup.v1' or manifest.get('complete') is not True:
+        raise ValueError('untrusted_or_incomplete_backup_manifest')
+    files = manifest.get('files')
+    if not isinstance(files, list) or not files or len(files) > 12:
+        raise ValueError('invalid_backup_file_inventory')
+    supplements = manifest.get('supplementary') or []
+    if not isinstance(supplements, list) or len(supplements) > 1:
+        raise ValueError('invalid_supplementary_backup_inventory')
+    for item in supplements:
+        if not isinstance(item, dict) or item.get('name') != 'logs.zip':
+            raise ValueError('invalid_backup_supplement')
+        path = _regular_file(os.path.join(folder, 'logs.zip'), folder)
+        if os.path.getsize(path) != item.get('bytes') or _sha256_file(path) != item.get('sha256'):
+            raise ValueError('backup_supplement_checksum_mismatch')
+    verified = []
+    seen = set()
+    for entry in files:
+        if not isinstance(entry, dict):
+            raise ValueError('invalid_backup_entry')
+        name = entry.get('name')
+        if name not in DBS or name in seen:
+            raise ValueError('unapproved_or_duplicate_backup_file')
+        seen.add(name)
+        path = _regular_file(os.path.join(folder, name), folder)
+        if os.path.getsize(path) != entry.get('bytes') or _sha256_file(path) != entry.get('sha256'):
+            raise ValueError('backup_checksum_mismatch')
+        with sqlite3.connect('file:' + Path(path).resolve().as_posix() + '?mode=ro', uri=True, timeout=1.0) as db:
+            if db.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+                raise ValueError('backup_database_integrity_failure')
+        verified.append((name, path))
+    return verified
+
+
+def _restore_bundle(folder: str, *, user_consented: bool) -> dict:
+    """Verify all sources then use SQLite online restore, retaining recovery snapshots."""
+    _operator_authorize('restore_sqlite_backup', str(folder), user_consented=user_consented)
+    with _exclusive_maintenance():
+        verified = _verified_bundle(folder)
+        _require_audit_event('restore_preflight_authorized', {'bundle': folder, 'count': len(verified)})
+        # Create a new, independent recovery point before modifying any live DB.
+        recovery = _backup_core(names=[name for name, _ in verified], audit=True)
+        restored = []
+        try:
+            for name, src in verified:
+                dst = DBS[name]['path']
+                if not os.path.isfile(dst):
+                    raise FileNotFoundError('live_database_missing_for_restore:' + name)
+                _regular_file(dst, config.DATASETS_DIR)
+                with sqlite3.connect('file:' + Path(src).resolve().as_posix() + '?mode=ro', uri=True, timeout=2.0) as source:
+                    with sqlite3.connect(dst, timeout=2.0) as target:
+                        source.backup(target, pages=128, sleep=0.05)
+                restored.append(name)
+            _cleanup_audit_event('backup_restored', {'bundle': folder, 'recovery': recovery, 'restored': restored})
+            return {'ok': True, 'restored': restored, 'recovery_bundle': recovery}
+        except Exception as exc:
+            # Recovery backup is never erased.  Attempts to restore are reported.
+            recovered = []
+            errors = []
+            for name, path in _verified_bundle(recovery):
+                # Also restore the in-progress database, whose pages may have
+                # changed before the failing backup() call raised.
+                if name not in [item_name for item_name, _ in verified]:
+                    continue
+                try:
+                    with sqlite3.connect('file:' + Path(path).resolve().as_posix() + '?mode=ro', uri=True, timeout=2.0) as source:
+                        with sqlite3.connect(DBS[name]['path'], timeout=2.0) as target:
+                            source.backup(target, pages=128, sleep=0.05)
+                    recovered.append(name)
+                except Exception as rollback_exc:
+                    errors.append(str(rollback_exc))
+            _cleanup_audit_event('restore_failed', {'error': str(exc), 'recovery': recovery, 'rolled_back': recovered, 'rollback_errors': errors})
+            raise RuntimeError('restore_failed_recovery_preserved:' + recovery) from exc
+
+
+def _cleanup_audit_event(event_type: str, payload: dict) -> bool:
+    """Append a durable local record. Return false if the audit failed."""
+    try:
+        data_dir = os.path.abspath(getattr(config, 'DATA_DIR', os.getcwd()))
+        audit_dir = os.path.join(data_dir, 'audit', 'cleanup')
         os.makedirs(audit_dir, exist_ok=True)
-        path = os.path.join(audit_dir, "cleanup_events.jsonl")
-        row = {"event_type": event_type, "timestamp": datetime.utcnow().isoformat(), **(payload or {})}
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(row, sort_keys=True, ensure_ascii=False, default=str) + "\n")
+        _within_root(audit_dir, data_dir)
+        path = os.path.join(audit_dir, 'cleanup_events.jsonl')
+        _within_root(path, data_dir)
+        if os.path.lexists(path):
+            _regular_file(path, data_dir)
+        row = {'event_type': event_type, 'timestamp': datetime.utcnow().isoformat(), **(payload or {})}
+        serialized = (json.dumps(row, sort_keys=True, ensure_ascii=False, default=str) + '\n').encode('utf-8')
+        if len(serialized) > 16384:
+            raise ValueError('audit_event_budget_exceeded')
+        flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY
+        if hasattr(os, 'O_NOFOLLOW'):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags, 0o600)
+        with os.fdopen(fd, 'ab') as fh:
+            fh.write(serialized)
+            fh.flush()
+            os.fsync(fh.fileno())
+        return True
     except Exception:
-        pass
+        return False
+
+
+def _require_audit_event(event_type: str, payload: dict) -> None:
+    if not _cleanup_audit_event(event_type, payload):
+        raise PermissionError('required_maintenance_audit_unavailable')
 
 
 def _safe_sql_identifier(name: str) -> str:
@@ -191,153 +473,125 @@ def _definition_subject(query: str) -> str:
 
 
 def _qa_poison_reason(query: str, answer: str) -> str:
-    q = _normal_text(query).lower()
-    raw = str(answer or "").strip()
-    a = raw.lower()
+    """Conservative, explainable classifier. Human review required before quarantine."""
+    raw = str(answer or '').strip()
+    low = raw.lower()
     if not raw:
-        return "empty_answer"
-    if any(x in a for x in ("request denied by policy", "user confirmation required", "could you rephrase", "please provide more details", "unable to answer")):
-        return "cached_failure_or_policy_text"
-    paper_hits = sum(1 for x in ("abstract", "1. introduction", "1 introduction", "references", "bibliography", "we present", "we propose", "this paper", "doi", "arxiv", "@", "compiler from llvm", "mozilla") if x in a)
-    if paper_hits >= 2:
-        return "paper_or_corpus_blob"
-    if len(raw) > 1200 and _definition_subject(q):
-        return "oversized_definition_cache_answer"
-    if "python" in q and (a.startswith("emscripten") or "llvm-to-javascript compiler" in a):
-        return "wrong_topic_python_emscripten_blob"
-    subject = _definition_subject(q)
-    if subject and len(raw) > 120:
-        first = _normal_text(raw[:320]).lower()
-        terms = [x for x in re.findall(r"[a-z0-9]+", subject) if len(x) > 1]
-        if terms and not any(t in first for t in terms[:3]):
-            return "definition_subject_missing_from_opening"
-    return ""
+        return 'empty_answer'
+    if any(x in low for x in ('request denied by policy', 'user confirmation required', 'unable to answer')):
+        return 'cached_failure_or_policy_text'
+    q = _normal_text(query).lower()
+    if 'python' in q and (low.startswith('emscripten') or 'llvm-to-javascript compiler' in low):
+        return 'wrong_topic_python_emscripten_blob'
+    # Generic academic terms alone do not establish that a response is poisoned.
+    return ''
+
 
 
 def scan_poisoned_qa_cache(*, db_names: list[str] | None = None, max_rows: int = 5000) -> dict:
-    """Read-only scan for poisoned QA cache rows in known local SQLite DBs."""
-    names = db_names or ["ai_learning.db", "ailearning.db", "personality1.db", "context_history.db", "functions.db"]
-    report = {"ok": True, "mode": "read_only", "poisoned": [], "checked_rows": 0, "errors": [], "timestamp": datetime.utcnow().isoformat()}
-    for dbname in names:
-        db_path = os.path.join(config.DATASETS_DIR, dbname)
-        if not os.path.isfile(db_path):
+    """Bounded read-only inspection of known database names only."""
+    names = db_names if db_names is not None else ['ai_learning.db', 'ailearning.db', 'personality1.db', 'context_history.db', 'functions.db']
+    report = {'ok': True, 'mode': 'read_only', 'poisoned': [], 'checked_rows': 0, 'errors': [], 'timestamp': datetime.utcnow().isoformat()}
+    remaining = min(_MAX_SCAN_ROWS, max(0, int(max_rows)))
+    for dbname in list(names)[:8]:
+        if remaining <= 0:
+            break
+        if dbname not in DBS and dbname != 'ailearning.db':
+            if db_names is not None:
+                report['errors'].append('unsupported_database_name')
             continue
-        conn = None
+        path = os.path.join(config.DATASETS_DIR, dbname)
+        if not os.path.isfile(path):
+            continue
         try:
-            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
-            cur = conn.cursor()
-            for table in _qa_cache_tables(cur):
-                cols = _qa_cache_columns(cur, table)
-                qcol, acol = cols.get("query"), cols.get("answer")
-                if not qcol or not acol:
-                    continue
-                sql = f"SELECT rowid, {_safe_sql_identifier(qcol)}, {_safe_sql_identifier(acol)} FROM {_safe_sql_identifier(table)} LIMIT ?"
-                for rowid, query, answer in cur.execute(sql, (max(1, int(max_rows)),)).fetchall():
-                    report["checked_rows"] += 1
-                    reason = _qa_poison_reason(str(query or ""), str(answer or ""))
-                    if reason:
-                        report["poisoned"].append({
-                            "db": dbname,
-                            "table": table,
-                            "rowid": int(rowid),
-                            "query": _normal_text(query)[:240],
-                            "reason": reason,
-                            "answer_preview": _normal_text(answer)[:260],
-                        })
+            _regular_file(path, config.DATASETS_DIR)
+            with sqlite3.connect('file:' + Path(path).resolve().as_posix() + '?mode=ro', uri=True, timeout=1.0) as con:
+                cur = con.cursor()
+                for table in _qa_cache_tables(cur):
+                    if remaining <= 0:
+                        break
+                    columns = _qa_cache_columns(cur, table)
+                    if not columns['query'] or not columns['answer']:
+                        continue
+                    statement = 'SELECT rowid, ' + _safe_sql_identifier(columns['query']) + ', ' + _safe_sql_identifier(columns['answer']) + ' FROM ' + _safe_sql_identifier(table) + ' LIMIT ?'
+                    for rowid, question, answer in cur.execute(statement, (remaining,)):
+                        report['checked_rows'] += 1
+                        remaining -= 1
+                        reason = _qa_poison_reason(question, answer)
+                        if reason and len(report['poisoned']) < _MAX_QA_RESULTS:
+                            report['poisoned'].append({'db': dbname, 'table': table, 'rowid': int(rowid), 'query': _normal_text(question)[:240], 'reason': reason, 'answer_preview': _normal_text(answer)[:260]})
         except Exception as exc:
-            report["errors"].append(f"{dbname}: {exc}")
-        finally:
-            try:
-                if conn is not None:
-                    conn.close()
-            except Exception:
-                pass
-    report["poison_count"] = len(report["poisoned"])
+            report['errors'].append(f'{dbname}: {exc}')
+    report['poison_count'] = len(report['poisoned'])
+    report['ok'] = not report['errors']
     return report
 
 
+
 def _backup_db_for_quarantine(db_path: str) -> str:
-    ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-    folder = os.path.join(BACKUP_DIR, f"poison-quarantine-{ts}")
-    os.makedirs(folder, exist_ok=True)
-    dst = os.path.join(folder, os.path.basename(db_path))
-    shutil.copy2(db_path, dst)
-    return dst
+    """Legacy compatibility: online snapshot of a known database."""
+    path = _regular_file(db_path, config.DATASETS_DIR)
+    name = os.path.basename(path)
+    if name not in DBS:
+        raise ValueError('quarantine_unknown_database')
+    bundle = _backup_core(names=[name])
+    return os.path.join(bundle, name)
 
 
-def quarantine_poisoned_qa_cache(*, dry_run: bool = True, max_rows: int = 5000, backup: bool = True) -> dict:
-    """Quarantine poisoned QA rows. Defaults to dry-run; never deletes without quarantine."""
+
+def quarantine_poisoned_qa_cache(*, dry_run: bool = True, max_rows: int = 5000, backup: bool = True, user_consented: bool = False) -> dict:
+    """Candidate quarantine. Explicit consent and OperatorCore ALLOW mandatory."""
     scan = scan_poisoned_qa_cache(max_rows=max_rows)
-    out = {"ok": True, "dry_run": bool(dry_run), "scan": scan, "quarantined": 0, "deleted": 0, "backups": [], "errors": [], "timestamp": datetime.utcnow().isoformat()}
-    if dry_run or not scan.get("poisoned"):
-        _cleanup_audit_event("qa_poison_scan", {"dry_run": True, "poison_count": scan.get("poison_count", 0)})
+    out = {'ok': bool(scan.get('ok')), 'dry_run': bool(dry_run), 'scan': scan, 'quarantined': 0, 'deleted': 0, 'backups': [], 'errors': list(scan.get('errors') or []), 'timestamp': datetime.utcnow().isoformat()}
+    if dry_run or not scan.get('poisoned'):
+        _cleanup_audit_event('qa_poison_scan', {'dry_run': True, 'poison_count': scan.get('poison_count', 0)})
         return out
-
-    by_db: dict[str, list[dict]] = {}
-    for item in scan.get("poisoned") or []:
-        by_db.setdefault(str(item.get("db")), []).append(item)
-
-    for dbname, items in by_db.items():
-        db_path = os.path.join(config.DATASETS_DIR, dbname)
-        if not os.path.isfile(db_path):
-            continue
-        conn = None
-        try:
-            if backup:
-                out["backups"].append(_backup_db_for_quarantine(db_path))
-            conn = sqlite3.connect(db_path, timeout=2.0)
-            cur = conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS qa_cache_poison_quarantine (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source_db TEXT,
-                    source_table TEXT,
-                    source_rowid INTEGER,
-                    query TEXT,
-                    ai_answer TEXT,
-                    reason TEXT,
-                    quarantined_at TEXT
-                )
-            """)
-            for item in items:
-                table = str(item.get("table") or "")
-                rowid = int(item.get("rowid") or 0)
-                if not table or rowid <= 0:
-                    continue
-                cols = _qa_cache_columns(cur, table)
-                qcol, acol = cols.get("query"), cols.get("answer")
-                if not qcol or not acol:
-                    continue
-                row = cur.execute(f"SELECT {_safe_sql_identifier(qcol)}, {_safe_sql_identifier(acol)} FROM {_safe_sql_identifier(table)} WHERE rowid=?", (rowid,)).fetchone()
-                if not row:
-                    continue
-                cur.execute(
-                    "INSERT INTO qa_cache_poison_quarantine (source_db, source_table, source_rowid, query, ai_answer, reason, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (dbname, table, rowid, str(row[0] or ""), str(row[1] or ""), str(item.get("reason") or ""), datetime.utcnow().isoformat()),
-                )
-                cur.execute(f"DELETE FROM {_safe_sql_identifier(table)} WHERE rowid=?", (rowid,))
-                out["quarantined"] += 1
-                out["deleted"] += 1
-            conn.commit()
+    if not backup:
+        raise PermissionError('quarantine_requires_verified_backup')
+    if not scan.get('ok'):
+        raise RuntimeError('quarantine_scan_incomplete')
+    _operator_authorize('qa_cache_quarantine', config.DATASETS_DIR, user_consented=user_consented)
+    _require_audit_event('qa_cache_quarantine_authorized', {'count': len(scan['poisoned'])})
+    with _exclusive_maintenance():
+        by_db = {}
+        for item in scan['poisoned']:
+            by_db.setdefault(item['db'], []).append(item)
+        for dbname, items in by_db.items():
+            path = _regular_file(os.path.join(config.DATASETS_DIR, dbname), config.DATASETS_DIR)
+            backup_path = _backup_db_for_quarantine(path)
+            out['backups'].append(backup_path)
+            con = None
             try:
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            except Exception:
-                pass
-        except Exception as exc:
-            out["errors"].append(f"{dbname}: {exc}")
-            try:
-                if conn is not None:
-                    conn.rollback()
-            except Exception:
-                pass
-        finally:
-            try:
-                if conn is not None:
-                    conn.close()
-            except Exception:
-                pass
-    _cleanup_audit_event("qa_poison_quarantine", {"dry_run": False, "quarantined": out["quarantined"], "deleted": out["deleted"], "backups": out["backups"], "errors": out["errors"]})
+                con = sqlite3.connect(path, timeout=2.0)
+                con.execute('BEGIN IMMEDIATE')
+                con.execute('CREATE TABLE IF NOT EXISTS qa_cache_poison_quarantine (id INTEGER PRIMARY KEY AUTOINCREMENT, source_db TEXT, source_table TEXT, source_rowid INTEGER, query TEXT, ai_answer TEXT, reason TEXT, quarantined_at TEXT)')
+                for item in items[:_MAX_QA_RESULTS]:
+                    table = item['table']
+                    if table not in _qa_cache_tables(con.cursor()):
+                        continue
+                    cols = _qa_cache_columns(con.cursor(), table)
+                    if not cols['query'] or not cols['answer']:
+                        continue
+                    stmt = 'SELECT ' + _safe_sql_identifier(cols['query']) + ', ' + _safe_sql_identifier(cols['answer']) + ' FROM ' + _safe_sql_identifier(table) + ' WHERE rowid=?'
+                    row = con.execute(stmt, (int(item['rowid']),)).fetchone()
+                    if not row or _qa_poison_reason(row[0], row[1]) != item['reason']:
+                        continue
+                    con.execute('INSERT INTO qa_cache_poison_quarantine (source_db, source_table, source_rowid, query, ai_answer, reason, quarantined_at) VALUES (?, ?, ?, ?, ?, ?, ?)', (dbname, table, item['rowid'], str(row[0] or ''), str(row[1] or ''), item['reason'], datetime.utcnow().isoformat()))
+                    con.execute('DELETE FROM ' + _safe_sql_identifier(table) + ' WHERE rowid=?', (item['rowid'],))
+                    out['quarantined'] += 1
+                    out['deleted'] += 1
+                con.commit()
+            except Exception as exc:
+                if con is not None:
+                    con.rollback()
+                out['ok'] = False
+                out['errors'].append(str(exc))
+            finally:
+                if con is not None:
+                    con.close()
+    _cleanup_audit_event('qa_poison_quarantine', {'quarantined': out['quarantined'], 'backups': out['backups'], 'errors': out['errors']})
     return out
+
 
 
 RANGES = [
@@ -359,100 +613,149 @@ RANGES = [
 ]
 
 def backup_all():
-    ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-    bundle = os.path.join(BACKUP_DIR, f"backup-{ts}")
-    os.makedirs(bundle, exist_ok=True)
-    manifest = {"created_at": datetime.utcnow().isoformat(), "files": [], "purpose": "SarahMemoryCleanup pre-change backup"}
-    for name, meta in DBS.items():
-        src = meta["path"]
-        if os.path.exists(src):
-            dst = os.path.join(bundle, name)
-            shutil.copy2(src, dst)
-            manifest["files"].append({"name": name, "source": src, "backup": dst, "bytes": os.path.getsize(dst)})
-    # copy logs too
-    if os.path.isdir(config.LOGS_DIR):
-        zipname = os.path.join(bundle, "logs.zip")
-        shutil.make_archive(zipname[:-4], "zip", config.LOGS_DIR)
-        manifest["files"].append({"name": "logs.zip", "source": config.LOGS_DIR, "backup": zipname})
-    with open(os.path.join(bundle, "backup_manifest.json"), "w", encoding="utf-8") as fh:
-        json.dump(manifest, fh, indent=2, sort_keys=True, ensure_ascii=False, default=str)
-    _cleanup_audit_event("backup_created", {"bundle": bundle, "files": len(manifest["files"])})
-    messagebox.showinfo("Backup", f"Backup created: {bundle}")
+    """Create a verified consistent snapshot; UI alerts best effort."""
+    bundle = _backup_core()
+    try:
+        messagebox.showinfo('Backup', f'Verified backup created: {bundle}')
+    except Exception:
+        pass
     return bundle
 
+
 def restore_backup():
-    folder = filedialog.askdirectory(initialdir=BACKUP_DIR, title="Select backup folder")
+    """Interactive restore only. Path selection alone never constitutes permission."""
+    folder = filedialog.askdirectory(initialdir=BACKUP_DIR, title='Select verified SarahMemory backup')
     if not folder:
-        return
-    restored = []
-    for name, meta in DBS.items():
-        src = os.path.join(folder, name)
-        dst = meta["path"]
-        if os.path.exists(src):
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copy2(src, dst)
-            restored.append(name)
-    messagebox.showinfo("Restore", "Restored: " + ", ".join(restored) if restored else "No DB files in chosen backup.")
+        return {'ok': False, 'cancelled': True}
+    if not messagebox.askyesno('Confirm restore', 'Restore a verified backup? A separate recovery snapshot will be created first.'):
+        return {'ok': False, 'cancelled': True}
+    try:
+        result = _restore_bundle(folder, user_consented=True)
+    except Exception as exc:
+        messagebox.showerror('Restore denied or failed', str(exc))
+        return {'ok': False, 'error': str(exc)}
+    messagebox.showinfo('Restore', 'Restored: ' + ', '.join(result['restored']))
+    return result
 
-def clear_range(seconds=None):
-    now = datetime.utcnow()
-    cutoff = None if seconds is None else now - timedelta(seconds=seconds)
-    # SARAHMEMORY_PATCH_NOTE 2026-06-28:
-    # Cleanup is now accountable and survivable. Any destructive range clear
-    # creates a backup first and records an audit event.
-    backup_bundle = backup_all()
-    _cleanup_audit_event("clear_range_requested", {"seconds": seconds, "cutoff": cutoff.isoformat() if cutoff else "ALL_DATA", "backup_bundle": backup_bundle})
-    for dbname, meta in DBS.items():
-        path = meta["path"]
-        if not os.path.exists(path):
+
+def restore_latest(*, user_consented: bool = False):
+    """Bridge-compatible restore; GET request alone has no consent authority."""
+    _operator_authorize('restore_latest_database_backup', BACKUP_DIR, user_consented=user_consented)
+    if not os.path.isdir(BACKUP_DIR):
+        raise FileNotFoundError('no_verified_backups')
+    candidates = []
+    for name in sorted(os.listdir(BACKUP_DIR), reverse=True)[:100]:
+        if not name.startswith('backup-'):
             continue
+        path = os.path.join(BACKUP_DIR, name)
         try:
-            with sqlite3.connect(path) as con:
-                cur = con.cursor()
-                if seconds is None:
-                    # Clear everything safely
-                    for table, _tscol in meta["ranges"]:
-                        try:
-                            cur.execute(f"DELETE FROM {_safe_sql_identifier(table)}")
-                        except Exception:
-                            pass
-                    # handle responses in personality if present
-                    try:
-                        cur.execute(f"DELETE FROM {_safe_sql_identifier("responses")}")
-                    except Exception:
-                        pass
-                else:
-                    for table, tscol in meta["ranges"]:
-                        try:
-                            # Only delete where timestamp column exists
-                            cur.execute(f"PRAGMA table_info({_safe_sql_identifier(table)})")
-                            cols = [r[1] for r in cur.fetchall()]
-                            if tscol in cols:
-                                cur.execute(f"DELETE FROM {_safe_sql_identifier(table)} WHERE {_safe_sql_identifier(tscol)} >= ?", (cutoff.isoformat(),))
-                        except Exception:
-                            pass
-                con.commit()
-                con.execute("VACUUM")
-        except Exception as e:
-            print("[Cleanup] Failed clearing", dbname, ":", e)
-    messagebox.showinfo("Cleanup", "Cleanup completed.")
+            _verified_bundle(path)
+            candidates.append(path)
+        except Exception:
+            continue
+    if not candidates:
+        raise FileNotFoundError('no_valid_verified_backup')
+    return _restore_bundle(candidates[0], user_consented=user_consented)
 
-def tidy_logs():
-    os.makedirs(config.LOGS_DIR, exist_ok=True)
-    for fn in os.listdir(config.LOGS_DIR):
-        p = os.path.join(config.LOGS_DIR, fn)
-        try:
-            if os.path.isfile(p) and (fn.lower().endswith(".log") or fn.lower().endswith(".txt")):
-                # Truncate if > 5MB
-                if os.path.getsize(p) > 5*1024*1024:
-                    with open(p, "rb+") as f:
-                        f.seek(-1024*1024, os.SEEK_END)
-                        tail = f.read()
-                        f.seek(0); f.truncate()
-                        f.write(b"...[truncated]\n" + tail)
-        except Exception as e:
-            print("[Cleanup] tidy_logs:", e)
-    messagebox.showinfo("Logs", "Logs tidied.")
+
+def clear_range(seconds=None, cutoff_seconds=None, *, user_consented: bool = False):
+    """Governed selected-DB clear with legacy Bridge two-positional support.
+
+    Bare calls, including legacy GET/POST API requests without consent, fail closed.
+    """
+    if isinstance(seconds, str):
+        db_name, seconds = seconds, cutoff_seconds
+    else:
+        db_name = None
+        if cutoff_seconds is not None:
+            raise ValueError('invalid_clear_range_arguments')
+    if seconds is not None and (not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds <= 0 or seconds > 10 * 365 * 86400):
+        raise ValueError('invalid_retention_seconds')
+    names = [db_name] if db_name else list(DBS)
+    if any(name not in DBS for name in names):
+        raise ValueError('unapproved_database_name')
+    _operator_authorize('clear_database_range', ','.join(names), user_consented=user_consented)
+    _require_audit_event('clear_range_authorized', {'names': names, 'seconds': seconds})
+    cutoff = None if seconds is None else datetime.utcnow() - timedelta(seconds=float(seconds))
+    backup = _backup_core(names=names)
+    result = {'ok': True, 'backup': backup, 'cutoff': cutoff.isoformat() if cutoff else None, 'deleted': 0, 'errors': []}
+    with _exclusive_maintenance():
+        for name in names:
+            path = DBS[name]['path']
+            if not os.path.isfile(path):
+                continue
+            _regular_file(path, config.DATASETS_DIR)
+            try:
+                with sqlite3.connect(path, timeout=2.0) as con:
+                    con.execute('BEGIN IMMEDIATE')
+                    available_tables = set(r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'"))
+                    for table, tscol in DBS[name]['ranges']:
+                        if table not in available_tables:
+                            continue
+                        if seconds is None:
+                            cur = con.execute('DELETE FROM ' + _safe_sql_identifier(table))
+                        else:
+                            cols = set(r[1] for r in con.execute('PRAGMA table_info(' + _safe_sql_identifier(table) + ')'))
+                            if tscol not in cols:
+                                continue
+                            cur = con.execute('DELETE FROM ' + _safe_sql_identifier(table) + ' WHERE ' + _safe_sql_identifier(tscol) + ' >= ?', (cutoff.isoformat(),))
+                        result['deleted'] += max(0, cur.rowcount)
+            except Exception as exc:
+                result['ok'] = False
+                result['errors'].append(f'{name}: {exc}')
+    _cleanup_audit_event('clear_range', {'names': names, 'cutoff': result['cutoff'], 'backup': backup, 'deleted': result['deleted'], 'ok': result['ok'], 'errors': result['errors']})
+    if not result['ok']:
+        raise RuntimeError('clear_range_incomplete_backup_preserved:' + backup)
+    return result
+
+
+def tidy_logs(*, user_consented: bool = False):
+    """Bounded log truncation with root protection, copy-on-write and approval."""
+    _operator_authorize('tidy_logs', config.LOGS_DIR, user_consented=user_consented)
+    _require_audit_event('tidy_logs_authorized', {'root': config.LOGS_DIR})
+    checked = truncated = 0
+    errors = []
+    with _exclusive_maintenance():
+        if not os.path.isdir(config.LOGS_DIR):
+            return {'ok': True, 'checked': 0, 'truncated': 0}
+        for name in sorted(os.listdir(config.LOGS_DIR))[:300]:
+            if not name.lower().endswith('.log') or any(x in name.lower() for x in ('audit', 'security', 'governance')):
+                continue
+            path = os.path.join(config.LOGS_DIR, name)
+            try:
+                _regular_file(path, config.LOGS_DIR)
+                checked += 1
+                if os.path.getsize(path) <= 5 * 1024 * 1024:
+                    continue
+                # Preserve existing history; rotate into uniquely named archival copy.
+                unique = path + '.preserved-' + uuid.uuid4().hex[:12]
+                shutil.copy2(path, unique)
+                if _sha256_file(path) != _sha256_file(unique):
+                    os.remove(unique)
+                    raise OSError('archive_copy_integrity_failed')
+                with open(path, 'rb') as fh:
+                    fh.seek(-1024 * 1024, os.SEEK_END)
+                    tail = fh.read()
+                tmp = path + '.staged-' + uuid.uuid4().hex
+                try:
+                    with open(tmp, 'xb') as fh:
+                        fh.write(b'...[prior log preserved in adjacent archive]\n' + tail)
+                    os.replace(tmp, path)
+                finally:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                truncated += 1
+            except (OSError, PermissionError) as exc:
+                errors.append(f'{name}: {exc}')
+                _cleanup_audit_event('log_tidy_rejected', {'name': name, 'reason': str(exc)})
+                continue
+    _cleanup_audit_event('tidy_logs', {'checked': checked, 'truncated': truncated, 'errors': errors})
+    try:
+        messagebox.showinfo('Logs', f'Log files checked: {checked}; safely rotated: {truncated}')
+    except Exception:
+        pass
+    return {'ok': not errors, 'checked': checked, 'truncated': truncated, 'errors': errors}
+
 
 def launch_cleanup_gui():
     root = tk.Tk()
@@ -471,13 +774,25 @@ def launch_cleanup_gui():
     btns.pack(fill="x", pady=10)
     ttk.Button(btns, text="Create Backup", command=backup_all).pack(side="left", padx=4)
     ttk.Button(btns, text="Restore Backup", command=restore_backup).pack(side="left", padx=4)
-    ttk.Button(btns, text="Tidy Logs", command=tidy_logs).pack(side="left", padx=4)
+    def on_tidy():
+        if messagebox.askyesno('Confirm log maintenance', 'Preserve large logs before truncating?'):
+            try:
+                result = tidy_logs(user_consented=True)
+                if not result.get('ok'):
+                    messagebox.showerror('Log maintenance', '; '.join(result.get('errors') or []))
+            except Exception as exc:
+                messagebox.showerror('Log maintenance denied', str(exc))
+    ttk.Button(btns, text="Tidy Logs", command=on_tidy).pack(side="left", padx=4)
 
     def on_clear():
         label = range_var.get()
         seconds = next((s for lbl, s in RANGES if lbl == label), None)
-        if messagebox.askyesno("Confirm", f"Proceed to clear: {label}?"):
-            clear_range(seconds)
+        if messagebox.askyesno('Confirm', f'Proceed to clear: {label}?'):
+            try:
+                result = clear_range(seconds, user_consented=True)
+                messagebox.showinfo('Cleanup', f"Deleted {result['deleted']} rows; recovery: {result['backup']}")
+            except Exception as exc:
+                messagebox.showerror('Cleanup denied or failed', str(exc))
 
     def on_scan_poison():
         report = scan_poisoned_qa_cache(max_rows=5000)
@@ -485,8 +800,11 @@ def launch_cleanup_gui():
 
     def on_quarantine_poison():
         if messagebox.askyesno("Confirm", "Backup and quarantine poisoned QA cache rows? This does not vacuum databases."):
-            report = quarantine_poisoned_qa_cache(dry_run=False, max_rows=5000, backup=True)
-            messagebox.showinfo("Poison Cache Quarantine", f"Quarantined: {report.get('quarantined', 0)}\nBackups: {len(report.get('backups') or [])}\nErrors: {len(report.get('errors') or [])}")
+            try:
+                report = quarantine_poisoned_qa_cache(dry_run=False, max_rows=5000, backup=True, user_consented=True)
+                messagebox.showinfo('Poison Cache Quarantine', f"Quarantined: {report.get('quarantined', 0)}\nBackups: {len(report.get('backups') or [])}\nErrors: {len(report.get('errors') or [])}")
+            except Exception as exc:
+                messagebox.showerror('QA quarantine denied', str(exc))
 
     ttk.Button(frm, text="SCAN POISONED QA CACHE", command=on_scan_poison).pack(pady=4, fill="x")
     ttk.Button(frm, text="QUARANTINE POISONED QA CACHE", command=on_quarantine_poison).pack(pady=4, fill="x")
@@ -502,7 +820,7 @@ if __name__ == "__main__":
     if "--scan-poison" in sys.argv:
         print(json.dumps(scan_poisoned_qa_cache(max_rows=5000), indent=2, ensure_ascii=False, default=str))
     elif "--quarantine-poison" in sys.argv:
-        print(json.dumps(quarantine_poisoned_qa_cache(dry_run=False, max_rows=5000, backup=True), indent=2, ensure_ascii=False, default=str))
+        print(json.dumps(quarantine_poisoned_qa_cache(dry_run=False, max_rows=5000, backup=True, user_consented=True), indent=2, ensure_ascii=False, default=str))
     elif "--dry-run-quarantine-poison" in sys.argv:
         print(json.dumps(quarantine_poisoned_qa_cache(dry_run=True, max_rows=5000, backup=True), indent=2, ensure_ascii=False, default=str))
     else:
@@ -516,7 +834,7 @@ if __name__ == "__main__":
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryCleanup',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Diagnostics',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -534,22 +852,19 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """No fabricated maintenance results: report only local readiness evidence."""
+    datasets = bool(os.path.isdir(config.DATASETS_DIR))
+    backup_root = bool(os.path.isdir(BACKUP_DIR))
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        'status': 'Ready' if datasets else 'Degraded',
+        'availability': 1.0 if datasets else 0.0,
+        'integrity': None, 'performance': None, 'reliability': None,
+        'confidence': 0.5, 'latency_ms': None, 'stability': None, 'compatibility': None,
+        'notes': ['Known SQLite paths configured', 'Backups exist' if backup_root else 'No backup directory available', 'Destructive actions require explicit OperatorCore ALLOW'],
     }
 
 
@@ -559,7 +874,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryCleanup',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": copy.deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

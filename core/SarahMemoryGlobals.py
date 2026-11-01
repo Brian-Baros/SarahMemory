@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryGlobals.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -38,7 +38,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -463,10 +463,10 @@ def get_runtime_meta():
 # ---------------- Global Configuration ----------------
 ### Static constants###
 # --- Version ---
-PROJECT_VERSION = "9.0.0"  # minor: updater scheduling, SR/TTS polish, research order fixes
+PROJECT_VERSION = "9.1.0a"  # minor: updater scheduling, SR/TTS polish, research order fixes
 AUTHOR = "Brian Lee Baros"
 # --- Runtime/debug flags (unchanged lines may already exist above/below) ---
-REVISION_START_DATE  = "06/06/2026" #Date of System Overhaul
+REVISION_START_DATE  = "11/01/2026" #Date of System Overhaul
 DEBUG_MODE = True # Helps with SarahMemoryCompare and other debugging issues.
 ENABLE_RESEARCH_LOGGING = True # Track Message/query of the GUI from Start to Finished Response/Reply
 # This constant ensures downstream modules interpret API responses
@@ -523,9 +523,9 @@ LOCAL_ONLY_MODE = _env_flag("SARAH_LOCAL_ONLY_MODE", "true")  # True = bypass ex
 # outside-agent-triggered execution during ordinary local boot.
 SARAHMEMORY_AUTONOMOUS_STARTUP_ENABLED = _env_flag("SARAHMEMORY_AUTONOMOUS_STARTUP_ENABLED", "true")
 SARAHMEMORY_SELFAWARE_AUTOSTART_ENABLED = _env_flag("SARAHMEMORY_SELFAWARE_AUTOSTART_ENABLED", "true")
-SARAHMEMORY_EVOLUTION_AUTOSTART_ENABLED = _env_flag("SARAHMEMORY_EVOLUTION_AUTOSTART_ENABLED", "false")
-SARAHMEMORY_API_AUTONOMOUS_STARTUP_ENABLED = _env_flag("SARAHMEMORY_API_AUTONOMOUS_STARTUP_ENABLED", "false")
-SARAHMEMORY_ONLINE_SESSION_ARMED = _env_flag("SARAHMEMORY_ONLINE_SESSION_ARMED", "false")
+SARAHMEMORY_EVOLUTION_AUTOSTART_ENABLED = _env_flag("SARAHMEMORY_EVOLUTION_AUTOSTART_ENABLED", "true")
+SARAHMEMORY_API_AUTONOMOUS_STARTUP_ENABLED = _env_flag("SARAHMEMORY_API_AUTONOMOUS_STARTUP_ENABLED", "true")
+SARAHMEMORY_ONLINE_SESSION_ARMED = _env_flag("SARAHMEMORY_ONLINE_SESSION_ARMED", "true")
 SARAHMEMORY_REMOTE_TRIGGER_BLOCK = _env_flag("SARAHMEMORY_REMOTE_TRIGGER_BLOCK", "true")
 SARAHMEMORY_AGENT_FIREWALL_ENABLED = _env_flag("SARAHMEMORY_AGENT_FIREWALL_ENABLED", "true")
 SARAHMEMORY_LOCAL_API_BIND_HOST = os.getenv("SARAHMEMORY_LOCAL_API_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1"
@@ -533,7 +533,7 @@ SARAHMEMORY_LOCAL_API_BIND_HOST = os.getenv("SARAHMEMORY_LOCAL_API_BIND_HOST", "
 # Governed cloud-node bridge. The local node may discover the public
 # PythonAnywhere node, but the cloud node never becomes authority over local.
 SARAHMEMORY_CLOUD_NODE_DISCOVERY_ENABLED = _env_flag("SARAHMEMORY_CLOUD_NODE_DISCOVERY_ENABLED", "true")
-SARAHMEMORY_CLOUD_NODE_RESEARCH_ENABLED = _env_flag("SARAHMEMORY_CLOUD_NODE_RESEARCH_ENABLED", "false")
+SARAHMEMORY_CLOUD_NODE_RESEARCH_ENABLED = _env_flag("SARAHMEMORY_CLOUD_NODE_RESEARCH_ENABLED", "true")
 SARAHMEMORY_CLOUD_NODE_BASE_URL = os.getenv("SARAHMEMORY_CLOUD_NODE_BASE_URL", "https://ai.sarahmemory.com").strip().rstrip("/")
 SARAHMEMORY_CLOUD_NODE_REQUIRED_BEACON_SCHEMA = os.getenv("SARAHMEMORY_CLOUD_NODE_REQUIRED_BEACON_SCHEMA", "SarahMemory.SMUGCC.beacon.v1").strip()
 SARAHMEMORY_CLOUD_NODE_ALLOWED_CAPABILITIES = ("live_web_research", "sarahnet_hub", "smugcc_discovery")
@@ -2029,7 +2029,7 @@ LOCAL_IMPORTED_DATA_SCAN_ENABLED = _env_flag("SARAH_LOCAL_IMPORTED_DATA_SCAN_ENA
 # SARAHMEMORY_PATCH_NOTE: default routing is Local to preserve offline operation; UI can select Web/API when user arms it.
 ROUTE_MODE = os.getenv("SARAH_ROUTE_MODE", "Any").strip() or "Any"  # Options: "Any", "Local", "Web", "API"
 # SARAHMEMORY_PATCH_NOTE: web research is disabled by default; the UI/user must explicitly arm online research.
-WEB_RESEARCH_ENABLED = _env_flag("SARAH_WEB_RESEARCH_ENABLED", "false") # True = allow governed web research when user/session permits it.
+WEB_RESEARCH_ENABLED = _env_flag("SARAH_WEB_RESEARCH_ENABLED", "true") # True = allow governed web research when user/session permits it.
 # Web Homepage This will be the HomePage in which is seen when the SarahMemoryGUI.py interface is loaded.
 WEB_HOMEPAGE = "https://www.duckduckgo.com"
 # Web Research Source Flags, For SarahMemoryResearch.py - Class 2 - WebSearching and Learning mode
@@ -2047,7 +2047,7 @@ INTERNET_ARCHIVE_RESEARCH_ENABLED = False #Set True/False for testing purposes
 
 #Multiple AI API Research Connections For SarahMemoryResearch.py - Class 3 - Learning for other AI's
 # SARAHMEMORY_PATCH_NOTE: third-party AI/API research is disabled by default; local models and DB routes remain primary.
-API_RESEARCH_ENABLED = _env_flag("SARAH_API_RESEARCH_ENABLED", "false") # True = allow governed third-party API research when user/session permits it.
+API_RESEARCH_ENABLED = _env_flag("SARAH_API_RESEARCH_ENABLED", "true") # True = allow governed third-party API research when user/session permits it.
 #Allows End User to select which AI API to be used for SarahMemoryResearch.py - Class 3 when query is passed through SarahMemoryAPI.py
 #WARNING: AS OF VERSION 7.0 CURRENTLY ONLY ONE (1) OF THE FOLLOWING API's MAY BE SET TO TRUE AND ALL OTHERS MUST BE SET TO FALSE
 # ============================================================================

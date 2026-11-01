@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryCognitiveSNFabric.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v9.0.0
-Date: 2026-09-28
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,7 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
+===============================================================================
 
 Purpose
 -------
@@ -43,6 +43,32 @@ governance, memory, provenance, routing, and final authority.
 
 from __future__ import annotations
 
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "network_core"
+# CATEGORY = "cognition"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "sarahnet"
+# HARDWARE_DOMAIN = "network"
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "cognitive_governor"
+# FAMILY = "core_governance"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-11-01"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
+# NOTES = "Cognitive governor / judge. Returns ALLOW, DENY, DEFER, REQUIRE_USER. Does not execute upgrades, patches, file writes, or schedulers."
+# --- SARAHMETA END ---
+
 import hashlib
 import json
 import time
@@ -52,7 +78,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
 
 
-DRAFT_VERSION = "0.1.0"
+DRAFT_VERSION = "0.1.0-v9.1.0a-enterprise-hardened"
 
 
 class AccessMode(str, Enum):
@@ -181,6 +207,11 @@ class PolicyGate:
     def authorize_resource(self, resource: ResourceDescriptor, request: CognitiveRequest) -> Tuple[bool, str]:
         if resource.trust == TrustState.BLOCKED:
             return False, "resource_blocked"
+        if resource.trust not in {TrustState.TRUSTED, TrustState.VERIFIED}:
+            return False, "resource_trust_unverified"
+        if resource.access_mode in {AccessMode.PUBLIC_WEB_UI, AccessMode.SARAHNET_PEER}:
+            # Draft has no authoritative SMUGCC trust/consent/OperatorCore bridge.
+            return False, "external_governance_not_integrated"
         if not resource.availability:
             return False, "resource_unavailable"
         if resource.requires_download:
@@ -204,13 +235,21 @@ class CapabilityRegistry:
         self._resources: Dict[str, ResourceDescriptor] = {}
 
     def register(self, resource: ResourceDescriptor) -> None:
-        self._resources[resource.resource_id] = resource
+        import copy
+        if not isinstance(resource, ResourceDescriptor) or not resource.resource_id or len(resource.resource_id) > 128:
+            raise ValueError("invalid_resource_descriptor")
+        if resource.resource_id in self._resources:
+            raise ValueError("duplicate_resource_id_requires_review")
+        if len(self._resources) >= 128:
+            raise ValueError("resource_registry_capacity_exceeded")
+        self._resources[resource.resource_id] = copy.deepcopy(resource)
 
     def unregister(self, resource_id: str) -> None:
         self._resources.pop(resource_id, None)
 
     def candidates(self, capability: str) -> List[ResourceDescriptor]:
-        return [r for r in self._resources.values() if r.supports(capability)]
+        import copy
+        return [copy.deepcopy(r) for r in self._resources.values() if r.supports(capability)]
 
     def snapshot(self) -> Dict[str, Any]:
         return {rid: asdict(resource) for rid, resource in self._resources.items()}
@@ -335,17 +374,23 @@ class SarahNetCognitiveFabric:
             self.registry.candidates(request.capability),
             key=lambda r: (trust_order[r.trust], r.resource_id),
         )
-        for resource in candidates:
+        for resource in candidates[:128]:
             ok, reason = self.gate.authorize_resource(resource, request)
             if ok:
                 allowed.append(resource)
             else:
                 denied.append(f"{resource.resource_id}:{reason}")
-            if len(allowed) >= max(1, request.max_resources):
+            if len(allowed) >= max(1, min(8, int(request.max_resources))):
                 break
         return envelope, allowed, denied
 
     def execute(self, request: CognitiveRequest) -> FabricReceipt:
+        # Bound memory and resource consumption before invoking any adapter.
+        if not isinstance(request, CognitiveRequest) or not request.capability or len(request.capability) > 128:
+            raise ValueError("invalid_fabric_request")
+        payload_size = len(json.dumps(request.payload, default=str).encode("utf-8"))
+        if payload_size > 512 * 1024:
+            raise ValueError("fabric_payload_budget_exceeded")
         envelope, selected, denied = self.plan(request)
         results: List[ResourceResult] = []
 
@@ -354,12 +399,28 @@ class SarahNetCognitiveFabric:
             if adapter is None:
                 results.append(ResourceResult(resource.resource_id, ExecutionStatus.UNAVAILABLE, error="adapter_not_bound"))
                 continue
-            result = adapter.execute(resource, request)
+            try:
+                result = adapter.execute(resource, request)
+                if not isinstance(result, ResourceResult) or result.resource_id != resource.resource_id:
+                    result = ResourceResult(resource.resource_id, ExecutionStatus.FAILED,
+                                            error="adapter_result_identity_mismatch")
+            except Exception as exc:
+                result = ResourceResult(resource.resource_id, ExecutionStatus.FAILED,
+                                        error=f"adapter_exception:{type(exc).__name__}")
+            if not isinstance(result.evidence, dict):
+                result.evidence = {}
             result.evidence.setdefault("smugcc_envelope_id", envelope.envelope_id)
             result.evidence.setdefault("payload_digest", envelope.payload_digest)
             results.append(result)
 
         fused, confidence, disagreements = ResultFusion.fuse(results)
+        successful = [r for r in results if r.status == ExecutionStatus.OK]
+        if request.require_consensus:
+            normalized = {json.dumps(r.output, sort_keys=True, default=str) for r in successful}
+            if len(successful) < 2 or len(normalized) != 1:
+                fused = None
+                confidence = 0.0
+                disagreements.append("consensus_required_not_established")
         disagreements.extend(denied)
 
         receipt = FabricReceipt(
@@ -373,6 +434,8 @@ class SarahNetCognitiveFabric:
             timestamp=time.time(),
         ).seal()
         self.receipts.append(receipt)
+        if len(self.receipts) > 128:
+            del self.receipts[:-128]
         return receipt
 
 

@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryMain.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,8 +13,8 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
+
 SarahMemory v9.0 - The First True AI Operating System (AiOS)
 World-Class Bootup Sequence with Full Media Integration
 ===============================================================================
@@ -41,7 +41,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -149,12 +149,15 @@ try:
         "ts": _now,
         "notes": _state.get("notes") if isinstance(_state.get("notes"), list) else [],
         "source": "SarahMemoryMain",
-        "main_running": True,
-        "main_pid": _pid,
+        "main_running": False,
+        "main_pid": None,
         "main_last_seen_ts": _now,
+        "boot_ready": False,
+        "boot_phase": "IMPORTING",
+        "readiness_verified": False,
 
-        "MAIN_RUNNING": True,
-        "MAIN_PID": _pid,
+        "MAIN_RUNNING": False,
+        "MAIN_PID": None,
         "MAIN_LAST_SEEN_TS": _now,
     })
 
@@ -366,7 +369,19 @@ def _sm_pid_is_sarah_api(pid: int, api_script: str = "") -> bool:
     if not command_line:
         return False
     expected = str(api_script or "api/server/app.py").lower().replace("\\", "/")
-    return (expected in command_line) or ("api/server/app.py" in command_line)
+    # Substring checks can match unrelated command arguments and trigger unsafe
+    # adoption/termination. Require a real Python script argv token.
+    import shlex
+    try:
+        args = shlex.split(command_line)
+    except ValueError:
+        return False
+    expected_name = os.path.normcase(os.path.basename(expected))
+    for arg in args[1:3]:
+        token = str(arg).strip("\"'").replace("\\", "/")
+        if token.lower().endswith(".py") and os.path.normcase(os.path.basename(token)) == expected_name and ("/api/server/" in ("/" + token.lower().lstrip("/")) or token.lower() == "app.py" and os.path.normcase(os.path.realpath(os.getcwd())) == os.path.normcase(os.path.realpath(os.path.dirname(expected)))):
+            return True
+    return False
 
 
 def _sm_pid_is_sarah_main(pid: int) -> bool:
@@ -375,7 +390,12 @@ def _sm_pid_is_sarah_main(pid: int) -> bool:
     command_line = _sm_process_command_line(pid).lower().replace("\\", "/")
     if not command_line:
         return False
-    return "sarahmemorymain.py" in command_line
+    import shlex
+    try:
+        args = shlex.split(command_line)
+    except ValueError:
+        return False
+    return any(os.path.basename(a.strip("\"'")) == "sarahmemorymain.py" for a in args[1:3])
 
 
 def _sm_probe_api_health(host: str, port: int, timeout: float = 1.25) -> tuple[bool, dict]:
@@ -974,7 +994,7 @@ def display_v8_banner():
 ───────────────────────────────────────────────────────────────────────────────
                              S A R A H M E M O R Y   A i O S
                     THE FIRST FULL AI-DRIVEN OPERATING SYSTEM
-                                   Version 9.0.0
+                                   Version 9.1.0a
 ───────────────────────────────────────────────────────────────────────────────
 
 
@@ -1255,7 +1275,7 @@ except Exception:
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryMain',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0",
     "category": 'Unknown',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -1273,22 +1293,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Expose adapter presence without fabricating operational measurements."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "UNKNOWN",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter registered; live operational measurements not verified"],
     }
 
 
@@ -1298,7 +1318,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryMain',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryVRHudRenderer.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,6 +13,7 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+===============================================================================
 
 SarahMemory VR Operator HUD Renderer
 ====================================
@@ -53,16 +54,20 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Read-only VR Operator HUD renderer. Pulls appvision SMHUD_PACKET_V1 + latest governed frame; renders to configured display coordinates. No hardware discovery or action authority."
 # --- SARAHMETA END ---
+# v9.1.0a enterprise source hardening: original interfaces preserved; state-changing legacy paths require governed authorization.
 
 import argparse
 import base64
 import json
+import copy
+import math
+import urllib.parse
 import os
 import signal
 import sys
@@ -241,19 +246,27 @@ def load_config(path: Optional[str] = None) -> Tuple[Dict[str, Any], Path]:
     existing = _load_json(cfg_path)
     cfg = _deep_merge(DEFAULT_CONFIG, existing)
     cfg["schema"] = SCHEMA
-    if not cfg_path.exists():
-        _write_json(cfg_path, cfg)
     return cfg, cfg_path
 
 
+def _sm_hud_validate_local_url(url: str) -> None:
+    parsed = urllib.parse.urlsplit(str(url))
+    if parsed.scheme not in ("http", "https") or parsed.username or parsed.password or parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+        raise ValueError("HUD backend must be loopback-local")
+
+
 def _endpoint(api_base: str, endpoint: str) -> str:
-    return str(api_base or "").rstrip("/") + "/" + str(endpoint or "").lstrip("/")
+    _sm_hud_validate_local_url(api_base)
+    endpoint = str(endpoint or "")
+    if not endpoint.startswith("/") or "\\" in endpoint or "//" in endpoint or ".." in endpoint:
+        raise ValueError("HUD endpoint must be a local absolute API path")
+    return str(api_base or "").rstrip("/") + endpoint
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         v = float(value)
-        if v != v:
+        if not math.isfinite(v):
             return default
         return v
     except Exception:
@@ -297,6 +310,7 @@ class TelemetryClient:
         self.cfg = cfg
         self.state = state
         self.api_base = str(cfg.get("api_base") or "http://127.0.0.1:8000")
+        _sm_hud_validate_local_url(self.api_base)
         endpoints = cfg.get("endpoints") if isinstance(cfg.get("endpoints"), dict) else {}
         self.frame_url = _endpoint(self.api_base, str(endpoints.get("frame_latest") or "/api/vision/frame/latest"))
         self.packet_url = _endpoint(self.api_base, str(endpoints.get("hud_packet") or "/api/vision/hud/packet"))
@@ -308,9 +322,12 @@ class TelemetryClient:
         self.timeout_sec = 0.45
 
     def _get_json(self, url: str) -> Dict[str, Any]:
+        _sm_hud_validate_local_url(url)
         req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": f"{MODULE_NAME}/{MODULE_VERSION}"})
         with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:  # nosec - local endpoint by default
-            raw = resp.read(8_000_000)
+            raw = resp.read(2_000_001)
+            if len(raw) > 2_000_000:
+                raise ValueError("HUD response exceeds byte limit")
         obj = json.loads(raw.decode("utf-8", errors="replace"))
         return obj if isinstance(obj, dict) else {}
 
@@ -324,9 +341,13 @@ class TelemetryClient:
                 b64 = data_url.split(",", 1)[1]
         if not isinstance(b64, str) or not b64.strip():
             return None, {}
-        blob = base64.b64decode(b64, validate=False)
+        if len(b64) > 2_800_000:
+            return None, {}
+        blob = base64.b64decode(b64, validate=True)
         arr = np.frombuffer(blob, dtype=np.uint8)
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None or img.shape[0] > 2160 or img.shape[1] > 3840:
+            return None, {}
         meta = {
             "frame_id": payload.get("frame_id"),
             "ts": payload.get("ts"),
@@ -799,10 +820,11 @@ class HudRenderer:
 
 
 def apply_cli_overrides(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
-    out = dict(cfg)
+    out = copy.deepcopy(cfg)
     out.setdefault("display", {})
     out.setdefault("render", {})
     if args.api_base:
+        _sm_hud_validate_local_url(args.api_base)
         out["api_base"] = args.api_base
     for key in ("x", "y", "width", "height"):
         val = getattr(args, key, None)
@@ -815,7 +837,7 @@ def apply_cli_overrides(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[s
     if args.filter:
         out["render"]["filter"] = args.filter
     if args.fps:
-        out["render"]["fps"] = float(args.fps)
+        out["render"]["fps"] = max(1.0, min(60.0, _safe_float(args.fps, 15.0)))
     out.setdefault("mirror", {})
     out.setdefault("headset", {})
     if args.no_mirror:
@@ -886,6 +908,7 @@ if __name__ == "__main__":
 # ====================================================================
 
 # --- SML ORGAN ADAPTER START ---
+import copy as _sml_copy
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryVRHudRenderer',
@@ -907,22 +930,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return _sml_copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter registered; runtime quality not measured"],
     }
 
 
@@ -932,7 +955,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryVRHudRenderer',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": _sml_copy.deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

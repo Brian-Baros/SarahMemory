@@ -56,7 +56,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -299,6 +299,8 @@ _DEFAULT_TERMINAL_AGENT_DENIED_RESOURCES = [
 _DEFAULT_TERMINAL_AGENT_DENIED_CAPABILITIES = [
     "shell", "core_write", "device_control", "credential_access", "self_authorization",
     "hidden_persistence", "unbounded_scrape", "memory_write_without_compare",
+    # Managed Passport V1 requires these additional explicit denials.
+    "filesystem_write", "post_mutation", "delete", "driver_control", "devbridge_apply",
 ]
 
 
@@ -346,60 +348,6 @@ def _redact_terminal_agent_payload(payload: Any) -> Any:
     if isinstance(payload, dict):
         return {str(k)[:120]: _redact_terminal_agent_value(str(k), v) for k, v in list(payload.items())[:128]}
     return _redact_terminal_agent_value("value", payload)
-
-
-def _terminal_departure_credentials_safe_summary(creds: Any) -> Dict[str, Any]:
-    """Return terminal-display-safe credential metadata.
-
-    Passport nonces/signatures are bearer-style return credentials. They may be
-    stored inside TrustRegistry/AgentFirewall, but they must not be echoed into
-    terminal history or UI transcripts.
-    """
-    c = creds if isinstance(creds, dict) else {}
-    return {
-        "passport_id": str(c.get("passport_id") or "")[:180],
-        "agent_id": str(c.get("agent_id") or "")[:180],
-        "departure_nonce_present": bool(c.get("departure_nonce")),
-        "return_nonce_present": bool(c.get("return_nonce")),
-        "return_signature_present": bool(c.get("return_signature")),
-        "credential_values_redacted": True,
-        "execution_authority": False,
-    }
-
-
-def _terminal_firewall_observation_text(text: str) -> str:
-    """Normalize explicitly negated dangerous phrases before firewall inspection.
-
-    This is only for the local observation packet sent to AgentFirewall. The
-    original operator text remains in the task spine and audit hashes. The goal
-    is to avoid false positives such as "do not bypass governance" while keeping
-    non-negated hijack phrases visible to the firewall.
-    """
-    out = str(text or "")[:4000]
-    replacements = [
-        (r"(?i)\b(do\s+not|don't|dont|never|without|no)\s+(bypass|ignore|override)\s+(governance|guardrails|safety|rules)\b", "operator_prohibits_governance_bypass"),
-        (r"(?i)\b(do\s+not|don't|dont|never|without|no)\s+(execute|run)\s+(code|commands?|shell|powershell|cmd)\b", "operator_prohibits_code_execution"),
-        (r"(?i)\b(do\s+not|don't|dont|never|without|no)\s+(modify|change|write|delete)\s+(files?|code|memory|settings?)\b", "operator_prohibits_mutation"),
-    ]
-    for pattern, repl in replacements:
-        try:
-            out = re.sub(pattern, repl, out)
-        except Exception:
-            continue
-    return out
-
-
-def _terminal_peer_intent_text(text: str) -> bool:
-    low = " ".join(str(text or "").lower().split())
-    if not low:
-        return False
-    peer_terms = (
-        "peer council", "peer-to-peer", "multi peer", "multi-peer", "external ai peer",
-        "chatgpt", "openai", "copilot", "grok", "xai", "gemini", "meta ai", "llama",
-        "claude", "anthropic", "aws bedrock", "bedrock", "provider", "providers",
-    )
-    action_terms = ("contact", "connect", "ask", "dispatch", "communicate", "send", "query", "compare", "review")
-    return any(t in low for t in peer_terms) and any(a in low for a in action_terms)
 
 
 def _as_string_list(value: Any, *, limit: int = 64) -> List[str]:
@@ -797,8 +745,6 @@ def _resolve_terminal_agent_skill(payload: Dict[str, Any], task: str) -> Tuple[s
             skill_id = "research.public_web"
         elif any(x in low for x in ("webscrap", "web scrap", "scrape", "crawl", "public web", "website", "news", "latest", "browser", "broswer")):
             skill_id = "research.public_web"
-        elif _terminal_peer_intent_text(low):
-            skill_id = "agent.peer_council"
         elif any(x in low for x in ("api", "endpoint", "rest", "graphql")):
             skill_id = "research.approved_api"
         elif any(x in low for x in ("codebase", "file", "repo", "patch", "diff", "inspect core")):
@@ -890,6 +836,11 @@ def _build_terminal_task_truth(task: str, payload: Optional[Dict[str, Any]], *, 
     explicit_auto_request = bool(payload.get("auto_passport", False)) or raw_passport_low in _AUTO_PASSPORT_REQUEST_TOKENS
     launch_without_passport = _terminal_agent_command_verb(task) == "launch" and not raw_passport_id
     auto_passport_requested = explicit_auto_request or launch_without_passport
+    # Managed V1 permits 1–300s; legacy manual passports may keep their own policy.
+    # An explicitly supplied overlong TTL is deliberately NOT silently shortened:
+    # Firewall must report the policy violation to the operator.
+    configured_ttl = int(getattr(config, "SARAH_AGENT_PASSPORT_DEFAULT_TTL_SECONDS", 3600))
+    default_ttl = min(300, configured_ttl) if auto_flag_enabled and auto_passport_requested else configured_ttl
     return {
         "schema": "SarahMemory.terminal.agent_task_truth.v1",
         "task_id": str(payload.get("task_id") or "")[:180],
@@ -924,7 +875,7 @@ def _build_terminal_task_truth(task: str, payload: Optional[Dict[str, Any]], *, 
         "roachmotel_required": True,
         "compare_required": bool(payload.get("compare_required", skill.get("compare_required", True))),
         "user_approval_required": True,
-        "ttl_seconds": int(payload.get("ttl_seconds") or getattr(config, "SARAH_AGENT_PASSPORT_DEFAULT_TTL_SECONDS", 3600)),
+        "ttl_seconds": int(payload.get("ttl_seconds") or default_ttl),
         "risk_level": str(payload.get("risk_level") or skill.get("risk_level") or "medium")[:32],
         "session_id": str(session_id or "")[:180],
         "cwd": str(cwd or "")[:500],
@@ -1160,7 +1111,27 @@ def _record_terminal_agent_task_event(
                 str(details or "")[:1000], _canonical_json(metadata),
             ),
         )
-        cur.execute("UPDATE terminal_agent_tasks SET updated_ts=?, current_stage=?, status=? WHERE task_id=?", (datetime.now().isoformat(), str(stage or "")[:96], "blocked" if str(verdict).upper() in ("DENY", "BLOCK") else "active", str(task_id or "")[:180]))
+        # Stage verdicts describe audit events; they are not evidence of execution.
+        # Do not turn a prior BLOCK back to active merely because Firewall inspected
+        # the request afterward. Only a verified adapter+Compare result may complete.
+        final_state = None
+        complete_state = None
+        if str(verdict).upper() in ("DENY", "BLOCK"):
+            final_state, complete_state = "blocked", "not_complete"
+        elif stage == "AGENT_TASK" and event_type == "TERMINAL_AGENT_TASK_COMPLETED" and str(verdict).upper() == "COMPLETED":
+            final_state, complete_state = "completed", "verified_complete"
+        elif stage == "AGENT_TASK" and event_type == "TERMINAL_AGENT_TASK_INSPECTED":
+            final_state, complete_state = "proposed", "proposal_only"
+        if final_state:
+            cur.execute(
+                "UPDATE terminal_agent_tasks SET updated_ts=?,current_stage=?,status=?,completion_state=? WHERE task_id=?",
+                (datetime.now().isoformat(), str(stage or "")[:96], final_state, complete_state, str(task_id or "")[:180]),
+            )
+        else:
+            cur.execute(
+                "UPDATE terminal_agent_tasks SET updated_ts=?,current_stage=? WHERE task_id=?",
+                (datetime.now().isoformat(), str(stage or "")[:96], str(task_id or "")[:180]),
+            )
         con.commit()
         con.close()
     except Exception as exc:
@@ -1334,15 +1305,6 @@ def _terminal_adapter_firewall_fallback(request_packet: Dict[str, Any], *, exter
 
 
 def _verify_terminal_agent_passport_scope(task_truth: Dict[str, Any], task_id: str) -> Dict[str, Any]:
-    """Verify a passport against the task, with compatibility fallback.
-
-    TrustRegistry remains authoritative when it can verify directly. If a valid
-    passport was issued for the same task but the launch command wording resolves
-    to a different Terminal skill/lane, this helper realigns the requested lane
-    to the passport's own origin_lane/allowed_lanes before verification. This
-    prevents harmless wording such as "do not modify files" from changing the
-    lane into codebase.inspect and breaking an otherwise valid peer/API passport.
-    """
     passport_id = str(task_truth.get("passport_id") or "").strip()
     if not passport_id:
         return {"ok": False, "reason": "passport_id_required", "execution_authority": False}
@@ -1351,71 +1313,21 @@ def _verify_terminal_agent_passport_scope(task_truth: Dict[str, Any], task_id: s
     try:
         import SarahMemoryTrustRegistry as registry  # type: ignore
         fn = getattr(registry, "verify_agent_passport_scope", None)
-        lookup = getattr(registry, "lookup_agent_passport", None)
-        passport = lookup(passport_id=passport_id) if callable(lookup) else None
-
-        current_lane = str(task_truth.get("skill_id") or "api.local.health_check")
-        passport_lane = str((passport or {}).get("origin_lane") or "") if isinstance(passport, dict) else ""
-        allowed_lanes = [str(x) for x in list((passport or {}).get("allowed_lanes") or [])] if isinstance(passport, dict) else []
-        requested_lane = current_lane
-        if passport_lane and current_lane not in set(allowed_lanes + [passport_lane]):
-            requested_lane = passport_lane
-
         sources = _approved_terminal_get_sources_for_skill(task_truth)
-        if not sources and isinstance(passport, dict):
-            sources = [str(x) for x in list(passport.get("allowed_resources") or []) if str(x or "").strip()][:16]
         caps = list(task_truth.get("allowed_capabilities") or [])
-        if isinstance(passport, dict) and passport.get("allowed_capabilities"):
-            pass_caps = [str(x) for x in list(passport.get("allowed_capabilities") or []) if str(x or "").strip()]
-            if requested_lane != current_lane or not caps:
-                caps = pass_caps
-
-        registry_result: Dict[str, Any] = {}
         if callable(fn):
-            registry_result = fn(
+            return fn(
                 passport_id=passport_id,
                 task_id=task_id,
-                requested_lane=requested_lane,
+                requested_lane=str(task_truth.get("skill_id") or "api.local.health_check"),
                 requested_capabilities=caps,
                 requested_resources=sources,
                 requested_methods=["GET"],
                 risk_tier=str(task_truth.get("risk_level") or "low"),
                 require_user_approved=True,
             )
-            if isinstance(registry_result, dict) and registry_result.get("ok"):
-                registry_result.setdefault("execution_authority", False)
-                registry_result.setdefault("requested_lane", requested_lane)
-                return registry_result
-
-        if not passport:
-            return {"ok": False, "reason": "passport_not_found", "registry_result": _redact_terminal_agent_payload(registry_result), "execution_authority": False}
-        status = str(passport.get("status") or "")
-        if status not in {"issued", "departed"}:
-            return {"ok": False, "reason": "passport_not_active", "passport": _passport_safe_summary(passport), "registry_result": _redact_terminal_agent_payload(registry_result), "execution_authority": False}
-        try:
-            expires = float(passport.get("expires_ts") or 0.0)
-        except Exception:
-            expires = 0.0
-        if expires and expires < time.time():
-            return {"ok": False, "reason": "passport_expired", "passport": _passport_safe_summary(passport), "registry_result": _redact_terminal_agent_payload(registry_result), "execution_authority": False}
-        pass_task_id = str(passport.get("task_id") or "").strip()
-        requested_task_id = str(task_id or task_truth.get("task_id") or "").strip()
-        if pass_task_id and requested_task_id and pass_task_id != requested_task_id:
-            return {"ok": False, "reason": "passport_task_id_mismatch", "passport_task_id": pass_task_id, "requested_task_id": requested_task_id, "passport": _passport_safe_summary(passport), "registry_result": _redact_terminal_agent_payload(registry_result), "execution_authority": False}
-        if passport_lane and requested_lane not in set(allowed_lanes + [passport_lane]):
-            return {"ok": False, "reason": "passport_lane_mismatch", "requested_lane": requested_lane, "allowed_lanes": allowed_lanes, "origin_lane": passport_lane, "passport": _passport_safe_summary(passport), "registry_result": _redact_terminal_agent_payload(registry_result), "execution_authority": False}
-        if passport.get("user_approved") is False:
-            return {"ok": False, "reason": "passport_not_user_approved", "passport": _passport_safe_summary(passport), "registry_result": _redact_terminal_agent_payload(registry_result), "execution_authority": False}
-        return {
-            "ok": True,
-            "reason": "passport_scope_verified_compatibility_fallback",
-            "requested_lane": requested_lane,
-            "original_task_lane": current_lane,
-            "lane_aligned_to_passport": requested_lane != current_lane,
-            "passport": _passport_safe_summary(passport),
-            "registry_result": _redact_terminal_agent_payload(registry_result),
-            "execution_authority": False,
-        }
+        # A lookup is not a scope verifier; never promote a passport by ID alone.
+        return {"ok": False, "reason": "passport_scope_verifier_unavailable", "execution_authority": False}
     except Exception as exc:
         return {"ok": False, "reason": "passport_scope_verify_error:" + str(exc), "execution_authority": False}
 
@@ -1611,6 +1523,13 @@ def _close_terminal_auto_managed_passport(
         return {"ok": False, "error": fw_error or "managed_passport_consumer_unavailable", "execution_authority": False}
     reason = "auto_closed_after_verified_adapter_result" if bool(adapter_execution.get("ok")) else "auto_closed_after_adapter_attempt_no_release"
     result = fn(passport_id, reason=reason, task_id=task_id, caller=caller)
+    if isinstance(result, dict) and result.get("ok") is True:
+        try:
+            _ensure_tables()
+            with _connect(_system_logs_db()) as con:
+                con.execute("UPDATE terminal_agent_passports SET status='consumed' WHERE passport_id=? AND task_id=?", (passport_id, task_id))
+        except Exception as exc:
+            logger.debug("Local passport mirror could not record canonical consume: %s", exc)
     _record_terminal_agent_task_event(
         task_id,
         stage="PASSPORT_MANAGER",
@@ -1774,7 +1693,7 @@ def _execute_passported_local_get_adapter(task_text: str, task_truth: Dict[str, 
     if compare_ev.get("receipt_id"):
         receipt_ids.append(str(compare_ev.get("receipt_id")))
 
-    accepted = bool(compare_result.get("accepted") or compare_result.get("ok"))
+    accepted = bool(compare_result.get("accepted") is True)
     return {
         "ok": bool(adapter_result.get("ok")) and accepted,
         "blocked": not (bool(adapter_result.get("ok")) and accepted),
@@ -1958,7 +1877,7 @@ def _execute_passported_external_get_adapter(task_text: str, task_truth: Dict[st
     if compare_ev.get("receipt_id"):
         receipt_ids.append(str(compare_ev.get("receipt_id")))
 
-    accepted = bool(compare_result.get("accepted") or compare_result.get("ok"))
+    accepted = bool(compare_result.get("accepted") is True)
     return {
         "ok": bool(adapter_result.get("ok")) and accepted,
         "blocked": not (bool(adapter_result.get("ok")) and accepted),
@@ -2248,19 +2167,20 @@ def _terminal_peer_provider_catalog() -> Dict[str, Dict[str, Any]]:
     except Exception:
         declarations = {}
     base = {
-        "chatgpt": {"adapter_id": "openai_chatgpt_style_provider", "api_provider": "openai", "aliases": ["openai", "chatgpt", "gpt"]},
-        "openai": {"adapter_id": "openai_chatgpt_style_provider", "api_provider": "openai", "aliases": ["openai", "chatgpt", "gpt"]},
-        "copilot": {"adapter_id": "microsoft_copilot_style_provider", "api_provider": "", "aliases": ["microsoft", "copilot"]},
-        "claude": {"adapter_id": "anthropic_claude_style_provider", "api_provider": "claude", "aliases": ["anthropic", "claude"]},
-        "anthropic": {"adapter_id": "anthropic_claude_style_provider", "api_provider": "claude", "aliases": ["anthropic", "claude"]},
-        "gemini": {"adapter_id": "google_gemini_style_provider", "api_provider": "gemini", "aliases": ["google", "gemini"]},
-        "grok": {"adapter_id": "xai_grok_style_provider", "api_provider": "grok", "aliases": ["xai", "grok"]},
-        "aws": {"adapter_id": "aws_bedrock_style_provider", "api_provider": "", "aliases": ["aws", "bedrock"]},
-        "bedrock": {"adapter_id": "aws_bedrock_style_provider", "api_provider": "", "aliases": ["aws", "bedrock"]},
-        "meta": {"adapter_id": "meta_ai_style_provider", "api_provider": "meta", "aliases": ["meta", "llama"]},
-        "llama": {"adapter_id": "local_llama_style_provider", "api_provider": "local_llm", "aliases": ["local_llama", "ollama", "llama", "local"]},
-        "ollama": {"adapter_id": "local_llama_style_provider", "api_provider": "ollama", "aliases": ["local_llama", "ollama", "llama", "local"]},
-        "local": {"adapter_id": "local_llama_style_provider", "api_provider": "local_llm", "aliases": ["local_llama", "ollama", "llama", "local"]},
+        "chatgpt": {"adapter_id": "openai_chatgpt_style_provider", "api_provider": "openai", "transport": "sarahmemory_api", "aliases": ["openai", "chatgpt", "gpt"]},
+        "openai": {"adapter_id": "openai_chatgpt_style_provider", "api_provider": "openai", "transport": "sarahmemory_api", "aliases": ["openai", "chatgpt", "gpt"]},
+        "copilot": {"adapter_id": "microsoft_copilot_style_provider", "api_provider": "", "transport": "configured_rest_or_graph", "aliases": ["microsoft", "copilot"]},
+        "claude": {"adapter_id": "anthropic_claude_style_provider", "api_provider": "claude", "transport": "sarahmemory_api", "aliases": ["anthropic", "claude"]},
+        "anthropic": {"adapter_id": "anthropic_claude_style_provider", "api_provider": "claude", "transport": "sarahmemory_api", "aliases": ["anthropic", "claude"]},
+        "gemini": {"adapter_id": "google_gemini_style_provider", "api_provider": "gemini", "transport": "sarahmemory_api", "aliases": ["google", "gemini"]},
+        "grok": {"adapter_id": "xai_grok_style_provider", "api_provider": "", "transport": "xai_openai_compatible_rest", "default_endpoint": "https://api.x.ai/v1/chat/completions", "aliases": ["xai", "grok"]},
+        "xai": {"adapter_id": "xai_grok_style_provider", "api_provider": "", "transport": "xai_openai_compatible_rest", "default_endpoint": "https://api.x.ai/v1/chat/completions", "aliases": ["xai", "grok"]},
+        "aws": {"adapter_id": "aws_bedrock_style_provider", "api_provider": "", "transport": "declared_no_direct_terminal_transport", "aliases": ["aws", "bedrock"]},
+        "bedrock": {"adapter_id": "aws_bedrock_style_provider", "api_provider": "", "transport": "declared_no_direct_terminal_transport", "aliases": ["aws", "bedrock"]},
+        "meta": {"adapter_id": "meta_ai_style_provider", "api_provider": "meta", "transport": "sarahmemory_api", "aliases": ["meta", "llama"]},
+        "llama": {"adapter_id": "local_llama_style_provider", "api_provider": "local_llm", "transport": "sarahmemory_api", "aliases": ["local_llama", "ollama", "llama", "local"]},
+        "ollama": {"adapter_id": "local_llama_style_provider", "api_provider": "ollama", "transport": "sarahmemory_api", "aliases": ["local_llama", "ollama", "llama", "local"]},
+        "local": {"adapter_id": "local_llama_style_provider", "api_provider": "local_llm", "transport": "sarahmemory_api", "aliases": ["local_llama", "ollama", "llama", "local"]},
     }
     for key, meta in base.items():
         decl = declarations.get(str(meta.get("adapter_id") or ""), {}) if isinstance(declarations, dict) else {}
@@ -2281,7 +2201,283 @@ def _terminal_peer_provider_declarations(requested: Optional[List[str]] = None) 
             selected[key] = catalog[key]
         else:
             unsupported.append(key)
-    return {"ok": True, "providers": selected, "provider_ids": list(selected.keys()), "unsupported": unsupported, "execution_authority": False}
+    online = _terminal_peer_online_status(list(selected.keys()), catalog=catalog)
+    return {"ok": True, "providers": selected, "provider_ids": list(selected.keys()), "unsupported": unsupported, "online_adapters": online, "execution_authority": False}
+
+
+def _terminal_peer_config_value(*names: str, default: str = "") -> str:
+    """Read non-secret adapter config from SarahMemoryGlobals first, then env."""
+    for name in names:
+        key = str(name or "").strip()
+        if not key:
+            continue
+        try:
+            if hasattr(config, key):
+                value = getattr(config, key)
+                if value not in (None, ""):
+                    return str(value)
+        except Exception:
+            pass
+        try:
+            value = os.getenv(key)
+            if value not in (None, ""):
+                return str(value)
+        except Exception:
+            pass
+    return str(default or "")
+
+
+def _terminal_peer_secret_value(*names: str) -> str:
+    """Read secret material for outbound peer transport without ever printing it."""
+    for name in names:
+        key = str(name or "").strip()
+        if not key:
+            continue
+        try:
+            if hasattr(config, key):
+                value = getattr(config, key)
+                if value not in (None, ""):
+                    return str(value)
+        except Exception:
+            pass
+        try:
+            value = os.getenv(key)
+            if value not in (None, ""):
+                return str(value)
+        except Exception:
+            pass
+    return ""
+
+
+def _terminal_peer_endpoint_summary(endpoint: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(str(endpoint or ""))
+        if not parsed.scheme or not parsed.netloc:
+            return ""
+        return parsed.scheme + "://" + parsed.netloc
+    except Exception:
+        return ""
+
+
+def _terminal_peer_online_status(provider_ids: Optional[List[str]] = None, *, catalog: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """Return redacted online transport readiness for peer providers."""
+    catalog = catalog or _terminal_peer_provider_catalog()
+    ids = [str(x).strip().lower() for x in list(provider_ids or catalog.keys()) if str(x).strip()]
+    status: Dict[str, Any] = {}
+    for pid in ids[:32]:
+        meta = catalog.get(pid) or {}
+        transport = str(meta.get("transport") or ("sarahmemory_api" if meta.get("api_provider") else "declared_no_direct_terminal_transport"))
+        api_provider = str(meta.get("api_provider") or "")
+        rest_endpoint = ""
+        credential_present = False
+        configured = False
+        notes: List[str] = []
+        if transport == "sarahmemory_api":
+            configured = bool(api_provider)
+            notes.append("uses_SarahMemoryAPI_send_to_api")
+        elif pid in {"grok", "xai"} or transport == "xai_openai_compatible_rest":
+            rest_endpoint = _terminal_peer_config_value(
+                "SARAH_PEER_GROK_ENDPOINT",
+                "SARAH_PEER_XAI_ENDPOINT",
+                "XAI_API_ENDPOINT",
+                default=str(meta.get("default_endpoint") or "https://api.x.ai/v1/chat/completions"),
+            )
+            credential_present = bool(_terminal_peer_secret_value("SARAH_PEER_GROK_API_KEY", "SARAH_PEER_XAI_API_KEY", "XAI_API_KEY"))
+            configured = bool(rest_endpoint and credential_present)
+            notes.append("xAI_OpenAI_compatible_REST_requires_XAI_API_KEY")
+        elif pid == "copilot" or transport == "configured_rest_or_graph":
+            rest_endpoint = _terminal_peer_config_value("SARAH_PEER_COPILOT_ENDPOINT", "M365_COPILOT_CHAT_ENDPOINT")
+            credential_present = bool(_terminal_peer_secret_value("SARAH_PEER_COPILOT_BEARER_TOKEN", "M365_COPILOT_BEARER_TOKEN"))
+            configured = bool(rest_endpoint and credential_present)
+            notes.append("Microsoft_Copilot_requires_configured_Graph_or_Copilot_Studio_endpoint_and_bearer_token")
+        else:
+            notes.append("provider_declared_without_direct_terminal_transport")
+        status[pid] = {
+            "provider": pid,
+            "transport": transport,
+            "api_provider": api_provider or None,
+            "configured": bool(configured),
+            "credential_present": bool(credential_present) if transport != "sarahmemory_api" else None,
+            "endpoint": _terminal_peer_endpoint_summary(rest_endpoint),
+            "notes": notes,
+            "execution_authority": False,
+        }
+    return {"ok": True, "providers": status, "execution_authority": False}
+
+
+def _terminal_peer_json_post(endpoint: str, body: Dict[str, Any], headers: Dict[str, str], *, timeout_s: float = 45.0) -> Tuple[Optional[Dict[str, Any]], str, int]:
+    """Minimal HTTPS JSON POST for configured peer adapters. Secrets must be pre-redacted by caller."""
+    endpoint = str(endpoint or "").strip()
+    parsed = urllib.parse.urlparse(endpoint)
+    if parsed.scheme != "https":
+        host = (parsed.hostname or "").lower()
+        if not (parsed.scheme == "http" and host in {"127.0.0.1", "localhost", "::1"}):
+            return None, "peer_endpoint_must_be_https_unless_loopback", 0
+    payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    safe_headers = dict(headers or {})
+    safe_headers.setdefault("Content-Type", "application/json")
+    safe_headers.setdefault("Accept", "application/json")
+    req = urllib.request.Request(endpoint, data=payload, headers=safe_headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=max(5.0, min(float(timeout_s or 45.0), 120.0))) as resp:
+            raw = resp.read(2_000_000)
+            code = int(getattr(resp, "status", 0) or 0)
+            text = raw.decode("utf-8", errors="replace")
+            try:
+                data = json.loads(text) if text else {}
+            except Exception:
+                data = {"text": text}
+            return data if isinstance(data, dict) else {"data": data}, "", code
+    except urllib.error.HTTPError as exc:
+        try:
+            err_text = exc.read(4096).decode("utf-8", errors="replace")
+        except Exception:
+            err_text = str(exc)
+        return None, ("HTTP_%s " % getattr(exc, "code", "")) + err_text[:1000], int(getattr(exc, "code", 0) or 0)
+    except Exception as exc:
+        return None, str(exc)[:1000], 0
+
+
+def _terminal_peer_response_text(data: Any) -> str:
+    """Extract text from common OpenAI/xAI/Graph/custom JSON response shapes."""
+    if not isinstance(data, dict):
+        return str(data or "")[:12000]
+    try:
+        choices = data.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0] if isinstance(choices[0], dict) else {}
+            msg = first.get("message") if isinstance(first.get("message"), dict) else {}
+            content = msg.get("content") or first.get("text")
+            if isinstance(content, list):
+                parts = []
+                for item in content:
+                    if isinstance(item, dict):
+                        parts.append(str(item.get("text") or item.get("content") or ""))
+                    else:
+                        parts.append(str(item))
+                content = "\n".join(x for x in parts if x)
+            if content:
+                return str(content)[:12000]
+        for key in ("output_text", "answer", "reply", "response", "content", "text", "data"):
+            val = data.get(key)
+            if isinstance(val, str) and val.strip():
+                return val[:12000]
+        output = data.get("output")
+        if isinstance(output, list):
+            parts = []
+            for item in output:
+                if isinstance(item, dict):
+                    if isinstance(item.get("content"), list):
+                        for c in item.get("content") or []:
+                            if isinstance(c, dict):
+                                parts.append(str(c.get("text") or c.get("content") or ""))
+                    else:
+                        parts.append(str(item.get("text") or item.get("content") or ""))
+            joined = "\n".join(x for x in parts if x)
+            if joined.strip():
+                return joined[:12000]
+    except Exception:
+        pass
+    return ""
+
+
+def _record_terminal_peer_online_artifact(task_id: str, provider_id: str, artifact_type: str, payload: Dict[str, Any], *, status: str = "captured_review") -> None:
+    if not task_id:
+        return
+    try:
+        _ensure_tables()
+        safe = _redact_terminal_agent_payload(payload if isinstance(payload, dict) else {"payload": payload})
+        artifact_id = "peer_online_" + _hash_obj({"task_id": task_id, "provider": provider_id, "artifact_type": artifact_type, "payload": safe})[:32]
+        con = _connect(_system_logs_db())
+        con.execute(
+            "INSERT OR REPLACE INTO terminal_agent_artifacts(artifact_id,task_id,agent_id,passport_id,artifact_type,source_type,source_ref_hash,payload_hash,quarantine_status,compare_status,memory_write_status,meta_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                artifact_id[:180],
+                str(task_id or "")[:180],
+                str(provider_id or "peer")[:180],
+                "",
+                str(artifact_type or "peer_online_packet")[:120],
+                "online_peer_adapter",
+                _hash_text(str(provider_id or "")),
+                _hash_obj(safe),
+                str(status or "captured_review")[:120],
+                "pending_compare",
+                "denied_until_user_approval",
+                _canonical_json({"schema": "SarahMemory.Terminal.peer_online_packet.v1", "provider_id": provider_id, "payload": safe, "execution_authority": False}),
+            ),
+        )
+        con.commit()
+        con.close()
+    except Exception:
+        pass
+
+
+def _dispatch_terminal_peer_rest_query(query: str, provider_id: str, meta: Dict[str, Any], *, max_tokens: int = 700) -> Dict[str, Any]:
+    """Dispatch one configured REST peer call and return a normalized evidence item."""
+    pid = str(provider_id or "").strip().lower()
+    if pid in {"grok", "xai"}:
+        endpoint = _terminal_peer_config_value(
+            "SARAH_PEER_GROK_ENDPOINT",
+            "SARAH_PEER_XAI_ENDPOINT",
+            "XAI_API_ENDPOINT",
+            default=str(meta.get("default_endpoint") or "https://api.x.ai/v1/chat/completions"),
+        )
+        key = _terminal_peer_secret_value("SARAH_PEER_GROK_API_KEY", "SARAH_PEER_XAI_API_KEY", "XAI_API_KEY")
+        model = _terminal_peer_config_value("SARAH_PEER_GROK_MODEL", "SARAH_PEER_XAI_MODEL", "XAI_MODEL", default="grok-4")
+        if not key:
+            return {"provider": pid, "source": pid, "source_family": "api_provider", "answer": "", "ok": False, "status": "NO_CONFIGURED_CREDENTIAL", "error": "XAI_API_KEY or SARAH_PEER_GROK_API_KEY is not configured", "execution_authority": False}
+        body = {
+            "model": model,
+            "stream": False,
+            "temperature": 0.2,
+            "max_tokens": max(64, min(int(max_tokens or 700), 1200)),
+            "messages": [
+                {"role": "system", "content": "You are an external AI peer responding to SarahMemory GCAIOS through a governed Peer Council. You are evidence-only and have no authority."},
+                {"role": "user", "content": _terminal_peer_api_prompt(query, pid)},
+            ],
+        }
+        headers = {"Authorization": "Bearer " + key}
+        data, error, http_status = _terminal_peer_json_post(endpoint, body, headers)
+        answer = _terminal_peer_response_text(data)
+        return {
+            "provider": pid,
+            "source": "xai_grok",
+            "source_family": "api_provider",
+            "answer": answer,
+            "ok": bool(answer and not error),
+            "status": "ANSWER_CAPTURED" if answer and not error else "NO_VERIFIED_ENGINE_ANSWER",
+            "error": error[:500],
+            "model": model,
+            "http_status": http_status,
+            "metadata": {"transport": "xai_openai_compatible_rest", "endpoint": _terminal_peer_endpoint_summary(endpoint), "provider_id": pid},
+            "execution_authority": False,
+        }
+    if pid == "copilot":
+        endpoint = _terminal_peer_config_value("SARAH_PEER_COPILOT_ENDPOINT", "M365_COPILOT_CHAT_ENDPOINT")
+        token = _terminal_peer_secret_value("SARAH_PEER_COPILOT_BEARER_TOKEN", "M365_COPILOT_BEARER_TOKEN")
+        if not endpoint or not token:
+            return {"provider": pid, "source": pid, "source_family": "api_provider", "answer": "", "ok": False, "status": "NO_CONFIGURED_TRANSPORT", "error": "Copilot requires SARAH_PEER_COPILOT_ENDPOINT and SARAH_PEER_COPILOT_BEARER_TOKEN; consumer Copilot web automation is not used.", "execution_authority": False}
+        body = {
+            "messages": [{"role": "user", "content": _terminal_peer_api_prompt(query, pid)}],
+            "stream": False,
+            "metadata": {"source": "SarahMemoryTerminal.peer_council", "provider_id": pid},
+        }
+        data, error, http_status = _terminal_peer_json_post(endpoint, body, {"Authorization": "Bearer " + token})
+        answer = _terminal_peer_response_text(data)
+        return {
+            "provider": pid,
+            "source": "microsoft_copilot_configured_endpoint",
+            "source_family": "api_provider",
+            "answer": answer,
+            "ok": bool(answer and not error),
+            "status": "ANSWER_CAPTURED" if answer and not error else "NO_VERIFIED_ENGINE_ANSWER",
+            "error": error[:500],
+            "model": "configured_copilot_endpoint",
+            "http_status": http_status,
+            "metadata": {"transport": "configured_rest_or_graph", "endpoint": _terminal_peer_endpoint_summary(endpoint), "provider_id": pid},
+            "execution_authority": False,
+        }
+    return {"provider": pid, "source": pid, "source_family": "api_provider", "answer": "", "ok": False, "status": "NO_CORE_API_ADAPTER", "error": "Provider has no direct Terminal online transport.", "execution_authority": False}
 
 
 def _terminal_peer_raw_items(payload: Dict[str, Any], query: str) -> List[Dict[str, Any]]:
@@ -2420,7 +2616,6 @@ def _terminal_peer_help_packet() -> Dict[str, Any]:
         "/agent peer status",
         "/agent peer ask providers=chatgpt,gemini,meta query=\"...\"",
         "/agent peer dispatch providers=chatgpt,gemini,meta --confirm query=\"...\"",
-        "For peer dispatch, do not use /agent launch; /agent peer dispatch is the governed route.",
         "/agent peer compare task_id=<id> with peer evidence payload",
         "/agent peer evidence task_id=<id> with peer evidence payload",
         "/agent peer candidates task_id=<id>",
@@ -2442,11 +2637,20 @@ def _terminal_peer_help_packet() -> Dict[str, Any]:
             "Terminal_truth_candidate_artifact",
             "explicit_user_approval_before_learning_ingestion",
         ],
+        "online_process": {
+            "dispatch_requires": "operation=dispatch plus explicit --confirm",
+            "records": ["peer_outbound_packet", "peer_return_packet", "peer_evidence", "peer_score", "peer_truth_candidate"],
+            "chatgpt_openai": "uses SarahMemoryAPI.send_to_api provider=openai when OPEN_AI_API and key are configured",
+            "grok_xai": "uses configured xAI/OpenAI-compatible REST via XAI_API_KEY or SARAH_PEER_GROK_API_KEY",
+            "copilot": "requires configured Microsoft Graph/Copilot Studio endpoint and bearer token; no consumer web automation",
+            "meta": "uses SarahMemoryAPI.send_to_api provider=meta when META_API and key are configured",
+        },
         "security": {
             "external_peers_are_evidence_only": True,
             "execution_authority": False,
             "memory_write_allowed": False,
             "learning_ingestion_requires_confirm": True,
+            "secrets_echoed_to_terminal": False,
         },
         "execution_authority": False,
     }
@@ -2753,11 +2957,13 @@ def _terminal_peer_api_prompt(query: str, provider_id: str) -> str:
     )
 
 
-def _dispatch_terminal_peer_api_queries(query: str, provider_ids: List[str], *, approved: bool, max_tokens: int = 700) -> Dict[str, Any]:
+def _dispatch_terminal_peer_api_queries(query: str, provider_ids: List[str], *, approved: bool, task_id: str = "", max_tokens: int = 700) -> Dict[str, Any]:
     if not approved:
-        return {"ok": False, "blocked": True, "reason": "explicit_user_approval_required_for_peer_api_dispatch", "results": [], "execution_authority": False}
+        return {"ok": False, "blocked": True, "reason": "explicit_user_approval_required_for_peer_api_dispatch", "results": [], "outbound_count": 0, "return_count": 0, "execution_authority": False}
     catalog = _terminal_peer_provider_catalog()
     results: List[Dict[str, Any]] = []
+    outbound_count = 0
+    return_count = 0
     try:
         import SarahMemoryAPI as api  # type: ignore
         send_to_api = getattr(api, "send_to_api", None)
@@ -2767,53 +2973,101 @@ def _dispatch_terminal_peer_api_queries(query: str, provider_ids: List[str], *, 
     else:
         api_error = ""
     for pid in provider_ids[:8]:
+        pid = str(pid or "").strip().lower()
         meta = catalog.get(pid) or {}
         api_provider = str(meta.get("api_provider") or "").strip().lower()
-        adapter_id = str(meta.get("adapter_id") or "")
-        if not api_provider:
-            results.append({"provider": pid, "source": pid, "source_family": "api_provider", "answer": "", "ok": False, "verified_response": False, "dispatch_status": "NO_CORE_API_ADAPTER", "adapter_declared": bool(adapter_id), "adapter_id": adapter_id, "error": "provider_has_no_core_api_dispatch_adapter", "execution_authority": False})
-            continue
-        if not callable(send_to_api):
-            results.append({"provider": pid, "source": pid, "source_family": "api_provider", "answer": "", "ok": False, "verified_response": False, "dispatch_status": "SARAHMEMORY_API_UNAVAILABLE", "adapter_declared": bool(adapter_id), "adapter_id": adapter_id, "error": "SarahMemoryAPI unavailable: " + api_error, "execution_authority": False})
-            continue
-        try:
-            resp = send_to_api(
-                _terminal_peer_api_prompt(query, pid),
-                provider=api_provider,
-                intent="research",
-                tone="neutral",
-                complexity="adult",
-                max_tokens=max(64, min(int(max_tokens or 700), 1200)),
-                temperature=0.2,
-                lane="api",
-                external_api_allowed_by_ui_lane=True,
-                do_not_write_sql=True,
-                do_not_persist=True,
-                meta={"source": "SarahMemoryTerminal.peer_council", "provider_id": pid, "external_api_allowed_by_ui_lane": True},
-            )
-            answer = ""
-            if isinstance(resp, dict):
-                answer = str(resp.get("data") or resp.get("response") or resp.get("answer") or "")
-            verified = bool(answer)
-            results.append({
-                "provider": pid,
-                "source": str((resp or {}).get("source") if isinstance(resp, dict) else api_provider) or pid,
-                "source_family": "api_provider",
-                "answer": answer,
-                "ok": verified,
-                "verified_response": verified,
-                "dispatch_status": "ANSWER_CAPTURED" if verified else "NO_VERIFIED_ENGINE_ANSWER",
-                "adapter_declared": bool(adapter_id),
-                "adapter_id": adapter_id,
-                "error": str((resp or {}).get("error") if isinstance(resp, dict) else "")[:500],
-                "model": str((resp or {}).get("model_used") if isinstance(resp, dict) else "")[:180],
-                "metadata": {"api_provider": api_provider, "dispatch_mode": "SarahMemoryAPI.send_to_api", "provider_id": pid},
-                "execution_authority": False,
-            })
-        except Exception as exc:
-            results.append({"provider": pid, "source": pid, "source_family": "api_provider", "answer": "", "ok": False, "verified_response": False, "dispatch_status": "DISPATCH_ERROR", "adapter_declared": bool(adapter_id), "adapter_id": adapter_id, "error": str(exc)[:500], "execution_authority": False})
-    verified_count = sum(1 for x in results if bool(x.get("verified_response")))
-    return {"ok": verified_count > 0, "blocked": False, "reason": "peer_api_dispatch_completed" if verified_count else "no_verified_peer_engine_answer", "verified_response_count": verified_count, "attempted_provider_count": len(results), "results": results, "execution_authority": False}
+        transport = str(meta.get("transport") or ("sarahmemory_api" if api_provider else "declared_no_direct_terminal_transport"))
+        outbound_packet = {
+            "schema": "SarahMemory.Terminal.peer_outbound_packet.v1",
+            "provider": pid,
+            "transport": transport,
+            "api_provider": api_provider or None,
+            "query_hash": _hash_text(query),
+            "approved_by_user": True,
+            "memory_write_allowed": False,
+            "execution_authority": False,
+            "ts": datetime.now().isoformat(),
+        }
+        outbound_count += 1
+        _record_terminal_peer_online_artifact(task_id, pid, "peer_outbound_packet", outbound_packet, status="outbound_sent_or_attempted")
+        _record_terminal_agent_task_event(
+            task_id,
+            stage="PEER_ONLINE_DISPATCH",
+            event_type="PEER_OUTBOUND_ATTEMPT",
+            verdict="OBSERVED",
+            risk="medium",
+            task=query,
+            details="Peer Council outbound online adapter attempted.",
+            metadata={"provider": pid, "transport": transport, "api_provider": api_provider or "", "memory_write_allowed": False},
+            output=outbound_packet,
+        )
+        if transport == "sarahmemory_api" and api_provider:
+            if not callable(send_to_api):
+                item = {"provider": pid, "source": pid, "source_family": "api_provider", "answer": "", "ok": False, "status": "SARAHMEMORY_API_UNAVAILABLE", "error": "SarahMemoryAPI unavailable: " + api_error, "execution_authority": False}
+            else:
+                try:
+                    resp = send_to_api(
+                        _terminal_peer_api_prompt(query, pid),
+                        provider=api_provider,
+                        intent="research",
+                        tone="neutral",
+                        complexity="adult",
+                        max_tokens=max(64, min(int(max_tokens or 700), 1200)),
+                        temperature=0.2,
+                        lane="api",
+                        mode="api",
+                        api_mode="api",
+                        external_api_allowed_by_ui_lane=True,
+                        do_not_write_sql=True,
+                        do_not_persist=True,
+                        meta={"source": "SarahMemoryTerminal.peer_council", "provider_id": pid, "peer_council_dispatch": True, "external_api_allowed_by_ui_lane": True, "lane": "api"},
+                    )
+                    answer = ""
+                    if isinstance(resp, dict):
+                        answer = str(resp.get("data") or resp.get("response") or resp.get("answer") or "")
+                    item = {
+                        "provider": pid,
+                        "source": str((resp or {}).get("source") if isinstance(resp, dict) else api_provider) or pid,
+                        "source_family": "api_provider",
+                        "answer": answer,
+                        "ok": bool(answer),
+                        "status": "ANSWER_CAPTURED" if answer else "NO_VERIFIED_ENGINE_ANSWER",
+                        "error": str(((resp or {}).get("error") if isinstance(resp, dict) else "") or "")[:500],
+                        "model": str((resp or {}).get("model_used") if isinstance(resp, dict) else "")[:180],
+                        "metadata": {"api_provider": api_provider, "transport": "SarahMemoryAPI.send_to_api", "provider_id": pid},
+                        "execution_authority": False,
+                    }
+                except Exception as exc:
+                    item = {"provider": pid, "source": pid, "source_family": "api_provider", "answer": "", "ok": False, "status": "DISPATCH_ERROR", "error": str(exc)[:500], "execution_authority": False}
+        elif transport in {"xai_openai_compatible_rest", "configured_rest_or_graph"} or pid in {"grok", "xai", "copilot"}:
+            item = _dispatch_terminal_peer_rest_query(query, pid, meta, max_tokens=max_tokens)
+        else:
+            item = {"provider": pid, "source": pid, "source_family": "api_provider", "answer": "", "ok": False, "status": "NO_CORE_API_ADAPTER", "error": "Provider is declared but has no direct Terminal/API transport configured.", "execution_authority": False}
+        if item.get("answer"):
+            return_count += 1
+        _record_terminal_peer_online_artifact(task_id, pid, "peer_return_packet", item, status="captured_review" if item.get("answer") else "need_more_evidence")
+        _record_terminal_agent_task_event(
+            task_id,
+            stage="PEER_ONLINE_RETURN",
+            event_type="PEER_RETURN_CAPTURED" if item.get("answer") else "PEER_RETURN_EMPTY",
+            verdict="OBSERVED" if item.get("answer") else "REVIEW",
+            risk="medium",
+            task=query,
+            details=str(item.get("status") or item.get("error") or "peer_return"),
+            metadata={"provider": pid, "status": item.get("status") or "", "transport": transport, "memory_write_allowed": False},
+            output=item,
+        )
+        results.append(item)
+    return {
+        "ok": any(bool(x.get("answer")) for x in results),
+        "blocked": False,
+        "reason": "peer_api_dispatch_completed",
+        "outbound_count": outbound_count,
+        "return_count": return_count,
+        "results": results,
+        "online_status": _terminal_peer_online_status(provider_ids, catalog=catalog),
+        "execution_authority": False,
+    }
 
 
 def _terminal_peer_transcript(task_id: str, *, limit: int = 25) -> Dict[str, Any]:
@@ -2894,6 +3148,41 @@ def _terminal_peer_operation_reply(
         _record_terminal_agent_task_event(task_id, stage="PEER_COUNCIL", event_type="PEER_COUNCIL_BLOCKED_BY_PRIOR_GOVERNANCE", verdict="BLOCK", risk=str(task_truth.get("risk_level") or "medium"), task=task_text, details=prior_reason or "prior governance gate blocked peer council", metadata={"operation": operation}, output=data)
         return out(False, "BLOCK / PEER_COUNCIL\nReason: " + (prior_reason or "prior_governance_gate_blocked") + "\nPeer Council did not proceed.", data, blocked=True, reason=prior_reason or "prior_governance_gate_blocked")
 
+    # SARAHMEMORY_PATCH_NOTE 2026-10-05:
+    # Outbound peer dispatch is network/API egress. It must fail closed at the
+    # Terminal governance surface when explicit operator confirmation is absent.
+    # Earlier code suppressed the provider call but still returned a non-blocked
+    # review packet, which made an unapproved dispatch look softer than it was.
+    if bool(parts.get("dispatch_requested")) and not _truthy_confirmation(payload, task_text):
+        data = {
+            "schema": "SarahMemory.Terminal.peer_council.dispatch_gate.v1",
+            "operation": operation,
+            "dispatch_requested": True,
+            "confirmed": False,
+            "providers": provider_ids,
+            "reason": "explicit_user_approval_required_for_peer_api_dispatch",
+            "memory_write_allowed": False,
+            "execution_authority": False,
+        }
+        _record_terminal_agent_task_event(
+            task_id,
+            stage="PEER_ONLINE_DISPATCH_GATE",
+            event_type="PEER_DISPATCH_BLOCKED_NO_CONFIRM",
+            verdict="BLOCK",
+            risk=str(task_truth.get("risk_level") or "medium"),
+            task=task_text,
+            details="Explicit --confirm is required before any outbound peer provider dispatch.",
+            metadata={"operation": operation, "provider_count": len(provider_ids), "memory_write_allowed": False},
+            output=data,
+        )
+        return out(
+            False,
+            "BLOCK / PEER_ONLINE_DISPATCH\nReason: explicit_user_approval_required_for_peer_api_dispatch\nNo peer provider was contacted.",
+            data,
+            blocked=True,
+            reason="explicit_user_approval_required_for_peer_api_dispatch",
+        )
+
     if operation == "help":
         data = _terminal_peer_help_packet()
         return out(True, "Peer Council help.\n\n" + _json_preview(data), data)
@@ -2901,7 +3190,7 @@ def _terminal_peer_operation_reply(
         return out(True, _json_preview(providers), {"schema": "SarahMemory.Terminal.peer_council.providers.v1", **providers})
     if operation == "status":
         reliability = _load_terminal_peer_reliability(provider_ids)
-        data = {"schema": "SarahMemory.Terminal.peer_council.status.v1", "task_id": task_id, "providers": providers, "provider_reliability": reliability, "memory_write_allowed": False, "execution_authority": False}
+        data = {"schema": "SarahMemory.Terminal.peer_council.status.v1", "task_id": task_id, "providers": providers, "online_adapters": providers.get("online_adapters", {}), "provider_reliability": reliability, "memory_write_allowed": False, "execution_authority": False}
         return out(True, "Peer Council status.\n\n" + _json_preview(data), data)
     if operation == "transcript":
         data = _terminal_peer_transcript(task_id)
@@ -2935,7 +3224,7 @@ def _terminal_peer_operation_reply(
     raw_items = _terminal_peer_raw_items(payload, query)
     dispatch = {"ok": False, "requested": bool(parts.get("dispatch_requested")), "results": [], "execution_authority": False}
     if bool(parts.get("dispatch_requested")):
-        dispatch = _dispatch_terminal_peer_api_queries(query, provider_ids, approved=bool(_truthy_confirmation(payload, task_text)))
+        dispatch = _dispatch_terminal_peer_api_queries(query, provider_ids, approved=bool(_truthy_confirmation(payload, task_text)), task_id=task_id)
         for item in list(dispatch.get("results") or []):
             if isinstance(item, dict):
                 raw_items.append(item)
@@ -4428,8 +4717,7 @@ def execute_terminal_agent_task(
             "headers": {"User-Agent": "SarahMemory-Terminal-Agent"},
             "json": {
                 "agent_name": "SarahMemory Local Terminal Agent",
-                "task": _terminal_firewall_observation_text(task_text),
-                "original_task_sha256": _hash_text(task_text),
+                "task": task_text[:4000],
                 "task_id": task_id,
                 "mission_id": str(task_truth.get("mission_id") or ""),
                 "requested_lane": "terminal_agent",
@@ -4589,6 +4877,13 @@ def execute_terminal_agent_task(
                 status["managed_passport_close"] = _close_terminal_auto_managed_passport(
                     task_id=task_id, task_text=task_text, task_truth=task_truth, adapter_execution=adapter_execution, caller=caller, session_id=sid
                 )
+                # A managed one-time credential must be closed before a result
+                # is released. Retain receipt evidence but deny an unclosed run.
+                if not bool((status.get("managed_passport_close") or {}).get("ok")):
+                    adapter_reason = "managed_passport_close_unverified"
+                    adapter_execution["ok"] = False
+                    adapter_execution["blocked"] = True
+                    adapter_execution["reason"] = adapter_reason
         if not isinstance(adapter_execution, dict) or not bool(adapter_execution.get("ok")):
             blocked = True
             reply = "BLOCK / READ_ONLY_ADAPTER\nReason: " + (adapter_reason or "adapter_execution_failed") + "\nNo result was released to Chat UI.\n\n" + reply
@@ -4623,6 +4918,13 @@ def execute_terminal_agent_task(
                 status["managed_passport_close"] = _close_terminal_auto_managed_passport(
                     task_id=task_id, task_text=task_text, task_truth=task_truth, adapter_execution=adapter_execution, caller=caller, session_id=sid
                 )
+                # A managed one-time credential must be closed before a result
+                # is released. Retain receipt evidence but deny an unclosed run.
+                if not bool((status.get("managed_passport_close") or {}).get("ok")):
+                    adapter_reason = "managed_passport_close_unverified"
+                    adapter_execution["ok"] = False
+                    adapter_execution["blocked"] = True
+                    adapter_execution["reason"] = adapter_reason
         if not isinstance(adapter_execution, dict) or not bool(adapter_execution.get("ok")):
             blocked = True
             reply = "BLOCK / EXTERNAL_READ_ONLY_ADAPTER\nReason: " + (adapter_reason or "external_adapter_execution_failed") + "\nNo external result was released to Chat UI.\n\n" + reply
@@ -4654,8 +4956,8 @@ def execute_terminal_agent_task(
         status["browser_agent_firewall_route"] = "Research Browser fetch -> terminal_browser_agent_fetch_guard -> AgentFirewall"
         status["browser_agent_actions"] = ui_actions
         reply = (
-            "PASS / BROWSER_AGENT_SURFACE\n"
-            "SarahMemory issued a passported browser-agent task to the built-in Research Browser.\n"
+            "STAGED / BROWSER_AGENT_SURFACE\n"
+            "SarahMemory prepared browser actions for the Research Browser. No page fetch or returned evidence is verified by this response.\n"
             "The Research Browser is being brought to the front and its fetch route must pass Terminal passport scope plus AgentFirewall before reading the source.\n"
             "No shell, filesystem write, driver action, DevBridge apply, or autonomous authority was granted.\n\n"
             + reply
@@ -4667,11 +4969,23 @@ def execute_terminal_agent_task(
         severity="WARN" if blocked else "INFO",
         meta={"caller": caller, "session_id": sid, "task_id": task_id, "task_sha256": compact_task_verdict.get("payload_sha256"), "blocked": blocked, "smoke_ok": smoke.get("ok")},
     )
+    verified_adapter_complete = bool(
+        not blocked
+        and isinstance(adapter_execution, dict)
+        and adapter_execution.get("ok") is True
+        and isinstance(adapter_execution.get("adapter_result"), dict)
+        and adapter_execution["adapter_result"].get("ok") is True
+        and isinstance(adapter_execution.get("compare_result"), dict)
+        and adapter_execution["compare_result"].get("accepted") is True
+        and bool(adapter_execution.get("receipt_ids"))
+    )
     _record_terminal_agent_task_event(
         task_id,
         stage="AGENT_TASK",
-        event_type="TERMINAL_AGENT_TASK_BLOCKED" if blocked else "TERMINAL_AGENT_TASK_INSPECTED",
-        verdict="DENY" if blocked else "INSPECTED",
+        event_type=("TERMINAL_AGENT_TASK_BLOCKED" if blocked else
+                    "TERMINAL_AGENT_TASK_COMPLETED" if verified_adapter_complete else
+                    "TERMINAL_AGENT_TASK_INSPECTED"),
+        verdict="DENY" if blocked else "COMPLETED" if verified_adapter_complete else "INSPECTED",
         risk=str(compact_task_verdict.get("risk_tier") or task_truth.get("risk_level") or "low").lower(),
         task=task_text,
         details=str(compact_task_verdict.get("reason") or "Terminal AI-agent task inspected."),
@@ -4838,9 +5152,6 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
     operation = str(payload.get("operation") or parsed.get("operation") or "inspect").strip().lower()
     if operation in ("", "inspect", "task"):
         return None
-    if operation in ("passport_help", "passport"):
-        text = 'AI-agent passport commands:\n- passport list [status]\n- passport status <passport_id>\n- passport issue <agent_id> :: <purpose> --confirm\n- passport depart <passport_id> --confirm\n- passport revoke <passport_id> :: <reason> --confirm\n- passport consume <passport_id> --confirm\n\nFor peer council provider tests, prefer:\n- /agent peer providers\n- /agent peer dispatch providers=chatgpt,gemini,meta --confirm query=\\"...\\"\n\nIf using the legacy launch gate, exact syntax is:\n- /agent launch task_id=<issued_task_id> passport_id=<passport_id> --confirm source=<approved_https_source>\n\nA passport identifies and scopes an agent; it never grants execution authority. Return nonces/signatures are never displayed in terminal history.'
-        return {"ok": True, "blocked": False, "reason": None, "reply": text, "stdout": text, "stderr": "", "mode": "terminal_agent_passport", "passport_data": {"execution_authority": False}, "task_id": "", "task_truth_hash": "", "execution_authority": False, "actions": [], "ts": datetime.now().isoformat()}
     registry, registry_error = _agent_registry_module()
     if registry is None:
         return {"ok": False, "blocked": True, "reason": "TrustRegistry unavailable: " + registry_error, "reply": "AI-agent passport registry is unavailable.", "stdout": "", "stderr": registry_error, "mode": "terminal_agent_passport", "actions": []}
@@ -4871,7 +5182,7 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
         }
 
     if operation in ("passport_help", "passport"):
-        return response(True, "AI-agent passport commands:\n- passport list [status]\n- passport status <passport_id>\n- passport issue <agent_id> :: <purpose> --confirm\n- passport depart <passport_id> --confirm\n- passport revoke <passport_id> :: <reason> --confirm\n- passport consume <passport_id> --confirm\n\nFor peer council provider tests, prefer:\n- /agent peer providers\n- /agent peer dispatch providers=chatgpt,gemini,meta --confirm query=\"...\"\n\nIf using the legacy launch gate, exact syntax is:\n- /agent launch task_id=<issued_task_id> passport_id=<passport_id> --confirm source=<approved_https_source>\n\nA passport identifies and scopes an agent; it never grants execution authority. Return nonces/signatures are never displayed in terminal history.")
+        return response(True, "AI-agent passport commands:\n- passport list [status]\n- passport status <passport_id>\n- passport issue <agent_id> :: <purpose> --confirm\n- passport depart <passport_id> --confirm\n- passport revoke <passport_id> :: <reason> --confirm\n- passport consume <passport_id> --confirm\nA passport identifies and scopes an agent; it never grants execution authority.")
 
     if operation == "passport_list":
         rows = registry.list_agent_passports(status=str(merged.get("status") or ""), limit=int(merged.get("limit") or 50))
@@ -4903,16 +5214,8 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
         firewall_ok, firewall, fw_error = _agent_firewall_available()
         if not firewall_ok or not callable(getattr(firewall, "issue_outbound_agent_passport", None)):
             return response(False, "AgentFirewall passport issuer unavailable.", blocked=True, reason=fw_error or "passport_issuer_unavailable")
+        scope_lane = str(merged.get("origin_lane") or (spine.get("task_truth") or {}).get("skill_id") or "research")
         task_truth_for_passport = (spine.get("task_truth") or {}) if isinstance(spine.get("task_truth"), dict) else {}
-        explicit_origin_lane = str(merged.get("origin_lane") or "").strip()
-        purpose_text = str(merged.get("purpose") or task or "")
-        if explicit_origin_lane:
-            scope_lane = explicit_origin_lane
-        elif _terminal_peer_intent_text(purpose_text):
-            scope_lane = "agent.peer_council"
-        else:
-            scope_lane = str(task_truth_for_passport.get("skill_id") or "research")
-        peer_intent_scope = scope_lane == "agent.peer_council"
         result = firewall.issue_outbound_agent_passport(
             agent_id=agent_id,
             agent_name=str(merged.get("agent_name") or agent_id),
@@ -4920,7 +5223,7 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
             task_id=str(merged.get("task_id") or ""),
             origin_lane=scope_lane,
             allowed_lanes=_as_string_list(merged.get("allowed_lanes") or [scope_lane]),
-            allowed_capabilities=_as_string_list(merged.get("allowed_capabilities") or (["peer_review", "compare_verify", "evidence", "return_data", "api_read"] if peer_intent_scope else task_truth_for_passport.get("allowed_capabilities") or ["research", "return_data"])),
+            allowed_capabilities=_as_string_list(merged.get("allowed_capabilities") or task_truth_for_passport.get("allowed_capabilities") or ["research", "return_data"]),
             allowed_resources=_as_string_list(merged.get("allowed_resources") or merged.get("allowed_sources") or task_truth_for_passport.get("allowed_sources") or []),
             denied_resources=_as_string_list(merged.get("denied_resources") or merged.get("denied_sources") or task_truth_for_passport.get("denied_sources") or ["core/*", ".env", "credentials", "shell", "device_control"]),
             maximum_risk_tier=str(merged.get("maximum_risk_tier") or task_truth_for_passport.get("risk_level") or "low"),
@@ -4947,17 +5250,14 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
         creds = result.get("departure_credentials") if isinstance(result.get("departure_credentials"), dict) else {}
         _record_terminal_agent_passport(str(merged.get("task_id") or (spine or {}).get("task_id") or ""), result, backend=str((spine.get("task_truth") or {}).get("backend") or merged.get("backend") or ""), skill_id=str((spine.get("task_truth") or {}).get("skill_id") or merged.get("skill_id") or ""))
         _record_terminal_agent_task_event(str(merged.get("task_id") or (spine or {}).get("task_id") or ""), stage="PASSPORT", event_type="PASSPORT_ISSUED", verdict="ISSUED", risk=str((spine.get("task_truth") or {}).get("risk_level") or "low"), task=task, details="Governed AI-agent passport issued by Terminal Bay; no launch authority granted.", metadata={"passport_id": str(creds.get("passport_id") or ""), "agent_id": agent_id, "backend": str((spine.get("task_truth") or {}).get("backend") or ""), "skill_id": str((spine.get("task_truth") or {}).get("skill_id") or "")})
-        safe_creds = _terminal_departure_credentials_safe_summary(creds)
         text = "\n".join([
             "Governed AI-agent passport issued.",
-            f"passport_id={safe_creds.get('passport_id')}", f"agent_id={safe_creds.get('agent_id')}",
-            "departure_nonce=[REDACTED_PRESENT]" if safe_creds.get("departure_nonce_present") else "departure_nonce=[NOT_PRESENT]",
-            "return_nonce=[REDACTED_PRESENT]" if safe_creds.get("return_nonce_present") else "return_nonce=[NOT_PRESENT]",
-            "return_signature=[REDACTED_PRESENT]" if safe_creds.get("return_signature_present") else "return_signature=[NOT_PRESENT]",
-            "Return credentials are stored inside the governed passport registry and are not displayed in terminal history.",
-            "No agent was launched and no execution authority was granted.",
+            f"passport_id={creds.get('passport_id')}", f"agent_id={creds.get('agent_id')}",
+            f"departure_nonce={creds.get('departure_nonce')}", f"return_nonce={creds.get('return_nonce')}",
+            f"return_signature={creds.get('return_signature')}",
+            "Store return credentials securely. They are shown once. No agent was launched and no execution authority was granted.",
         ])
-        return response(True, text, {"passport": passport, "departure_credentials": safe_creds, "departure_credentials_redacted": True})
+        return response(True, text, {"passport": passport, "departure_credentials": creds})
 
     if operation == "passport_depart":
         if not confirmed:
@@ -5267,7 +5567,7 @@ def terminal_agent_counter_status(include_firewall_snapshot: bool = True) -> Dic
             cur = con.cursor()
             for table in ("terminal_agent_tasks", "terminal_agent_events", "terminal_agent_passports", "terminal_agent_artifacts"):
                 tables_available[table] = _terminal_counter_table_exists(cur, table)
-            summary["tasks_active"] = _terminal_counter_count(cur, "terminal_agent_tasks", "LOWER(status) NOT IN ('blocked','denied','failed','complete','completed','cancelled','canceled')")
+            summary["tasks_active"] = _terminal_counter_count(cur, "terminal_agent_tasks", "LOWER(status) IN ('active','running','executing')")
             summary["tasks_blocked"] = _terminal_counter_count(cur, "terminal_agent_tasks", "LOWER(status) IN ('blocked','denied','hold','failed')")
             summary["tasks_completed"] = _terminal_counter_count(cur, "terminal_agent_tasks", "LOWER(status) IN ('complete','completed')")
             summary["passports_active"] = _terminal_counter_count(cur, "terminal_agent_passports", "LOWER(status) IN ('active','issued','departed')")

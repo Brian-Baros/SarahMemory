@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryAvatarPanel.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -78,7 +78,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -92,11 +92,18 @@ import threading
 import time
 import json
 import base64
+import math
+import copy
+import uuid
+import io
+import re
 import queue
 from typing import Optional, Dict, Any, Callable, List, Tuple
 from pathlib import Path
 from datetime import datetime
 from enum import Enum, auto
+
+MODULE_VERSION = "9.1.0a"
 
 # ============================================================================
 # LOGGING CONFIGURATION
@@ -187,6 +194,143 @@ try:
     import SarahMemoryAvatar as Avatar
 except ImportError:
     Avatar = None
+
+# Enterprise presentation boundaries: never grant device, network, or hardware authority.
+_MAX_IMAGE_SIDE = 2048
+_MAX_RENDER_PIXELS = 2048 * 2048
+_MAX_UPLOAD_BYTES = 12 * 1024 * 1024
+_MAX_MEDIA_BYTES = 512 * 1024 * 1024
+_MAX_MEDIA_QUEUE = 64
+_PANEL_SINGLETON_LOCK = threading.RLock()
+
+
+def _panel_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and math.isfinite(value) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        return {'true': True, 'false': False, '1': True, '0': False, 'yes': True, 'no': False,
+                'on': True, 'off': False}.get(value.strip().lower(), default)
+    return default
+
+
+def _panel_number(value: Any, default: float, low: float, high: float) -> float:
+    try:
+        number = float(value)
+        if not math.isfinite(number):
+            return default
+        return max(low, min(high, number))
+    except (ValueError, TypeError, OverflowError):
+        return default
+
+
+def _panel_dimension(value: Any, *, low: int = 1, high: int = _MAX_IMAGE_SIDE) -> int:
+    if isinstance(value, bool):
+        raise ValueError('invalid_dimension')
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError('invalid_dimension') from None
+    if not low <= number <= high:
+        raise ValueError('dimension_out_of_bounds')
+    return number
+
+
+def _panel_is_local() -> bool:
+    return str(RUN_MODE).lower() != 'cloud' and str(DEVICE_MODE).lower() != 'public_web'
+
+
+def _panel_approved_media_path(path: str, *, kind: str = 'image') -> Optional[str]:
+    if not isinstance(path, str) or not path or len(path) > 4096 or '://' in path or '\x00' in path:
+        return None
+    try:
+        original = Path(path).expanduser()
+        resolved = original.resolve(strict=True)
+        if not resolved.is_file() or resolved.is_symlink() or original.is_symlink():
+            return None
+        roots = [Path(DATASETS_DIR), Path(AVATAR_DIR)]
+        if config is not None:
+            for key in ('DATA_DIR', 'CANVAS_DIR', 'RESOURCES_DIR'):
+                value = getattr(config, key, None)
+                if value:
+                    roots.append(Path(value))
+        if not any(resolved.is_relative_to(root.expanduser().resolve()) for root in roots):
+            return None
+        if resolved.stat().st_size > _MAX_MEDIA_BYTES:
+            return None
+        suffix = resolved.suffix.lower()
+        if kind == 'image' and suffix not in {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'}:
+            return None
+        if kind == 'video' and suffix not in {'.mp4', '.webm', '.mov', '.mkv', '.avi'}:
+            return None
+        return str(resolved)
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+def _panel_verify_image(path: str) -> bool:
+    if not HAVE_PIL:
+        return False
+    try:
+        with Image.open(path) as img:
+            if img.width <= 0 or img.height <= 0 or img.width * img.height > _MAX_RENDER_PIXELS:
+                return False
+            img.verify()
+        return True
+    except (OSError, ValueError, SyntaxError, MemoryError):
+        return False
+
+
+def _panel_authorize_capture(kind: str, *, local_ui_consent: bool = False) -> bool:
+    # Only a local human UI gesture can supply consent in this module.
+    # API-provided arbitrary flags are never treated as user approval.
+    if not (_panel_is_local() and local_ui_consent):
+        return False
+    try:
+        from SarahMemoryOperatorCore import authorize_external_domain_action
+        verdict = authorize_external_domain_action(
+            f'Use local {kind} presentation capture',
+            origin='SarahMemoryAvatarPanel.local_ui',
+            proposed_action={
+                'action_type': f'avatar_panel.{kind}.capture',
+                'target': 'local_display' if kind == 'desktop' else 'local_camera',
+                'capability_name': 'display.capture' if kind == 'desktop' else 'camera.capture',
+                'risk_level': 'TIER_3_PRIVILEGED_SYSTEM',
+                'required_permissions': [f'{kind}.capture'],
+                'verification_checks': [{'name': 'capture_stopped_on_exit', 'required': True}],
+                'rollback_plan': [{'name': 'release_capture_device', 'required': True}],
+            },
+            meta={'source': 'SarahMemoryAvatarPanel', 'execution_authority': False},
+            user_consented=True,
+        )
+        return bool(isinstance(verdict, dict) and verdict.get('allow') is True
+                    and verdict.get('domain_execution_authorized') is True
+                    and str(verdict.get('decision', '')).upper() == 'ALLOW')
+    except Exception as exc:
+        logger.warning('Capture authorization unavailable (%s): %s', kind, type(exc).__name__)
+        return False
+
+
+def _panel_verified_glb(path: str, root: str) -> bool:
+    # The enterprise AvatarBuilder is the existing geometry/asset verification owner.
+    try:
+        resolved_root = Path(root).resolve()
+        resolved = Path(path).resolve(strict=True)
+        if not resolved.is_relative_to(resolved_root) or not resolved.is_file():
+            return False
+        import SarahMemoryAvatarBuilder as builder
+        if str(getattr(builder, 'MODULE_VERSION', '')) != '9.1.0a':
+            return False
+        inspector = getattr(builder, '_read_glb_header', None)
+        if not callable(inspector):
+            return False
+        evidence = inspector(str(resolved))
+        return bool(isinstance(evidence, dict) and evidence.get('valid_glb_structure') is True
+                    and evidence.get('has_mesh') is True)
+    except Exception:
+        return False
+
 
 # ============================================================================
 # ENUMERATIONS FOR PANEL MODES
@@ -307,25 +451,28 @@ class AvatarPanelState:
             return self._mode
     
     def set_mode(self, mode: PanelMode, save_previous: bool = True) -> None:
-        """
-        Set panel mode with optional save of previous mode for auto-return.
-        
-        Args:
-            mode: New panel mode to set
-            save_previous: If True, saves current mode for later restoration
-        """
+        """Change mode once; publish callbacks outside the state lock."""
+        if not isinstance(mode, PanelMode):
+            raise ValueError('unsupported_panel_mode')
         with self._lock:
-            if save_previous and self._mode != mode:
-                self._previous_mode = self._mode
             old_mode = self._mode
+            if old_mode == mode:
+                return
+            if save_previous:
+                self._previous_mode = old_mode
             self._mode = mode
-            logger.info(f"Panel mode changed: {old_mode.name} -> {mode.name}")
-            self._notify_mode_change(old_mode, mode)
+            callbacks = tuple(self._mode_change_callbacks[:64])
+        logger.info('Panel mode changed: %s -> %s', old_mode.name, mode.name)
+        for callback in callbacks:
+            try:
+                callback(old_mode, mode)
+            except Exception as exc:
+                logger.warning('Mode change callback error: %s', exc)
     
     def restore_previous_mode(self) -> None:
-        """Restore the previous panel mode (used after conference ends)."""
         with self._lock:
-            self.set_mode(self._previous_mode, save_previous=False)
+            previous = self._previous_mode
+        self.set_mode(previous, save_previous=False)
     
     def _notify_mode_change(self, old_mode: PanelMode, new_mode: PanelMode) -> None:
         """Notify all registered callbacks of mode change."""
@@ -350,10 +497,9 @@ class AvatarPanelState:
             return self._current_emotion
 
     def set_emotion(self, emotion: str) -> None:
-        """Set avatar emotion."""
         with self._lock:
-            self._current_emotion = emotion
-            logger.debug(f"Avatar emotion set: {emotion}")
+            clean = str(emotion or 'neutral').strip().lower()[:64]
+            self._current_emotion = clean if clean in AvatarAnimationEngine.EMOTION_EXPRESSIONS else 'neutral'
     
     def get_avatar_type(self) -> str:
         """Get avatar type (2d/3d)."""
@@ -361,15 +507,13 @@ class AvatarPanelState:
             return self._avatar_type
     
     def set_avatar_type(self, avatar_type: str) -> None:
-        """Set avatar type."""
+        kind = str(avatar_type or '').strip().lower()
+        if kind not in {'2d', '3d'}:
+            raise ValueError('unsupported_avatar_type')
         with self._lock:
-            self._avatar_type = avatar_type.lower()
-            if self._avatar_type == "3d":
-                self._avatar_3d_loader_state = "3D_LOADING"
-                self.set_mode(PanelMode.AVATAR_3D)
-            else:
-                self._avatar_3d_loader_state = "2D_MODE"
-                self.set_mode(PanelMode.AVATAR_2D)
+            self._avatar_type = kind
+            self._avatar_3d_loader_state = '3D_LOADING' if kind == '3d' else '2D_MODE'
+        self.set_mode(PanelMode.AVATAR_3D if kind == '3d' else PanelMode.AVATAR_2D)
 
     def get_avatar_3d_dir(self) -> str:
         """Return canonical 3D Avatar Organ asset directory."""
@@ -379,34 +523,28 @@ class AvatarPanelState:
             return os.path.join(AVATAR_DIR, "3D")
 
     def get_avatar_3d_model_path(self) -> str:
-        """Return the active visual GLB path for the Avatar Panel."""
         with self._lock:
-            model_file = os.path.basename(str(self._avatar_3d_model_file or "SarahMemoryAvatar_RigBootstrap.glb"))
-            skin = str(self._avatar_3d_skin or "default").strip()
+            model_file = os.path.basename(str(self._avatar_3d_model_file or 'SarahMemoryAvatar_RigBootstrap.glb'))
+            skin = str(self._avatar_3d_skin or 'default').strip()
         base = self.get_avatar_3d_dir()
-        direct = os.path.join(base, model_file)
-        if os.path.isfile(direct):
-            return direct
-        if skin and skin.lower() != "default":
-            skinned = os.path.join(base, skin, model_file)
-            if os.path.isfile(skinned):
-                return skinned
-        # legacy fallback model names, still within plural resources/avatars/3D
-        for name in ("SarahMemoryAvatar_RigBootstrap.glb", "sarahmemory_3d_avatar.glb", "sarahmemory_happy_face_ball.glb"):
-            candidate = os.path.join(base, name)
-            if os.path.isfile(candidate):
+        options = [os.path.join(base, model_file)]
+        if skin and skin.lower() != 'default' and skin not in {'.', '..'} and '/' not in skin and '\\' not in skin:
+            options.append(os.path.join(base, skin, model_file))
+        options += [os.path.join(base, name) for name in ('SarahMemoryAvatar_RigBootstrap.glb', 'sarahmemory_3d_avatar.glb', 'sarahmemory_happy_face_ball.glb')]
+        for candidate in options:
+            if _panel_verified_glb(candidate, base):
                 return candidate
-        return direct
+        return options[0]
 
     def get_avatar_3d_spec(self) -> Dict[str, Any]:
         """Return the frontend 3D avatar spec packet used by the V9 Avatar Panel."""
         with self._lock:
             model_path = self.get_avatar_3d_model_path()
             model_file = os.path.basename(model_path)
-            exists = os.path.isfile(model_path)
-            loader_state = "3D_READY_TRUE_MESH_PRODUCTION" if exists else "3D_FAILED_FALLBACK_GOLD_REFERENCE"
+            exists = _panel_verified_glb(model_path, self.get_avatar_3d_dir())
+            loader_state = "3D_READY_VALIDATED_MESH" if exists else "3D_FAILED_FALLBACK_GOLD_REFERENCE"
             if self._avatar_type == "3d" and self._avatar_3d_loader_state == "3D_LOADING" and exists:
-                loader_state = "3D_READY_TRUE_MESH_PRODUCTION"
+                loader_state = "3D_READY_VALIDATED_MESH"
                 self._avatar_3d_loader_state = loader_state
             return {
                 "renderMode": "gltf_model" if exists else "gold_standard_avatar",
@@ -434,11 +572,11 @@ class AvatarPanelState:
                 "runtimeVisualPriority": "gltf_model",
                 "meshFallbackUrl": f"/api/avatar/3d/{model_file}" if exists else "",
                 "forceMeshRuntime": bool(exists),
-                "goldReferenceOnly": True,
+                "goldReferenceOnly": not exists,
                 "authoringPolyTarget": 12000000,
-                "runtimeLod": "goldstandard_entity",
+                "runtimeLod": "configured_unmeasured",
                 "productionAssetContract": "SARAHMEMORY_GOLDSTANDARD_EMBODIED_ENTITY_GLB_V1",
-                "blueprintConstructReady": True,
+                "blueprintConstructReady": bool(exists),
                 "visualEffectsMode": "secondary",
                 "goldStandardScale": 1.0,
                 "goldStandardYOffset": 0,
@@ -459,14 +597,13 @@ class AvatarPanelState:
             return self._avatar_zoom
     
     def set_zoom(self, zoom: float) -> None:
-        """Set avatar zoom level (0.25 - 3.0)."""
         with self._lock:
-            self._avatar_zoom = max(0.25, min(3.0, zoom))
+            self._avatar_zoom = _panel_number(zoom, self._avatar_zoom, 0.25, 3.0)
 
     def set_speaking(self, speaking: bool) -> None:
         """Set live speaking flag for WebUI/avatar API synchronization."""
         with self._lock:
-            self._avatar_speaking = bool(speaking)
+            self._avatar_speaking = _panel_bool(speaking)
             if self._avatar_speaking:
                 self._avatar_listening = False
                 self._avatar_busy = False
@@ -484,7 +621,7 @@ class AvatarPanelState:
     def set_listening(self, listening: bool) -> None:
         """Set live listening flag for WebUI/avatar API synchronization."""
         with self._lock:
-            self._avatar_listening = bool(listening)
+            self._avatar_listening = _panel_bool(listening)
             if self._avatar_listening:
                 self._avatar_speaking = False
                 self._avatar_busy = False
@@ -502,7 +639,7 @@ class AvatarPanelState:
     def set_thinking(self, thinking: bool) -> None:
         """Set live thinking flag for diagnostics/life-cycle sync."""
         with self._lock:
-            self._avatar_thinking = bool(thinking)
+            self._avatar_thinking = _panel_bool(thinking)
             if self._avatar_thinking:
                 self._avatar_life_state = "thinking"
                 self._last_interaction_at = time.time()
@@ -510,7 +647,7 @@ class AvatarPanelState:
     def set_busy(self, busy: bool) -> None:
         """Set live busy flag for diagnostics/life-cycle sync."""
         with self._lock:
-            self._avatar_busy = bool(busy)
+            self._avatar_busy = _panel_bool(busy)
             if self._avatar_busy:
                 self._avatar_life_state = "busy"
                 self._last_interaction_at = time.time()
@@ -518,7 +655,7 @@ class AvatarPanelState:
     def set_diagnostics(self, diagnostics: bool) -> None:
         """Set live diagnostics flag for diagnostics/life-cycle sync."""
         with self._lock:
-            self._avatar_diagnostics = bool(diagnostics)
+            self._avatar_diagnostics = _panel_bool(diagnostics)
             if self._avatar_diagnostics:
                 self._avatar_life_state = "diagnostics"
                 self._last_interaction_at = time.time()
@@ -575,16 +712,15 @@ class AvatarPanelState:
     # Media State
     # -------------------------------------------------------------------------
     def queue_media(self, media_path: str, media_type: str = "image") -> None:
-        """
-        Queue media for display in the panel.
-        
-        Args:
-            media_path: Path to media file
-            media_type: "image" or "video"
-        """
+        if media_type not in {'image', 'video'}:
+            raise ValueError('unsupported_media_type')
+        verified = _panel_approved_media_path(media_path, kind=media_type)
+        if not verified:
+            raise ValueError('unapproved_media_path')
         with self._lock:
-            self._media_queue.put((media_path, media_type))
-            logger.info(f"Media queued: {media_path} ({media_type})")
+            if self._media_queue.qsize() >= _MAX_MEDIA_QUEUE:
+                raise OverflowError('media_queue_full')
+            self._media_queue.put_nowait((verified, media_type))
     
     def get_next_media(self) -> Optional[Tuple[str, str]]:
         """Get next media item from queue."""
@@ -634,7 +770,8 @@ class AvatarPanelState:
             return self._panel_size
     
     def set_panel_size(self, width: int, height: int) -> None:
-        """Set custom panel size."""
+        width = _panel_dimension(width, low=64, high=8192)
+        height = _panel_dimension(height, low=64, high=8192)
         with self._lock:
             self._custom_size = (width, height)
     
@@ -683,35 +820,47 @@ class AvatarPanelState:
             }
     
     def from_dict(self, data: Dict[str, Any]) -> None:
-        """Restore state from dictionary."""
+        """Validate before applying any restored presentation state."""
+        if not isinstance(data, dict):
+            raise ValueError('panel_state_must_be_dict')
         with self._lock:
-            if "mode" in data:
-                self._mode = PanelMode[data["mode"]]
-            if "emotion" in data:
-                self._current_emotion = data["emotion"]
-            if "avatar_type" in data:
-                self._avatar_type = data["avatar_type"]
-            if "avatar_zoom" in data:
-                self._avatar_zoom = data["avatar_zoom"]
-            if "speaking" in data:
-                self._avatar_speaking = bool(data["speaking"])
-            if "listening" in data:
-                self._avatar_listening = bool(data["listening"])
-            if "thinking" in data:
-                self._avatar_thinking = bool(data["thinking"])
-            if "busy" in data:
-                self._avatar_busy = bool(data["busy"])
-            if "diagnostics" in data:
-                self._avatar_diagnostics = bool(data["diagnostics"])
-            if "life_state" in data:
-                self._avatar_life_state = str(data["life_state"] or "ready")
-            if "avatar_3d_skin" in data:
-                self._avatar_3d_skin = str(data.get("avatar_3d_skin") or "default")
-            if "avatar_3d_model_file" in data:
-                self._avatar_3d_model_file = os.path.basename(str(data.get("avatar_3d_model_file") or "SarahMemoryAvatar_RigBootstrap.glb"))
-            if "avatar_3d_quality" in data:
-                q = str(data.get("avatar_3d_quality") or "cinematic_2m").lower()
-                self._avatar_3d_quality = q if q in {"preview", "balanced", "high", "ultra", "cinematic_2m"} else "cinematic_2m"
+            if 'mode' in data:
+                mode_text = str(data['mode']).upper()
+                if mode_text not in PanelMode.__members__:
+                    raise ValueError('unsupported_panel_mode')
+            if 'avatar_type' in data and str(data['avatar_type']).lower() not in {'2d', '3d'}:
+                raise ValueError('unsupported_avatar_type')
+            if 'avatar_3d_model_file' in data:
+                model_filename = os.path.basename(str(data['avatar_3d_model_file'] or ''))
+                if not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}\.glb', model_filename, flags=re.I):
+                    raise ValueError('unsupported_3d_model_name')
+            if 'mode' in data:
+                self._mode = PanelMode[str(data['mode']).upper()]
+            if 'emotion' in data:
+                self.set_emotion(data['emotion'])
+            if 'avatar_type' in data:
+                self._avatar_type = str(data['avatar_type']).lower()
+            if 'avatar_zoom' in data:
+                self.set_zoom(data['avatar_zoom'])
+            for field_name, attr in (('speaking','_avatar_speaking'), ('listening','_avatar_listening'),
+                ('thinking','_avatar_thinking'), ('busy','_avatar_busy'), ('diagnostics','_avatar_diagnostics')):
+                if field_name in data:
+                    setattr(self, attr, _panel_bool(data[field_name]))
+            if 'life_state' in data:
+                self._avatar_life_state = str(data['life_state'] or 'ready').strip()[:64]
+            if 'avatar_3d_skin' in data:
+                skin = str(data['avatar_3d_skin'] or 'default').strip()[:64]
+                if not skin or skin in {'.', '..'} or '/' in skin or '\\' in skin:
+                    skin = 'default'
+                self._avatar_3d_skin = skin
+            if 'avatar_3d_model_file' in data:
+                model_file = os.path.basename(str(data['avatar_3d_model_file'] or ''))
+                if not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}\.glb', model_file, flags=re.I):
+                    raise ValueError('unsupported_3d_model_name')
+                self._avatar_3d_model_file = model_file
+            if 'avatar_3d_quality' in data:
+                quality = str(data['avatar_3d_quality'] or 'cinematic_2m').lower()
+                self._avatar_3d_quality = quality if quality in {'preview','balanced','high','ultra','cinematic_2m','goldstandard_entity'} else 'cinematic_2m'
 
 
 # ============================================================================
@@ -722,9 +871,10 @@ _panel_state: Optional[AvatarPanelState] = None
 def get_panel_state() -> AvatarPanelState:
     """Get or create the global panel state instance."""
     global _panel_state
-    if _panel_state is None:
-        _panel_state = AvatarPanelState()
-    return _panel_state
+    with _PANEL_SINGLETON_LOCK:
+        if _panel_state is None:
+            _panel_state = AvatarPanelState()
+        return _panel_state
 
 
 # ============================================================================
@@ -742,11 +892,12 @@ class DesktopMirrorThread(QThread if HAVE_QT else threading.Thread):
     def __init__(self, fps: int = 15, monitor: int = 1):
         super().__init__()
         self._running = False
-        self._fps = fps
-        self._monitor = monitor
-        self._frame_interval = 1.0 / fps
+        self._fps = _panel_dimension(fps, low=1, high=30)
+        self._monitor = max(1, min(8, int(monitor)))
+        self._frame_interval = 1.0 / self._fps
         self._callbacks: List[Callable] = []
         self._lock = threading.Lock()
+        self._capture_authorized = False
     
     def register_callback(self, callback: Callable) -> None:
         """Register a callback for frame updates."""
@@ -761,7 +912,12 @@ class DesktopMirrorThread(QThread if HAVE_QT else threading.Thread):
                 self._callbacks.remove(callback)
     
     def start_capture(self) -> None:
-        """Start desktop capture."""
+        if not HAVE_MSS or not _panel_is_local() or not self._capture_authorized:
+            raise RuntimeError('desktop_capture_unavailable_or_not_authorized')
+        if self.isRunning() if HAVE_QT else self.is_alive():
+            return
+        if getattr(self, '_started', None) is not None and not HAVE_QT and self._started.is_set():
+            raise RuntimeError('desktop_capture_worker_must_be_recreated')
         self._running = True
         self.start()
     
@@ -772,51 +928,37 @@ class DesktopMirrorThread(QThread if HAVE_QT else threading.Thread):
             self.wait() if HAVE_QT else self.join(timeout=2.0)
     
     def run(self) -> None:
-        """Main capture loop."""
-        if not HAVE_MSS:
-            logger.warning("Desktop mirror unavailable: mss not installed")
+        if not HAVE_MSS or not _panel_is_local():
+            self._running = False
             return
-        
         try:
             with mss.mss() as sct:
-                monitor = sct.monitors[self._monitor] if self._monitor < len(sct.monitors) else sct.monitors[1]
-                
+                monitors = sct.monitors
+                if len(monitors) <= 1:
+                    return
+                monitor = monitors[self._monitor] if self._monitor < len(monitors) else monitors[1]
                 while self._running:
-                    start_time = time.time()
-                    
+                    started = time.monotonic()
                     try:
-                        # Capture frame
-                        screenshot = sct.grab(monitor)
-                        
-                        # Convert to format suitable for display
-                        if HAVE_PIL:
-                            img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
-                            frame_data = img
-                        else:
-                            frame_data = screenshot
-                        
-                        # Emit to callbacks
+                        shot = sct.grab(monitor)
+                        frame = Image.frombytes('RGB', shot.size, shot.bgra, 'raw', 'BGRX') if HAVE_PIL else shot
                         if HAVE_QT:
-                            self.frame_ready.emit(frame_data)
+                            self.frame_ready.emit(frame)
                         else:
                             with self._lock:
-                                for callback in self._callbacks:
-                                    try:
-                                        callback(frame_data)
-                                    except Exception as e:
-                                        logger.warning(f"Desktop mirror callback error: {e}")
-                    
-                    except Exception as e:
-                        logger.warning(f"Desktop capture error: {e}")
-                    
-                    # Maintain frame rate
-                    elapsed = time.time() - start_time
-                    sleep_time = self._frame_interval - elapsed
-                    if sleep_time > 0:
-                        time.sleep(sleep_time)
-        
-        except Exception as e:
-            logger.error(f"Desktop mirror thread error: {e}")
+                                callbacks = tuple(self._callbacks[:16])
+                            for callback in callbacks:
+                                try: callback(frame)
+                                except Exception: logger.debug('Desktop capture callback failed')
+                    except Exception as exc:
+                        logger.warning('Desktop capture frame unavailable: %s', type(exc).__name__)
+                        self._running = False
+                        break
+                    remaining = self._frame_interval - (time.monotonic() - started)
+                    if remaining > 0:
+                        time.sleep(remaining)
+        finally:
+            self._running = False
 
 
 # ============================================================================
@@ -998,18 +1140,14 @@ class AvatarAnimationEngine:
         )
     
     def start_lip_sync(self, duration: float = 0.0) -> None:
-        """
-        Start lip sync animation.
-        
-        Args:
-            duration: Duration in seconds (0 = until stopped)
-        """
+        seconds = _panel_number(duration, 0.0, 0.0, 300.0)
+        self.stop_lip_sync()
         self._lip_sync_active = True
-        logger.debug(f"Lip sync started (duration: {duration}s)")
-        
-        if duration > 0:
-            self._animation_timer = threading.Timer(duration, self.stop_lip_sync)
-            self._animation_timer.start()
+        if seconds > 0:
+            timer = threading.Timer(seconds, self.stop_lip_sync)
+            timer.daemon = True
+            self._animation_timer = timer
+            timer.start()
     
     def stop_lip_sync(self) -> None:
         """Stop lip sync animation."""
@@ -1035,6 +1173,13 @@ class AvatarAnimationEngine:
             PIL Image or None if PIL unavailable
         """
         if not HAVE_PIL:
+            return None
+        try:
+            width = _panel_dimension(width, low=16)
+            height = _panel_dimension(height, low=16)
+            if width * height > _MAX_RENDER_PIXELS:
+                return None
+        except ValueError:
             return None
 
         # Primary path: persistent AvatarState -> Rhythm -> Controller -> CanvasStudio.
@@ -1188,47 +1333,13 @@ class VideoConferenceController:
                 logger.warning(f"Conference callback error ({event}): {e}")
     
     def start_call(self, peer_id: str, video: bool = True, audio: bool = True) -> bool:
-        """
-        Initiate a video/audio call to a peer.
-        
-        Args:
-            peer_id: Identifier of the peer to call
-            video: Enable video
-            audio: Enable audio
-            
-        Returns:
-            True if call initiated successfully
-        """
-        try:
-            logger.info(f"Starting call to peer: {peer_id}")
-            self._state.set_remote_peer(peer_id)
-            self._state.set_conference_state(ConferenceState.CONNECTING)
-            
-            # Start local video capture if video enabled
-            if video and HAVE_CV2:
-                self._start_local_video()
-            
-            self._local_video_active = video
-            self._audio_active = audio
-            
-            # In a real implementation, this would initiate WebRTC signaling
-            # For now, we simulate connection
-            def _simulate_connect():
-                time.sleep(1.5)  # Simulate connection delay
-                self._state.set_conference_state(ConferenceState.CONNECTED)
-                self._remote_video_active = True
-                self._emit("on_connect", peer_id)
-            
-            self._connection_thread = threading.Thread(target=_simulate_connect, daemon=True)
-            self._connection_thread.start()
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to start call: {e}")
-            self._state.set_conference_state(ConferenceState.FAILED)
-            self._emit("on_error", str(e))
-            return False
+        """Reject an unconfigured conference transport; never simulate CONNECTED."""
+        self._state.set_conference_state(ConferenceState.FAILED)
+        self._local_video_active = False
+        self._remote_video_active = False
+        self._audio_active = False
+        self._emit('on_error', 'conference_transport_unavailable')
+        return False
     
     def end_call(self) -> None:
         """End the current call."""
@@ -1246,47 +1357,13 @@ class VideoConferenceController:
         self._emit("on_disconnect", peer)
     
     def answer_call(self, peer_id: str) -> bool:
-        """
-        Answer an incoming call.
-        
-        Args:
-            peer_id: Identifier of the calling peer
-            
-        Returns:
-            True if call answered successfully
-        """
-        try:
-            logger.info(f"Answering call from: {peer_id}")
-            self._state.set_remote_peer(peer_id)
-            self._state.set_conference_state(ConferenceState.CONNECTED)
-            
-            if HAVE_CV2:
-                self._start_local_video()
-            
-            self._local_video_active = True
-            self._remote_video_active = True
-            self._audio_active = True
-            
-            self._emit("on_connect", peer_id)
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to answer call: {e}")
-            self._emit("on_error", str(e))
-            return False
+        self._state.set_conference_state(ConferenceState.FAILED)
+        self._emit('on_error', 'conference_transport_unavailable')
+        return False
     
     def _start_local_video(self) -> None:
-        """Start local video capture."""
-        if not HAVE_CV2:
-            return
-        
-        try:
-            self._local_capture = cv2.VideoCapture(0)
-            if not self._local_capture.isOpened():
-                logger.warning("Could not open webcam")
-                self._local_capture = None
-        except Exception as e:
-            logger.warning(f"Local video start error: {e}")
+        """No implicit webcam activation from a call-state transition."""
+        return None
     
     def _stop_local_video(self) -> None:
         """Stop local video capture."""
@@ -1306,18 +1383,14 @@ class VideoConferenceController:
         return None
     
     def toggle_video(self) -> bool:
-        """Toggle local video on/off."""
-        self._local_video_active = not self._local_video_active
-        if self._local_video_active and HAVE_CV2:
-            self._start_local_video()
-        else:
-            self._stop_local_video()
-        return self._local_video_active
+        # No active authenticated transport; do not activate camera.
+        self._local_video_active = False
+        return False
     
     def toggle_audio(self) -> bool:
-        """Toggle audio on/off."""
-        self._audio_active = not self._audio_active
-        return self._audio_active
+        # No active authenticated transport; do not claim microphone activation.
+        self._audio_active = False
+        return False
     
     def is_in_call(self) -> bool:
         """Check if currently in a call."""
@@ -1358,137 +1431,84 @@ class MediaDisplayController:
             self._frame_callbacks.append(callback)
     
     def display_image(self, image_path: str) -> bool:
-        """
-        Display an image in the panel.
-        
-        Args:
-            image_path: Path to image file
-            
-        Returns:
-            True if image displayed successfully
-        """
-        try:
-            if not os.path.exists(image_path):
-                logger.warning(f"Image not found: {image_path}")
-                return False
-            
-            self._state.set_mode(PanelMode.MEDIA_IMAGE)
-            self._state.set_current_media(image_path)
-            logger.info(f"Displaying image: {image_path}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Image display error: {e}")
+        verified = _panel_approved_media_path(image_path, kind='image')
+        if not verified or not _panel_verify_image(verified):
             return False
+        self._state.set_current_media(verified)
+        self._state.set_mode(PanelMode.MEDIA_IMAGE)
+        return True
     
     def display_video(self, video_path: str, loop: bool = False) -> bool:
-        """
-        Play a video in the panel.
-        
-        Args:
-            video_path: Path to video file
-            loop: Whether to loop playback
-            
-        Returns:
-            True if video playback started
-        """
-        if not HAVE_CV2:
-            logger.warning("OpenCV required for video playback")
+        verified = _panel_approved_media_path(video_path, kind='video')
+        if not verified or not HAVE_CV2:
             return False
-        
+        self.stop_video()
         try:
-            if not os.path.exists(video_path):
-                logger.warning(f"Video not found: {video_path}")
+            cap = cv2.VideoCapture(verified)
+            if not cap.isOpened():
+                cap.release()
                 return False
-            
-            self.stop_video()
-            
-            self._video_capture = cv2.VideoCapture(video_path)
-            if not self._video_capture.isOpened():
-                logger.error(f"Could not open video: {video_path}")
-                return False
-            
-            self._state.set_mode(PanelMode.MEDIA_VIDEO)
-            self._state.set_current_media(video_path)
+            self._video_capture = cap
             self._video_playing = True
-            
-            # Start playback thread
-            self._playback_thread = threading.Thread(
-                target=self._video_playback_loop,
-                args=(loop,),
-                daemon=True
-            )
+            self._state.set_current_media(verified)
+            self._state.set_mode(PanelMode.MEDIA_VIDEO)
+            self._playback_thread = threading.Thread(target=self._video_playback_loop, args=(bool(loop),), daemon=True)
             self._playback_thread.start()
-            
-            logger.info(f"Playing video: {video_path}")
             return True
-            
-        except Exception as e:
-            logger.error(f"Video playback error: {e}")
+        except Exception:
+            self.stop_video()
             return False
     
     def _video_playback_loop(self, loop: bool) -> None:
-        """Video playback loop running in separate thread."""
+        cap = self._video_capture
         try:
-            fps = self._video_capture.get(cv2.CAP_PROP_FPS) or 30
+            if cap is None:
+                return
+            fps = _panel_number(cap.get(cv2.CAP_PROP_FPS), 30.0, 1.0, 60.0)
             frame_interval = 1.0 / fps
-            
-            while self._video_playing and self._video_capture:
-                start_time = time.time()
-                
-                ret, frame = self._video_capture.read()
-                
+            while self._video_playing and self._video_capture is cap:
+                started = time.monotonic()
+                ret, frame = cap.read()
                 if not ret:
-                    if loop:
-                        self._video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    if loop and cap.get(cv2.CAP_PROP_FRAME_COUNT) > 0:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        if not cap.grab():
+                            break
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         continue
-                    else:
-                        break
-                
-                # Emit frame to callbacks
-                for callback in self._frame_callbacks:
-                    try:
-                        callback(frame)
-                    except Exception as e:
-                        logger.warning(f"Frame callback error: {e}")
-                
-                # Maintain frame rate
-                elapsed = time.time() - start_time
-                sleep_time = frame_interval - elapsed
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-            
-            self._video_playing = False
-            self._state.restore_previous_mode()
-            
-        except Exception as e:
-            logger.error(f"Video playback loop error: {e}")
-            self._video_playing = False
+                    break
+                for callback in tuple(self._frame_callbacks[:16]):
+                    try: callback(frame)
+                    except Exception: logger.debug('Video frame callback failed')
+                time.sleep(max(0.0, frame_interval - (time.monotonic() - started)))
+        finally:
+            if self._video_capture is cap:
+                self._video_playing = False
+                self._video_capture = None
+                try: cap.release()
+                except Exception: pass
+                if self._state.get_mode() == PanelMode.MEDIA_VIDEO:
+                    self._state.restore_previous_mode()
     
     def stop_video(self) -> None:
-        """Stop video playback."""
         self._video_playing = False
-        if self._video_capture:
-            try:
-                self._video_capture.release()
-            except Exception:
-                pass
+        worker = self._playback_thread
+        if worker is not None and worker.is_alive() and worker is not threading.current_thread():
+            worker.join(timeout=1.5)
+        if worker is None or not worker.is_alive():
+            cap = self._video_capture
             self._video_capture = None
+            if cap is not None:
+                try: cap.release()
+                except Exception: pass
+            self._playback_thread = None
     
     def pause_video(self) -> None:
-        """Pause video playback."""
-        self._video_playing = False
+        self.stop_video()
     
     def resume_video(self) -> None:
-        """Resume video playback."""
-        if self._video_capture and not self._video_playing:
-            self._video_playing = True
-            self._playback_thread = threading.Thread(
-                target=self._video_playback_loop,
-                args=(False,),
-                daemon=True
-            )
-            self._playback_thread.start()
+        # A stopped stream has released its file handle; explicit display_video is required.
+        return None
     
     def is_playing(self) -> bool:
         """Check if video is playing."""
@@ -1545,7 +1565,9 @@ if HAVE_QT:
             self._animation_engine = AvatarAnimationEngine()
             self._conference_controller = VideoConferenceController(self._state)
             self._media_controller = MediaDisplayController(self._state)
+            self._media_controller.register_frame_callback(lambda frame: self.frame_updated.emit(frame))
             self._desktop_mirror: Optional[DesktopMirrorThread] = None
+            self._desktop_capture_ui_intent = False
             
             # Window setup
             self._setup_window(hide_icon, popped_out)
@@ -1918,16 +1940,29 @@ if HAVE_QT:
         # =====================================================================
         
         def _switch_mode(self, mode: PanelMode) -> None:
-            """Switch to specified panel mode."""
-            self._state.set_mode(mode)
-            
-            # Update button states
-            self._btn_avatar.setChecked(mode in [PanelMode.AVATAR_2D, PanelMode.AVATAR_3D])
+            # This method is connected only to the local Qt controls.
+            self._desktop_capture_ui_intent = (mode == PanelMode.DESKTOP_MIRROR)
+            try:
+                old_mode = self._state.get_mode()
+                self._state.set_mode(mode)
+                if old_mode == mode:
+                    self._handle_mode_change(mode.name)
+            finally:
+                self._desktop_capture_ui_intent = False
+        
+        def _on_mode_change(self, old_mode: PanelMode, new_mode: PanelMode) -> None:
+            """Handle mode change from state manager."""
+            self.mode_changed.emit(new_mode.name)
+        
+        def _handle_mode_change(self, mode_name: str) -> None:
+            try:
+                mode = PanelMode[mode_name]
+            except KeyError:
+                return
+            self._btn_avatar.setChecked(mode in (PanelMode.AVATAR_2D, PanelMode.AVATAR_3D))
             self._btn_desktop.setChecked(mode == PanelMode.DESKTOP_MIRROR)
             self._btn_conference.setChecked(mode == PanelMode.VIDEO_CONFERENCE)
-            
-            # Switch display stack
-            if mode in [PanelMode.AVATAR_2D, PanelMode.AVATAR_3D]:
+            if mode in (PanelMode.AVATAR_2D, PanelMode.AVATAR_3D):
                 self._display_stack.setCurrentIndex(0)
                 self._stop_desktop_mirror()
             elif mode == PanelMode.DESKTOP_MIRROR:
@@ -1936,23 +1971,18 @@ if HAVE_QT:
             elif mode == PanelMode.VIDEO_CONFERENCE:
                 self._display_stack.setCurrentIndex(2)
                 self._stop_desktop_mirror()
-            elif mode in [PanelMode.MEDIA_IMAGE, PanelMode.MEDIA_VIDEO]:
+            elif mode in (PanelMode.MEDIA_IMAGE, PanelMode.MEDIA_VIDEO):
                 self._display_stack.setCurrentIndex(3)
                 self._stop_desktop_mirror()
-            
-            self._status_set(f"Mode: {mode.name}")
-        
-        def _on_mode_change(self, old_mode: PanelMode, new_mode: PanelMode) -> None:
-            """Handle mode change from state manager."""
-            self.mode_changed.emit(new_mode.name)
-        
-        def _handle_mode_change(self, mode_name: str) -> None:
-            """Handle mode change signal (thread-safe)."""
-            try:
-                mode = PanelMode[mode_name]
-                self._switch_mode(mode)
-            except KeyError:
-                pass
+                if mode == PanelMode.MEDIA_IMAGE and HAVE_PIL:
+                    path = self._state.get_current_media()
+                    if path and _panel_verify_image(path):
+                        with Image.open(path) as im:
+                            rgba = im.convert('RGBA')
+                            data = rgba.tobytes('raw', 'RGBA')
+                            qimg = QImage(data, rgba.width, rgba.height, QImage.Format_RGBA8888).copy()
+                            self._media_label.setPixmap(QPixmap.fromImage(qimg))
+            self._status_set('Mode: '+mode.name)
         
         def _on_avatar_type_change(self, index: int) -> None:
             """Handle avatar type change."""
@@ -2082,7 +2112,9 @@ if HAVE_QT:
             """Update avatar display frame."""
             if self._state.get_mode() not in [PanelMode.AVATAR_2D, PanelMode.AVATAR_3D]:
                 return
-            
+            if self._state.get_mode() == PanelMode.AVATAR_3D:
+                self._status_set('Native Qt 3D rendering unavailable; use WebUI Avatar3D')
+                # A 2D visual fallback is still permitted, but never reported as rendered GLB.
             try:
                 # Get display size
                 size = self._avatar_label.size()
@@ -2156,27 +2188,22 @@ if HAVE_QT:
         # =====================================================================
         
         def _start_desktop_mirror(self) -> None:
-            """Start desktop mirror capture."""
-            if self._desktop_mirror is None:
-                self._desktop_mirror = DesktopMirrorThread()
-                if HAVE_QT:
-                    self._desktop_mirror.frame_ready.connect(
-                        lambda f: self.frame_updated.emit(f)
-                    )
-                else:
-                    self._desktop_mirror.register_callback(
-                        lambda f: self.frame_updated.emit(f)
-                    )
-            
-            if not self._desktop_mirror.isRunning() if HAVE_QT else not self._desktop_mirror.is_alive():
-                self._desktop_mirror.start_capture()
-                self._status_set("Desktop mirror started")
+            if self._desktop_mirror is not None and (self._desktop_mirror.isRunning() if HAVE_QT else self._desktop_mirror.is_alive()):
+                return
+            if not HAVE_MSS or not self._desktop_capture_ui_intent or not _panel_authorize_capture('desktop', local_ui_consent=True):
+                self._status_set('Desktop mirror unavailable or awaiting authorization')
+                return
+            self._desktop_mirror = DesktopMirrorThread()
+            self._desktop_mirror._capture_authorized = True
+            self._desktop_mirror.frame_ready.connect(self.frame_updated.emit)
+            self._desktop_mirror.start_capture()
+            self._status_set('Desktop mirror started')
         
         def _stop_desktop_mirror(self) -> None:
-            """Stop desktop mirror capture."""
-            if self._desktop_mirror:
-                self._desktop_mirror.stop_capture()
-                self._status_set("Desktop mirror stopped")
+            worker = self._desktop_mirror
+            if worker is not None:
+                worker.stop_capture()
+                self._desktop_mirror = None
         
         # =====================================================================
         # Window Management
@@ -2323,6 +2350,15 @@ class AvatarPanelAPI:
         
         logger.info("AvatarPanelAPI initialized for headless operation")
     
+    def start_desktop_mirror(self) -> Dict[str, Any]:
+        """Headless route contract. No user-consent witness is accepted from an API payload."""
+        return {'success': False, 'ok': False, 'error': 'desktop_capture_requires_authorized_local_ui',
+                'execution_authority': False}
+
+    def stop_desktop_mirror(self) -> Dict[str, Any]:
+        """No implicit headless capture worker exists to keep running."""
+        return {'success': True, 'ok': True, 'capturing': False, 'execution_authority': False}
+
     def get_state(self) -> Dict[str, Any]:
         """Get current panel state for WebUI sync."""
         return self._state.to_dict()
@@ -2365,14 +2401,15 @@ class AvatarPanelAPI:
         return {"success": True, "emotion": emotion}
     
     def set_avatar_type(self, avatar_type: str) -> Dict[str, Any]:
-        """Set avatar type (2d/3d)."""
-        self._state.set_avatar_type(avatar_type)
-        return {"success": True, "avatar_type": avatar_type}
+        try:
+            self._state.set_avatar_type(avatar_type)
+            return {'success': True, 'avatar_type': self._state.get_avatar_type()}
+        except ValueError as exc:
+            return {'success': False, 'error': str(exc)}
     
     def set_zoom(self, zoom: float) -> Dict[str, Any]:
-        """Set avatar zoom level."""
         self._state.set_zoom(zoom)
-        return {"success": True, "zoom": self._state.get_zoom()}
+        return {'success': True, 'zoom': self._state.get_zoom()}
     
     def start_call(self, peer_id: str, video: bool = True, audio: bool = True) -> Dict[str, Any]:
         """Start a call to the specified peer."""
@@ -2430,120 +2467,83 @@ class AvatarPanelAPI:
         return self._media_controller.get_current_media_info()
     
     def queue_media(self, media_path: str, media_type: str = "image") -> Dict[str, Any]:
-        """Queue media for display."""
-        self._state.queue_media(media_path, media_type)
-        return {"success": True, "queued": media_path}
+        try:
+            self._state.queue_media(media_path, media_type)
+            return {'success': True, 'queued': media_path}
+        except (ValueError, OverflowError) as exc:
+            return {'success': False, 'error': str(exc)}
 
 
     def display_media_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Accept a normalized media result payload and display/queue it.
-
-        Expected (best-effort) fields:
-          - type: "image" | "video" | "audio" | "model3d" | "unknown"
-          - uri/path/url/base64
-          - autoplay, loop
-        For this panel, we currently support image/video display & queue.
-        """
-        try:
-            if not isinstance(result, dict):
-                return {"success": False, "error": "result must be a dict"}
-
-            mtype = (result.get("type") or result.get("media_type") or "unknown").lower()
-            uri = result.get("path") or result.get("uri") or result.get("url")
-
-            # Handle base64 image payloads (write to datasets temp folder)
-            if not uri and result.get("base64") and mtype in ("image", "png", "jpg", "jpeg"):
-                try:
-                    raw = base64.b64decode(result.get("base64"))
-                    out_dir = Path(DATASETS_DIR) / "generated"
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    out_path = str(out_dir / f"media_{ts}.png")
-                    with open(out_path, "wb") as f:
-                        f.write(raw)
-                    uri = out_path
-                    mtype = "image"
-                except Exception as e:
-                    return {"success": False, "error": f"base64 decode failed: {e}"}
-
-            if not uri:
-                return {"success": False, "error": "No media uri/path provided"}
-
-            autoplay = bool(result.get("autoplay", True))
-            loop = bool(result.get("loop", False))
-            queue_it = bool(result.get("queue", False))
-
-            if mtype in ("image", "png", "jpg", "jpeg"):
-                if queue_it:
-                    return self.queue_media(uri, "image")
-                return self.display_image(uri)
-
-            if mtype in ("video", "mp4", "webm", "mov", "mkv"):
-                if queue_it:
-                    return self.queue_media(uri, "video")
-                if autoplay:
-                    return self.display_video(uri, loop=loop)
-                # If not autoplay, just queue it so UI can decide
-                return self.queue_media(uri, "video")
-
-            # Unsupported media types (audio/3d) are acknowledged but not displayed here (yet)
-            return {"success": False, "error": f"Unsupported media type for panel: {mtype}"}
-
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        if not isinstance(result, dict):
+            return {'success': False, 'error': 'result_must_be_dict'}
+        kind = str(result.get('type') or result.get('media_type') or 'unknown').strip().lower()
+        media_type = 'image' if kind in {'image','png','jpg','jpeg','webp'} else 'video' if kind in {'video','mp4','webm','mov','mkv'} else ''
+        if not media_type:
+            return {'success': False, 'error': 'unsupported_media_type'}
+        uri = result.get('path') or result.get('uri') or result.get('url')
+        if not uri and media_type == 'image' and isinstance(result.get('base64'), str):
+            encoded = result['base64']
+            if len(encoded) > (_MAX_UPLOAD_BYTES * 4 // 3 + 16):
+                return {'success': False, 'error': 'media_upload_too_large'}
+            try:
+                raw = base64.b64decode(encoded, validate=True)
+                if not raw or len(raw) > _MAX_UPLOAD_BYTES or not HAVE_PIL:
+                    return {'success': False, 'error': 'invalid_image_upload'}
+                with Image.open(io.BytesIO(raw)) as img:
+                    if img.width * img.height > _MAX_RENDER_PIXELS or img.width <= 0 or img.height <= 0:
+                        raise ValueError('image_dimensions_out_of_bounds')
+                    img.verify()
+                out_dir = Path(DATASETS_DIR) / 'generated'
+                out_dir.mkdir(parents=True, exist_ok=True)
+                uri = str(out_dir / ('media_' + uuid.uuid4().hex + '.png'))
+                # Decode and re-encode rather than trusting the submitted extension.
+                with Image.open(io.BytesIO(raw)) as img:
+                    img.convert('RGBA').save(uri, format='PNG')
+            except (ValueError, OSError, SyntaxError, MemoryError, base64.binascii.Error):
+                return {'success': False, 'error': 'invalid_image_upload'}
+        if not isinstance(uri, str):
+            return {'success': False, 'error': 'invalid_media_uri'}
+        if _panel_bool(result.get('queue', False)):
+            return self.queue_media(uri, media_type)
+        if media_type == 'image':
+            return self.display_image(uri)
+        if _panel_bool(result.get('autoplay', True), True):
+            return self.display_video(uri, loop=_panel_bool(result.get('loop', False)))
+        return self.queue_media(uri, 'video')
 
     def set_speaking(self, speaking: bool) -> Dict[str, Any]:
-        """Set speaking state for WebUI sync."""
-        self._state.set_speaking(bool(speaking))
-        if bool(speaking):
+        value = _panel_bool(speaking)
+        self._state.set_speaking(value)
+        if value:
             self._animation_engine.start_lip_sync(0.0)
         else:
             self._animation_engine.stop_lip_sync()
-        return {"success": True, "speaking": bool(speaking), "state": self.get_state()}
+        return {'success': True, 'speaking': value, 'state': self.get_state()}
 
     def set_listening(self, listening: bool) -> Dict[str, Any]:
-        """Set listening state for WebUI sync."""
-        self._state.set_listening(bool(listening))
-        return {"success": True, "listening": bool(listening), "state": self.get_state()}
+        value = _panel_bool(listening)
+        self._state.set_listening(value)
+        return {'success': True, 'listening': value, 'state': self.get_state()}
 
     def get_avatar_frame(self, width: int = 300, height: int = 300, format: str = "base64") -> Dict[str, Any]:
-        """
-        Get current avatar frame for WebUI rendering.
-        
-        Args:
-            width: Frame width
-            height: Frame height
-            format: Output format ("base64" or "raw")
-            
-        Returns:
-            Dictionary with frame data
-        """
+        try:
+            width = _panel_dimension(width, low=16)
+            height = _panel_dimension(height, low=16)
+            if width * height > _MAX_RENDER_PIXELS or format not in {'base64', 'raw', 'binary'}:
+                return {'success': False, 'error': 'invalid_frame_request'}
+        except ValueError:
+            return {'success': False, 'error': 'invalid_frame_size'}
         frame = self._animation_engine.render_2d_frame(width, height)
-        
         if frame is None:
-            return {"success": False, "error": "Frame render failed"}
-        
-        if format == "base64":
-            import io
+            return {'success': False, 'error': 'frame_render_unavailable'}
+        if format == 'base64':
             buffer = io.BytesIO()
-            frame.save(buffer, format="PNG")
-            img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-            return {
-                "success": True,
-                "frame": img_base64,
-                "format": "base64",
-                "width": width,
-                "height": height
-            }
+            frame.save(buffer, format='PNG')
+            payload = base64.b64encode(buffer.getvalue()).decode('ascii')
         else:
-            return {
-                "success": True,
-                "frame": frame.tobytes(),
-                "format": "raw",
-                "width": width,
-                "height": height
-            }
+            payload = frame.tobytes()
+        return {'success': True, 'frame': payload, 'format': format, 'width': width, 'height': height}
     
     def start_lip_sync(self, duration: float = 0.0) -> Dict[str, Any]:
         """Start lip sync animation."""
@@ -2556,9 +2556,11 @@ class AvatarPanelAPI:
         return {"success": True, "lip_sync": False}
     
     def set_panel_size(self, width: int, height: int) -> Dict[str, Any]:
-        """Set panel size."""
-        self._state.set_panel_size(width, height)
-        return {"success": True, "size": self._state.get_panel_size()}
+        try:
+            self._state.set_panel_size(width, height)
+            return {'success': True, 'size': self._state.get_panel_size()}
+        except ValueError as exc:
+            return {'success': False, 'error': str(exc)}
     
     def toggle_popout(self) -> Dict[str, Any]:
         """Toggle pop-out state."""
@@ -2581,9 +2583,10 @@ _panel_api: Optional[AvatarPanelAPI] = None
 def get_panel_api() -> AvatarPanelAPI:
     """Get or create the global API instance."""
     global _panel_api
-    if _panel_api is None:
-        _panel_api = AvatarPanelAPI()
-    return _panel_api
+    with _PANEL_SINGLETON_LOCK:
+        if _panel_api is None:
+            _panel_api = AvatarPanelAPI()
+        return _panel_api
 
 
 # ============================================================================
@@ -2697,7 +2700,7 @@ if __name__ == "__main__":
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryAvatarPanel',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-enterprise",
     "category": 'Presentation',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -2715,22 +2718,19 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Read-only availability signal; unknown qualities are not reported as perfect."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        'status': 'Available' if ENABLE_AVATAR_PANEL else 'Disabled',
+        'availability': 1.0 if ENABLE_AVATAR_PANEL else 0.0,
+        'integrity': 0.0, 'performance': 0.0, 'reliability': 0.0, 'confidence': 0.0,
+        'latency_ms': 0.0, 'stability': 0.0, 'compatibility': 0.0,
+        'notes': ['Adapter loaded; quality and hardware operation unmeasured',
+                  'camera/conference/desktop capture require separate verified authorization',
+                  'physical actuation forbidden'],
     }
 
 
@@ -2740,7 +2740,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryAvatarPanel',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": sml_get_metadata(),
         "health": sml_health(),
     }
 

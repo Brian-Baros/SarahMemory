@@ -1,9 +1,19 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryWorldMatrixFabric_DRAFT.py
-Part of the SarahMemory AiOS / GCAIOS governed cognitive runtime draft layer
-Version: v0.1.0-draft
-Date: 2026-09-28
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
+Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
+===============================================================================
 
 Purpose
 -------
@@ -180,11 +190,13 @@ class WorldEntity:
     revision: int = 0
 
     def update(self, **fields: Any) -> None:
-        for key, value in fields.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
-        self.revision += 1
-        self.updated_at = time.time()
+        """Display state may change; verified status and authority cannot self-elevate."""
+        protected={'entity_id','authority_boundary','epistemic_state','provenance','created_at','revision'}
+        for key,value in fields.items():
+            if key not in protected and hasattr(self,key):
+                setattr(self,key,value)
+        self.revision+=1
+        self.updated_at=time.time()
 
 
 @dataclass
@@ -429,10 +441,10 @@ class WorldStateStore:
             name=str(raw.get("name") or "Unnamed Entity"),
             entity_type=EntityType(str(raw.get("entity_type") or EntityType.UNKNOWN.value)),
             object_kind=WorldObjectKind(str(raw.get("object_kind") or WorldObjectKind.VIRTUAL.value)),
-            epistemic_state=EpistemicState(str(raw.get("epistemic_state") or EpistemicState.UNKNOWN.value)),
+            epistemic_state=EpistemicState.UNKNOWN,  # local JSON has no authenticated verification receipt
             local_position=Vec3(**{k: local.get(k) for k in Vec3.__dataclass_fields__.keys() if k in local}),
             geo_pose=GeoPose(**{k: geo.get(k) for k in GeoPose.__dataclass_fields__.keys() if k in geo}) if isinstance(geo, dict) else None,
-            authority_boundary=AuthorityBoundary(str(raw.get("authority_boundary") or AuthorityBoundary.DISPLAY_ONLY.value)),
+            authority_boundary=AuthorityBoundary.DISPLAY_ONLY,  # saved state never conveys authority
             properties=dict(raw.get("properties") or {}),
             relationships=rels,
             provenance=Provenance(**{k: prov.get(k) for k in Provenance.__dataclass_fields__.keys() if k in prov}),
@@ -850,7 +862,7 @@ class SarahMemoryWorldMatrixFabric:
             name=name,
             entity_type=entity_type,
             object_kind=object_kind,
-            epistemic_state=epistemic_state,
+            epistemic_state=EpistemicState.OBSERVED,  # unverified observations may not self-certify
             authority_boundary=AuthorityBoundary.DISPLAY_ONLY,
             provenance=Provenance(source=source, source_kind="observation", confidence=max(0.0, min(1.0, confidence))),
             properties=properties or {},

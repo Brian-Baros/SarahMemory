@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryEncryption.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 """
 
@@ -38,7 +37,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -47,6 +46,9 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
+from pathlib import Path
+import stat
 from cryptography.fernet import Fernet
 import sqlite3
 from datetime import datetime
@@ -95,8 +97,12 @@ def generate_key():
     """
     try:
         key = Fernet.generate_key()
-        with open(KEY_FILE, 'wb') as key_file:
+        # Exclusive creation: losing a prior key must never be confused with rotation.
+        descriptor = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'wb') as key_file:
             key_file.write(key)
+            key_file.flush()
+            os.fsync(key_file.fileno())
         logger.info("Encryption key generated and saved.")
         log_encryption_event("Generate Key", "Encryption key generated and saved successfully.")
         return key
@@ -108,19 +114,20 @@ def generate_key():
 def load_key():
     """
     Load the Fernet encryption key from the key file.
-    ENHANCED (v6.4): If not found, automatically generates and caches a new key.
+    ENHANCED (v6.4): If not found, refuses to generate a replacement key automatically.
     """
     try:
         if os.path.exists(KEY_FILE):
             with open(KEY_FILE, 'rb') as key_file:
                 key = key_file.read()
+            Fernet(key)  # reject malformed key material before passing it to callers
             logger.info("Encryption key loaded from file.")
             log_encryption_event("Load Key", "Encryption key loaded from file successfully.")
             return key
         else:
-            logger.warning("Encryption key file not found. Generating a new key.")
-            log_encryption_event("Load Key Warning", "Encryption key file not found. Generating a new key.")
-            return generate_key()
+            logger.warning("Encryption key file not found. Existing key recovery is required.")
+            log_encryption_event("Load Key Warning", "Encryption key file not found. Existing key recovery is required.")
+            return None  # fail closed: recovery requires restoring the original key
     except Exception as e:
         logger.error(f"Error loading encryption key: {e}")
         log_encryption_event("Load Key Error", f"Error loading encryption key: {e}")
@@ -202,7 +209,10 @@ class SarahNetCrypto:
     @staticmethod
     def _aes_ctr_encrypt(key: bytes, nonce: bytes, plaintext: bytes) -> bytes:
         if _SM_CRYPTO_BACKEND == "cryptography":
-            cipher = Cipher(algorithms.AES(key), modes.CTR(nonce), backend=default_backend())
+            # Historical packet format carries 12-byte nonce; CTR needs a 16-byte IV.
+            # Match PyCryptodome's default initial_value=1 without changing wire format.
+            iv = nonce + (1).to_bytes(4, 'big') if len(nonce) == 12 else nonce
+            cipher = Cipher(algorithms.AES(key), modes.CTR(iv), backend=default_backend())
             enc = cipher.encryptor()
             return enc.update(plaintext) + enc.finalize()
         elif _SM_CRYPTO_BACKEND == "pycryptodome":
@@ -213,7 +223,10 @@ class SarahNetCrypto:
     @staticmethod
     def _aes_ctr_decrypt(key: bytes, nonce: bytes, ciphertext: bytes) -> bytes:
         if _SM_CRYPTO_BACKEND == "cryptography":
-            cipher = Cipher(algorithms.AES(key), modes.CTR(nonce), backend=default_backend())
+            # Historical packet format carries 12-byte nonce; CTR needs a 16-byte IV.
+            # Match PyCryptodome's default initial_value=1 without changing wire format.
+            iv = nonce + (1).to_bytes(4, 'big') if len(nonce) == 12 else nonce
+            cipher = Cipher(algorithms.AES(key), modes.CTR(iv), backend=default_backend())
             dec = cipher.decryptor()
             return dec.update(ciphertext) + dec.finalize()
         elif _SM_CRYPTO_BACKEND == "pycryptodome":
@@ -256,8 +269,13 @@ class SarahNetCrypto:
 
     @staticmethod
     def open(key: bytes, blob: bytes, aad: bytes = b"") -> bytes:
-        assert blob[:2] == b"SN", "Bad magic"
+        if not isinstance(blob, bytes) or len(blob) < 3 + SarahNetCrypto.NONCE_LEN + SarahNetCrypto.AEAD_TAG or blob[:2] != b'SN':
+            raise ValueError('invalid_sarahnet_packet')
         flags = blob[2]
+        if flags not in (0, 1):
+            raise ValueError('unsupported_sarahnet_flags')
+        if flags == 0 and len(blob) < 3 + SarahNetCrypto.NONCE_LEN + SarahNetCrypto.HMAC_LEN:
+            raise ValueError('truncated_sarahnet_mac')
         nonce = blob[3:3+SarahNetCrypto.NONCE_LEN]
         body  = blob[3+SarahNetCrypto.NONCE_LEN:]
         if flags & 1:
@@ -435,8 +453,10 @@ class SarahMemoryLicenseCrypto:
     @staticmethod
     def save_license_file(path: str, lic: _Dict[str, _Any]) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w', encoding='utf-8') as f:
             _json.dump(lic, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
 
     @staticmethod
     def load_license_file(path: str) -> _Dict[str, _Any]:
@@ -709,27 +729,22 @@ class SarahMemoryEncryptionGUI:
 
     def _do_generate_vault_key(self) -> None:
         try:
+            # Vault keys must never replace a previous key.
+            if os.path.lexists(key_path):
+                raise FileExistsError('existing_vault_key_must_be_preserved')
             # Use existing generator if present; else fallback to cryptography.fernet
             key_path = _sm_vault_key_path()
             os.makedirs(os.path.dirname(key_path), exist_ok=True)
 
-            key_bytes = None
-            try:
-                # If this module already has generate_key() for fernet, prefer it.
-                if "generate_key" in globals() and callable(globals().get("generate_key")):
-                    key_bytes = globals()["generate_key"]()
-                    # generate_key() may return bytes or write to default path; normalize to bytes
-                    if isinstance(key_bytes, str):
-                        key_bytes = key_bytes.encode("utf-8")
-            except Exception:
-                key_bytes = None
+            # New vault key is generated locally; it must never mutate legacy
+            # KEY_FILE, and an existing vault key must never be overwritten.
+            from cryptography.fernet import Fernet
+            key_bytes = Fernet.generate_key()
 
-            if not key_bytes:
-                from cryptography.fernet import Fernet
-                key_bytes = Fernet.generate_key()
-
-            with open(key_path, "wb") as f:
+            with os.fdopen(os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb') as f:
                 f.write(key_bytes)
+                f.flush()
+                os.fsync(f.fileno())
 
             self._log(f"Wrote Fernet vault key: {key_path}")
             self.messagebox.showinfo("Vault key created", f"Vault encryption key saved to:\n{key_path}")
@@ -802,7 +817,7 @@ except Exception as _e_gui:
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryEncryption',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Unknown',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -820,22 +835,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter present; runtime health not independently measured"],
     }
 
 
@@ -845,7 +860,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryEncryption',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

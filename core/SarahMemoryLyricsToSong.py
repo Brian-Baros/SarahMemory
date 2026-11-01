@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryLyricsToSong.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 SarahMemory Lyrics To Song - Vocal Synthesis & Performance Engine
@@ -205,7 +204,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -219,6 +218,11 @@ import traceback
 import json
 import wave
 import hashlib
+from pathlib import Path
+import uuid
+import copy
+import math
+import asyncio
 import numpy as np
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any, Union
@@ -374,6 +378,32 @@ LYRICS_HARMONIES_DIR = os.path.join(LYRICS_DIR, "harmonies")
 LYRICS_EXPORTS_DIR = CANVAS_EXPORTS_DIR
 LYRICS_MIDI_DIR = os.path.join(LYRICS_DIR, "midi")
 LYRICS_LRC_DIR = os.path.join(LYRICS_DIR, "lrc")
+
+def _workspace_path(path, root, *, existing=False):
+    """Resolve paths against their owning creative workspace; reject symlink escapes."""
+    parent = Path(root).expanduser().resolve()
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = parent / candidate
+    resolved = candidate.resolve(strict=False)
+    if resolved == parent or parent not in resolved.parents:
+        raise ValueError('creative_path_outside_workspace')
+    if existing and (not resolved.is_file() or resolved.is_symlink()):
+        raise ValueError('creative_file_unavailable')
+    if not existing and resolved.exists():
+        raise FileExistsError('creative_output_exists')
+    return str(resolved)
+
+def _network_tts_approved():
+    """Cloud synthesis requires an already-armed online session, never just a provider presence."""
+    source = SMG
+    if source is None:
+        return False
+    def flag(name, default=False):
+        value = getattr(source, name, default)
+        return value is True or str(value).strip().lower() in ('1','true','yes','on')
+    return (flag('SARAHMEMORY_ONLINE_SESSION_ARMED') and
+            not flag('LOCAL_ONLY_MODE', True) and not flag('SAFE_MODE', True))
 
 def ensure_lyrics_directories() -> None:
     """Create creative-workspace directories only when the engine is explicitly initialized."""
@@ -844,38 +874,29 @@ def normalize_audio(audio: np.ndarray, target_db: float = -20.0) -> np.ndarray:
 
 
 def mix_audio_tracks(tracks: List[np.ndarray], volumes: Optional[List[float]] = None) -> np.ndarray:
-    """
-    Mix multiple audio tracks together
-    tracks: list of audio arrays (must all be same length)
-    volumes: optional list of volume multipliers (0.0-1.0)
-    """
+    """Mix all tracks deterministically; never silently drop mismatched volumes."""
     if not tracks:
-        return np.array([])
-    
-    # Ensure all tracks are same length
-    max_length = max(len(track) for track in tracks)
-    padded_tracks = []
-    for track in tracks:
-        if len(track) < max_length:
-            padding = np.zeros(max_length - len(track))
-            padded_track = np.concatenate([track, padding])
-        else:
-            padded_track = track
-        padded_tracks.append(padded_track)
-    
-    # Apply volumes if provided
-    if volumes:
-        padded_tracks = [track * vol for track, vol in zip(padded_tracks, volumes)]
-    
-    # Mix by summing
-    mixed = np.sum(padded_tracks, axis=0)
-    
-    # Normalize to prevent clipping
-    max_val = np.max(np.abs(mixed))
-    if max_val > 1.0:
-        mixed = mixed / max_val * 0.95
-    
-    return mixed
+        return np.array([], dtype=np.float32)
+    if volumes is not None and len(volumes) != len(tracks):
+        raise ValueError('volumes_must_match_tracks')
+    if len(tracks) > 32:
+        raise ValueError('too_many_audio_tracks')
+    arrays = [np.asarray(track, dtype=np.float32).reshape(-1) for track in tracks]
+    if any(len(t) > DEFAULT_SAMPLE_RATE*60*60 or not np.all(np.isfinite(t)) for t in arrays):
+        raise ValueError('audio_invalid_or_unbounded')
+    length = max(map(len, arrays))
+    if length == 0:
+        return np.array([], dtype=np.float32)
+    out = np.zeros(length, dtype=np.float32)
+    for index, arr in enumerate(arrays):
+        vol = 1.0 if volumes is None else float(volumes[index])
+        if not math.isfinite(vol) or not (0 <= vol <= 2):
+            raise ValueError('invalid_mix_volume')
+        out[:len(arr)] += arr*vol
+    peak = float(np.max(np.abs(out)))
+    if peak > 1:
+        out *= 0.95/peak
+    return out
 
 
 # ============================================================================
@@ -1053,131 +1074,100 @@ class VocalSynthesizer:
         return project
     
     def save_project(self, project: VocalProject, filepath: Optional[str] = None) -> str:
-        """
-        Save project to disk
-        
-        Args:
-            project: VocalProject to save
-            filepath: Optional custom save path
-        
-        Returns:
-            Path to saved project file
-        """
-        if filepath is None:
-            filepath = os.path.join(LYRICS_PROJECTS_DIR, f"{project.project_id}.slp")
-        
+        """Persist bounded project JSON inside the canonical Canvas project workspace."""
         try:
-            project_data = project.to_dict()
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(project_data, f, indent=2, ensure_ascii=False)
-            
-            logger.info(f"[LyricsToSong] Saved project to: {filepath}")
-            return filepath
-        except Exception as e:
-            logger.error(f"[LyricsToSong] Failed to save project: {e}")
-            traceback.print_exc()
-            return ""
+            name = f'{project.project_id}.slp' if filepath is None else filepath
+            path = _workspace_path(name, LYRICS_PROJECTS_DIR)
+            if not path.lower().endswith('.slp'):
+                raise ValueError('unsupported_project_extension')
+            data = json.dumps(project.to_dict(),ensure_ascii=False,indent=2)
+            if len(data.encode('utf-8')) > 2*1024*1024:
+                raise ValueError('project_too_large')
+            os.makedirs(os.path.dirname(path),exist_ok=True)
+            with open(path,'x',encoding='utf-8') as fh:
+                fh.write(data)
+            return path
+        except Exception as exc:
+            logger.error('Project save declined: %s',exc)
+            return ''
     
     def load_project(self, filepath: str) -> Optional[VocalProject]:
-        """
-        Load project from disk
-        
-        Args:
-            filepath: Path to project file (.slp)
-        
-        Returns:
-            VocalProject instance or None if failed
-        """
+        """Load only known project artifacts from the Canvas project workspace."""
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                project_data = json.load(f)
-            
-            project = VocalProject.from_dict(project_data)
+            path = _workspace_path(filepath,LYRICS_PROJECTS_DIR,existing=True)
+            if not path.lower().endswith('.slp') or os.path.getsize(path)>2*1024*1024:
+                return None
+            with open(path,'r',encoding='utf-8') as fh:
+                data = json.load(fh)
+            if not isinstance(data,dict) or not isinstance(data.get('project_id'),str):
+                return None
+            project = VocalProject.from_dict(data)
             self.projects[project.project_id] = project
-            
-            logger.info(f"[LyricsToSong] Loaded project '{project.name}' from: {filepath}")
             return project
-        except Exception as e:
-            logger.error(f"[LyricsToSong] Failed to load project: {e}")
-            traceback.print_exc()
+        except Exception as exc:
+            logger.warning('Project load declined: %s',exc)
             return None
     
     # ========================================================================
     # VOCAL SYNTHESIS
     # ========================================================================
     
-    def synthesize_vocals(self, text: str, voice: str = "neutral",
-                         emotion: str = "neutral", pitch_shift: float = 0.0,
-                         output_path: Optional[str] = None) -> Optional[str]:
-        """
-        Synthesize speech from text using TTS
-        
-        Args:
-            text: Text to synthesize
-            voice: Voice profile name
-            emotion: Emotion to apply
-            pitch_shift: Pitch shift in semitones
-            output_path: Optional output file path
-        
-        Returns:
-            Path to generated audio file
-        """
-        if not text:
-            logger.warning("[LyricsToSong] Empty text provided")
+    def synthesize_vocals(self, text: str, voice: str = "neutral", emotion: str = "neutral",
+                         pitch_shift: float = 0.0, output_path: Optional[str] = None) -> Optional[str]:
+        """Write a truthful audio container; online providers require separate user arming."""
+        if not isinstance(text,str) or not text.strip() or len(text)>20000:
             return None
-        
-        # Get voice profile
-        profile = self.voice_profiles.get(voice, self.voice_profiles['neutral'])
-        
-        # Generate output path if not provided
-        if output_path is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_path = os.path.join(LYRICS_OUTPUTS_DIR, f"vocal_{timestamp}.wav")
-        
+        provider = self.tts_type
+        if provider not in ('pyttsx3','gtts','edge_tts'):
+            return None
+        if provider != 'pyttsx3' and not _network_tts_approved():
+            logger.warning('Cloud TTS unavailable: operator online session not armed')
+            return None
+        ext = '.mp3' if provider in ('gtts','edge_tts') else '.wav'
         try:
-            # Synthesize using available TTS engine
-            if self.tts_type == 'pyttsx3':
-                temp_path = output_path
-                
-                # Configure voice
-                voices = self.tts_engine.getProperty('voices')
-                if profile['gender'] == 'female' and len(voices) > 1:
-                    self.tts_engine.setProperty('voice', voices[1].id)
-                elif profile['gender'] == 'male' and len(voices) > 0:
-                    self.tts_engine.setProperty('voice', voices[0].id)
-                
-                # Set rate (affected by emotion)
-                emotion_params = EMOTION_PROFILES.get(emotion, EMOTION_PROFILES['neutral'])
-                base_rate = 150
-                rate = int(base_rate * emotion_params['tempo_mod'])
-                self.tts_engine.setProperty('rate', rate)
-                
-                # Synthesize
-                self.tts_engine.save_to_file(text, temp_path)
-                self.tts_engine.runAndWait()
-                
-                # Apply pitch shift if needed
-                combined_pitch_shift = profile['pitch_shift'] + pitch_shift
-                if AUDIO_PROCESSING_AVAILABLE and combined_pitch_shift != 0:
-                    audio, sr = librosa.load(temp_path, sr=self.sample_rate)
-                    shifted_audio = apply_pitch_shift(audio, combined_pitch_shift, sr)
-                    sf.write(output_path, shifted_audio, sr)
-                
-            elif self.tts_type == 'gtts':
-                # gTTS synthesis (simpler, no pitch control)
-                tts = gTTS(text=text, lang='en', slow=False)
-                tts.save(output_path)
-            
-            else:
-                logger.error("[LyricsToSong] No TTS engine available")
+            name = ('vocal_'+uuid.uuid4().hex+ext) if output_path is None else output_path
+            path = _workspace_path(name,LYRICS_OUTPUTS_DIR)
+            if not path.lower().endswith(ext):
+                logger.warning('TTS format mismatch: %s requires %s',provider,ext)
                 return None
-            
-            logger.info(f"[LyricsToSong] Synthesized vocals: {output_path}")
-            return output_path
-            
-        except Exception as e:
-            logger.error(f"[LyricsToSong] Vocal synthesis failed: {e}")
-            traceback.print_exc()
+            os.makedirs(os.path.dirname(path),exist_ok=True)
+            profile = self.voice_profiles.get(voice,self.voice_profiles['neutral'])
+            if provider=='pyttsx3':
+                if self.tts_engine is None:
+                    return None
+                voices = self.tts_engine.getProperty('voices') or []
+                if profile['gender']=='female' and len(voices)>1:
+                    self.tts_engine.setProperty('voice',voices[1].id)
+                elif profile['gender']=='male' and len(voices)>0:
+                    self.tts_engine.setProperty('voice',voices[0].id)
+                params=EMOTION_PROFILES.get(emotion,EMOTION_PROFILES['neutral'])
+                self.tts_engine.setProperty('rate',int(150*params['tempo_mod']))
+                self.tts_engine.save_to_file(text,path)
+                self.tts_engine.runAndWait()
+                if not os.path.isfile(path) or os.path.getsize(path)<44:
+                    return None
+                if AUDIO_PROCESSING_AVAILABLE and (profile['pitch_shift']+pitch_shift):
+                    audio,sr=librosa.load(path,sr=self.sample_rate)
+                    sf.write(path,apply_pitch_shift(audio,profile['pitch_shift']+pitch_shift,sr),sr,format='WAV')
+            elif provider=='gtts':
+                gTTS(text=text,lang='en',slow=False).save(path)
+            else:
+                async def _render():
+                    await edge_tts.Communicate(text,'en-US-AriaNeural').save(path)
+                asyncio.run(_render())
+            if not os.path.isfile(path) or os.path.getsize(path)==0:
+                return None
+            with open(path,'rb') as fh:
+                magic=fh.read(12)
+            if ext=='.wav' and not (magic.startswith(b'RIFF') and magic[8:12]==b'WAVE'):
+                logger.error('TTS did not produce a valid WAV header')
+                return None
+            if ext=='.mp3' and not (magic.startswith(b'ID3') or magic[0:1]==b'\xff'):
+                logger.error('TTS did not produce an MP3 header')
+                return None
+            return path
+        except Exception as exc:
+            logger.error('Vocal synthesis unavailable: %s',exc)
             return None
     
     def synthesize_project_vocals(self, project: VocalProject,
@@ -1412,87 +1402,51 @@ class VocalSynthesizer:
     # ========================================================================
     
     def export_vocals(self, project: VocalProject, output_path: Optional[str] = None,
-                     include_harmonies: bool = True, format: str = 'wav',
-                     quality: str = 'high') -> Optional[str]:
-        """
-        Export final mixed vocals
-        
-        Args:
-            project: VocalProject to export
-            output_path: Optional output file path
-            include_harmonies: Whether to include harmony tracks
-            format: Output format (wav, mp3, flac, ogg)
-            quality: Export quality (low, medium, high)
-        
-        Returns:
-            Path to exported file
-        """
-        if not project.vocal_tracks:
-            logger.warning("[LyricsToSong] No vocal tracks to export")
+                      include_harmonies: bool = True, format: str = 'wav',
+                      quality: str = 'high') -> Optional[str]:
+        """Bounded artifact export with container/extension match and no silent fallback."""
+        fmt=str(format or '').lower()
+        if fmt not in ('wav','flac','ogg','mp3'):
             return None
-        
-        # Generate output path if not provided
-        if output_path is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_path = os.path.join(LYRICS_EXPORTS_DIR, f"{project.name}_{timestamp}.{format}")
-        
         try:
-            # Collect tracks to mix
-            tracks_to_mix = []
-            volumes = []
-            
-            for track in project.vocal_tracks:
-                if track.audio_data is None:
-                    continue
-                
-                # Skip harmonies if not requested
-                if track.is_harmony and not include_harmonies:
-                    continue
-                
-                # Apply effects if specified
-                if track.effects:
-                    processed_audio = self.apply_effects(
-                        track.audio_data,
-                        track.effects,
-                        track.sample_rate
-                    )
-                else:
-                    processed_audio = track.audio_data
-                
-                tracks_to_mix.append(processed_audio)
-                
-                # Main vocal at full volume, harmonies at reduced volume
-                volume = 1.0 if not track.is_harmony else 0.7
-                volumes.append(volume)
-            
-            if not tracks_to_mix:
-                logger.warning("[LyricsToSong] No audio data to export")
+            name=(f'{project.project_id}_{uuid.uuid4().hex}.{fmt}' if output_path is None else output_path)
+            path=_workspace_path(name,LYRICS_EXPORTS_DIR)
+            if Path(path).suffix.lower()!='.'+fmt:
                 return None
-            
-            # Mix tracks
-            mixed_audio = mix_audio_tracks(tracks_to_mix, volumes)
-            
-            # Final normalize
-            mixed_audio = normalize_audio(mixed_audio, target_db=-14.0)
-            
-            # Save audio
+            if fmt!='wav' and not AUDIO_PROCESSING_AVAILABLE:
+                return None
+            if fmt=='mp3':
+                # libsndfile does not universally support MP3; refuse unless verified at runtime.
+                if not AUDIO_PROCESSING_AVAILABLE or 'MP3' not in sf.available_formats():
+                    return None
+            tracks=[]; volumes=[]
+            for track in list(project.vocal_tracks)[:32]:
+                if track.audio_data is None or (track.is_harmony and not include_harmonies):
+                    continue
+                if track.sample_rate!=self.sample_rate:
+                    return None
+                audio=self.apply_effects(track.audio_data,track.effects,track.sample_rate) if track.effects else track.audio_data
+                tracks.append(audio)
+                volumes.append(0.7 if track.is_harmony else 1.0)
+            if not tracks:
+                return None
+            audio=normalize_audio(mix_audio_tracks(tracks,volumes),-14.0)
+            if len(audio)==0 or len(audio)>self.sample_rate*60*60 or not np.all(np.isfinite(audio)):
+                return None
+            os.makedirs(os.path.dirname(path),exist_ok=True)
             if AUDIO_PROCESSING_AVAILABLE:
-                sf.write(output_path, mixed_audio, self.sample_rate, format=format.upper())
+                sf.write(path,audio,self.sample_rate,format=fmt.upper())
             else:
-                # Fallback: use wave module for WAV
-                with wave.open(output_path, 'w') as wf:
-                    wf.setnchannels(1)  # Mono
-                    wf.setsampwidth(2)  # 16-bit
-                    wf.setframerate(self.sample_rate)
-                    audio_int = (mixed_audio * 32767).astype(np.int16)
-                    wf.writeframes(audio_int.tobytes())
-            
-            logger.info(f"[LyricsToSong] Exported vocals to: {output_path}")
-            return output_path
-            
-        except Exception as e:
-            logger.error(f"[LyricsToSong] Export failed: {e}")
-            traceback.print_exc()
+                if fmt!='wav': return None
+                with open(path,'xb') as fd:
+                    with wave.open(fd,'wb') as wf:
+                        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(self.sample_rate)
+                        wf.writeframes((np.clip(audio,-1,1)*32767).astype(np.int16).tobytes())
+            if os.path.getsize(path)<44:
+                return None
+            return path
+        except Exception as exc:
+            logger.error('Export failed safely: %s',exc)
             return None
 
 
@@ -1610,29 +1564,16 @@ def synthesize_lyrics_to_speech(lyrics_text: str, filename: Optional[str] = None
 
 
 def load_lyrics_file(lyrics_file: str) -> str:
-    """
-    Legacy function to load lyrics from file
-    
-    Args:
-        lyrics_file: Filename in lyrics source directory
-    
-    Returns:
-        Lyrics text content
-    """
-    filepath = os.path.join(LYRICS_SOURCE_DIR, lyrics_file)
-    
-    if not os.path.exists(filepath):
-        logger.warning(f"[LyricsToSong] Lyrics file not found: {filepath}")
-        return ""
-    
+    """Read only a bounded text file inside the original lyrics source directory."""
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            content = f.read()
-        logger.info(f"[LyricsToSong] Loaded lyrics from: {filepath}")
-        return content
-    except Exception as e:
-        logger.error(f"[LyricsToSong] Failed to load lyrics: {e}")
-        return ""
+        path = _workspace_path(lyrics_file, LYRICS_SOURCE_DIR, existing=True)
+        if not path.lower().endswith(('.txt','.md','.lrc')) or os.path.getsize(path) > 1024*1024:
+            return ''
+        with open(path,'r',encoding='utf-8') as fh:
+            return fh.read(1024*1024+1)[:1024*1024]
+    except Exception as exc:
+        logger.warning('Lyrics load declined: %s',exc)
+        return ''
 
 
 # ============================================================================
@@ -1719,7 +1660,7 @@ if __name__ == '__main__':
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryLyricsToSong',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Unknown',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -1737,23 +1678,15 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
-    return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
-    }
+    """Non-executing adapter presence probe. No fabricated live quality measurements."""
+    return {"status":"Unverified", "availability":None, "integrity":None,
+            "performance":None, "reliability":None, "confidence":0.0,
+            "latency_ms":None, "stability":None, "compatibility":None,
+            "notes":["SarahMemoryLyricsToSong.py: module adapter present; live health not measured"]}
 
 
 def sml_diagnostics():
@@ -1762,7 +1695,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryLyricsToSong',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

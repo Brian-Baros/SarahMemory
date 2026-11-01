@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemorySelfAware.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 ENTERPRISE INTENT
@@ -52,7 +51,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -365,17 +364,19 @@ def _selfaware_path_skipped(path: Path) -> bool:
 def _selfaware_walk_files(root: Path, suffixes: set[str], max_files: int) -> List[Path]:
     out: List[Path] = []
     try:
-        for dirpath, dirnames, filenames in os.walk(str(root)):
-            dirnames[:] = [d for d in dirnames if d.lower() not in _SELF_AWARE_SKIP_PARTS]
-            if _selfaware_path_skipped(Path(dirpath)):
+        explicit_log_root = Path(root).name.lower() in {"logs", "log"} and ".log" in suffixes
+        for dirpath, dirnames, filenames in os.walk(str(root), followlinks=False):
+            dirnames[:] = [d for d in dirnames if d.lower() not in _SELF_AWARE_SKIP_PARTS and not (Path(dirpath) / d).is_symlink()]
+            if _selfaware_path_skipped(Path(dirpath)) and not (explicit_log_root and Path(dirpath) == Path(root)):
                 continue
             for fn in filenames:
                 if len(out) >= max_files:
                     return out
                 if Path(fn).suffix.lower() in suffixes:
                     p = Path(dirpath) / fn
-                    if not _selfaware_path_skipped(p):
-                        out.append(p)
+                    if not _selfaware_path_skipped(p) or explicit_log_root:
+                        if not p.is_symlink():
+                            out.append(p)
     except Exception:
         pass
     return out
@@ -384,9 +385,11 @@ def tail_text_file(p: Path, *, max_bytes: int = 256_000) -> str:
     try:
         if not p.exists():
             return ""
-        b = p.read_bytes()
-        if len(b) > max_bytes:
-            b = b[-max_bytes:]
+        limit = max(1, min(int(max_bytes), 1_048_576))
+        with p.open("rb") as handle:
+            handle.seek(0, 2)
+            handle.seek(max(0, handle.tell() - limit))
+            b = handle.read(limit)
         return b.decode("utf-8", errors="replace")
     except Exception:
         return ""
@@ -1049,22 +1052,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Expose adapter presence without fabricating operational measurements."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "UNKNOWN",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter registered; live operational measurements not verified"],
     }
 
 
@@ -1074,7 +1077,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemorySelfAware',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

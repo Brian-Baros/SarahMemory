@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryTree.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 SarahMemoryTree.py (PythonAnywhere-safe)
@@ -43,12 +42,13 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Project directory tree/report generator that writes timestamped tree outputs safely without overwriting prior output."
 # --- SARAHMETA END ---
+# v9.1.0a enterprise source hardening: original interfaces preserved; state-changing legacy paths require governed authorization.
 
 import os
 from datetime import datetime, timezone
@@ -79,7 +79,9 @@ def safe_getsize(path: str) -> str:
 
 def main():
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    out_path = os.path.join(ROOT_DIR, f"tree_{ts}.txt")
+    import time as _time
+    start = _time.monotonic()
+    out_path = os.path.join(ROOT_DIR, f"tree_{ts}_{os.getpid()}_{_time.monotonic_ns() % 1000000000}.txt")
 
     total_files = 0
     total_dirs = 0
@@ -87,7 +89,7 @@ def main():
     print(f"Root: {ROOT_DIR}")
     print(f"Writing: {out_path}")
 
-    with open(out_path, "w", encoding="utf-8") as out:
+    with open(out_path, "x", encoding="utf-8") as out:
         out.write("SarahMemory Project Directory Tree\n")
         out.write("=" * 60 + "\n")
         out.write(
@@ -98,7 +100,11 @@ def main():
         out.flush()
 
         for root, dirs, files in os.walk(ROOT_DIR, topdown=True, followlinks=False):
-            dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+            depth = len(os.path.relpath(root, ROOT_DIR).split(os.sep)) if root != ROOT_DIR else 0
+            if _time.monotonic() - start > 8.0 or total_files >= 20000 or total_dirs >= 2000:
+                out.write("\n[SCAN TRUNCATED: resource budget exceeded]\n")
+                break
+            dirs[:] = sorted(d for d in dirs if d not in EXCLUDE_DIRS and not os.path.islink(os.path.join(root,d))) if depth < 8 else []
 
             level = root.replace(ROOT_DIR, "").count(os.sep)
             indent = "│   " * level
@@ -108,8 +114,11 @@ def main():
             total_dirs += 1
 
             subindent = "│   " * (level + 1)
-            for f in sorted(files):
-                if f in EXCLUDE_FILES:
+            for f in sorted(files)[:max(0, 20000-total_files)]:
+                if _time.monotonic() - start > 8.0:
+                    out.write("[FILE LIST TRUNCATED]\n")
+                    break
+                if f in EXCLUDE_FILES or os.path.islink(os.path.join(root, f)):
                     continue
                 fp = os.path.join(root, f)
                 out.write(f"{subindent}📄 {f} ({safe_getsize(fp)})\n")
@@ -134,6 +143,7 @@ if __name__ == "__main__":
 # ====================================================================
 
 # --- SML ORGAN ADAPTER START ---
+import copy as _sml_copy
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryTree',
@@ -155,22 +165,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return _sml_copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter registered; runtime quality not measured"],
     }
 
 
@@ -180,7 +190,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryTree',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": _sml_copy.deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

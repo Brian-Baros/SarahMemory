@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryAiFunctions.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v9.0.0
-Date: 2026-07-11
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,12 +13,12 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
+===============================================================================
 
 ========================
 ✓ ALL legacy functions from v7.7.5 RESTORED
 ✓ ALL v8.0 advanced features INCLUDED
-✓ 100% backward compatible
+✓ Public callable signatures preserved; stricter security semantics apply
 ===============================================================================
 """
 from __future__ import annotations
@@ -58,8 +58,13 @@ from collections import defaultdict, deque
 from typing import Dict, List, Tuple, Optional, Any, Set
 from dataclasses import dataclass, field
 from enum import Enum
-import pickle
+import pickle  # retained for old imports only; never deserialize untrusted state
 import atexit
+import uuid
+import html
+import contextlib
+import math
+import urllib.parse
 
 # === Optional embedding shim (offline-safe) ===
 try:
@@ -79,41 +84,51 @@ try:
     )
 except Exception:
     def sm_is_core_module_approved(_module_name: str) -> bool:
-        return True
+        return False
     def sm_get_registered_core_modules() -> dict:
         return {}
     def sm_get_core_governance_profile() -> dict:
         return {"dynamic_registration": False, "auto_expose_approved": True}
 
 def _fallback_embed(text: str, dim: int = 64):
-    """
-    Tiny, deterministic local embedding (no downloads).
-    Uses a simple hash-based projection so we always return *something*.
-    """
-    import hashlib, math
-    h = hashlib.sha256((text or "").encode("utf-8")).digest()
-    vals = []
-    for i in range(dim):
-        b = h[i % len(h)]
-        vals.append(math.sin((b + i) * 0.0174533))
-    return vals
+    """Deterministic token-feature projection, not a trained semantic model."""
+    dim = max(8, min(int(dim or 64), 4096))
+    vector = [0.0] * dim
+    terms = re.findall(r"[a-z0-9_]+", str(text or "").casefold())[:2048]
+    for term in terms:
+        digest = hashlib.sha256(term.encode("utf-8")).digest()
+        pos = int.from_bytes(digest[:4], "big") % dim
+        vector[pos] += 1 if digest[4] & 1 else -1
+    norm = math.sqrt(sum(x*x for x in vector))
+    return [x/norm for x in vector] if norm else vector
 
 def lite_embed(texts):
-    """Small wrapper all modules can call; never throws."""
-    if isinstance(texts, str):
-        texts = [texts]
-    if _advcu_embed:
+    """Return one finite vector per input; no model download or cloud inference."""
+    rows = [texts] if isinstance(texts, str) else list(texts or [])[:256]
+    if not rows:
+        return []
+    if _advcu_embed is not None:
         try:
-            return _advcu_embed(texts)
+            vecs = _advcu_embed(rows)
+            if isinstance(vecs, np.ndarray):
+                vecs = vecs.tolist()
+            if len(vecs) == len(rows) and all(isinstance(v, (list, tuple, np.ndarray)) and len(v) > 0 for v in vecs):
+                clean = [[float(x) for x in v] for v in vecs]
+                if len({len(v) for v in clean}) == 1 and all(math.isfinite(x) for v in clean for x in v):
+                    return clean
         except Exception:
             pass
-    return [_fallback_embed(t) for t in texts]
+    return [_fallback_embed(str(t)) for t in rows]
 
 # === Remote hub bridge (non-blocking) ===
+_REMOTE_JOB_SLOTS = threading.BoundedSemaphore(2)
 _HUB = None
 def _get_hub():
     global _HUB
     if _HUB is None:
+        if (not _sm_network_allowed() or not _sm_flag("AI_FUNCTIONS_CONTEXT_SYNC_ENABLED", False)
+                or not _sm_flag("ALLOW_HUB_SYNC", False)):
+            return None
         try:
             from SarahMemoryNetwork import ServerConnection
             _HUB = ServerConnection()
@@ -133,7 +148,17 @@ def _fire_and_forget(coro_func, *args, **kwargs):
                 asyncio.run(coro_func(*args, **kwargs))
             except Exception:
                 pass
-        threading.Thread(target=run, name="SM-Remote-Call", daemon=True).start()
+        if (not _sm_network_allowed() or not _sm_flag("AI_FUNCTIONS_CONTEXT_SYNC_ENABLED", False)
+            or not _sm_flag("ALLOW_HUB_SYNC", False)):
+            return
+        if not _REMOTE_JOB_SLOTS.acquire(blocking=False):
+            return
+        def bounded_run():
+            try:
+                run()
+            finally:
+                _REMOTE_JOB_SLOTS.release()
+        threading.Thread(target=bounded_run, name="SM-Remote-Call", daemon=True).start()
     except Exception:
         pass
 
@@ -224,7 +249,7 @@ except Exception:
 
 # === Logging setup ===
 logger = logging.getLogger('SarahMemoryAiFunctions')
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 if not logger.hasHandlers():
     _h = logging.StreamHandler()
     _h.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
@@ -285,15 +310,15 @@ def _sm_rhythm_throttle(key: str, *, context: Optional[Dict[str, Any]] = None, m
             if isinstance(out, dict):
                 return out
     except Exception as exc:
-        return {"ok": False, "allow": True, "decision": "ALLOW", "error": str(exc), "execution_authority": False}
-    return {"ok": True, "allow": True, "decision": "ALLOW", "execution_authority": False}
+        return {"ok": False, "allow": False, "decision": "DEFER", "error": str(exc), "execution_authority": False}
+    return {"ok": False, "allow": False, "decision": "DEFER", "reason": "rhythm_unavailable", "execution_authority": False}
 
 
 def _sm_module_approved(module_name: str) -> bool:
     try:
         return bool(sm_is_core_module_approved(module_name))
     except Exception:
-        return True
+        return False
 
 def _sm_registered_modules() -> dict:
     try:
@@ -335,6 +360,65 @@ def _sm_tool_allowed(tool_name: str) -> bool:
 def _sm_tool_error(tool_name: str) -> str:
     return f"Tool '{tool_name}' is not currently registered/approved in the SarahMemory core registry."
 
+# v9.1.0a enterprise action/sovereignty boundary. Caller-supplied text and
+# config flags do not authenticate user approval. Direct side-effect routes
+# stay disabled unless the existing governed caller explicitly enables them.
+def _sm_flag(name: str, default: bool = False) -> bool:
+    try:
+        value = os.environ.get(name, getattr(config, name, default))
+    except Exception:
+        value = default
+    return value if isinstance(value, bool) else str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sm_network_allowed() -> bool:
+    try:
+        offline = bool(is_offline())
+    except Exception:
+        offline = True
+    return bool(not (SAFE_MODE or LOCAL_ONLY_MODE or offline)
+                and not _sm_flag("SAFE_MODE") and not _sm_flag("LOCAL_ONLY_MODE")
+                and _sm_flag("AI_AGENT_ALLOW_NETWORK_TASKS", False))
+
+
+def _sm_action_permission(kind: str) -> Tuple[bool, str]:
+    """Non-authorizing preflight. Privileged calls require verified upstream authority.
+
+    As the legacy string-only entrypoints cannot carry signed approval receipts,
+    their side effects remain disabled by default, even if a runtime flag enables
+    the capability. Governed executors can instead consume a staged task proposal.
+    """
+    if SAFE_MODE or _sm_flag("SAFE_MODE"):
+        return False, "safe_mode_denies_actions"
+    if kind in {"network", "url"} and not _sm_network_allowed():
+        return False, "network_forbidden_by_runtime_mode"
+    if kind in {"desktop", "application", "network", "url", "surface"}:
+        if not _sm_flag("AI_FUNCTIONS_ALLOW_DIRECT_ACTIONS", False):
+            return False, "governed_operatorcore_execution_required"
+        # Direct execution is still not equivalent to origin/approval verification.
+        if not _sm_flag("AI_FUNCTIONS_VERIFIED_EXECUTION_CONTEXT", False):
+            return False, "trusted_execution_context_required"
+    if kind in {"desktop", "application", "surface"} and not _sm_flag("AI_AGENT_ENABLED", False):
+        return False, "agent_disabled"
+    if kind == "desktop" and not _sm_flag("AI_AGENT_ALLOW_REMOTE_CONTROL", False):
+        return False, "desktop_control_not_permitted"
+    if kind in {"application", "surface"} and not _sm_flag("AI_AGENT_ALLOW_APP_LAUNCH", False):
+        return False, "application_launch_not_permitted"
+    return True, "preflight_passed_not_authorization"
+
+
+def _sm_phrase(text: str, phrase: str) -> bool:
+    return bool(re.search(r"(?<!\w)" + re.escape(phrase.lower()) + r"(?!\w)", (text or "").lower()))
+
+
+def _sm_user_command(text: str) -> bool:
+    raw = (text or "").strip().lower()
+    if re.match(r"^(?:what|why|how|when|where|who|explain|describe|define|can you explain|tell me about)\b", raw):
+        return False
+    return bool(re.match(r"^(?:please\s+)?(?:open|launch|start|close|move|click|press|type|scroll|draw|write|create|send|run|install|delete|focus|maximize|minimize|search|research|calculate|compute|recall|remember|browse|navigate)\b", raw))
+
+_TOOL_WORKER_SLOTS = threading.BoundedSemaphore(8)
+
 # === Context Management ===
 context_buffer = []
 context_embeddings = []
@@ -345,19 +429,21 @@ _CONTEXT_DB_SCHEMA_READY = False
 
 
 def _context_db_connect(timeout: float = 5.0) -> sqlite3.Connection:
-    """Open the bounded context store with crash-safe SQLite settings."""
-    os.makedirs(os.path.dirname(CONTEXT_DB_PATH), exist_ok=True)
-    con = sqlite3.connect(CONTEXT_DB_PATH, timeout=max(1.0, float(timeout)), check_same_thread=False)
+    """Open context DB only for explicit persistence calls."""
+    os.makedirs(os.path.dirname(CONTEXT_DB_PATH),exist_ok=True)
+    con=sqlite3.connect(CONTEXT_DB_PATH,timeout=max(1.0,min(float(timeout),30.0)),check_same_thread=False)
     try:
-        pragmas = getattr(config, "SQLITE_CONNECTION_PRAGMAS", {}) or {}
-        for key, value in pragmas.items():
-            con.execute(f"PRAGMA {key}={value}")
+        allowed={"cache_size","temp_store","mmap_size","busy_timeout","wal_autocheckpoint"}
+        pragmas=getattr(config,"SQLITE_CONNECTION_PRAGMAS",{}) or {}
+        for key,value in pragmas.items():
+            if key in allowed and re.fullmatch(r"-?\d{1,12}",str(value)):
+                con.execute("PRAGMA "+key+"="+str(value))
         con.execute("PRAGMA journal_mode=WAL")
         con.execute("PRAGMA synchronous=NORMAL")
         con.execute("PRAGMA foreign_keys=ON")
         con.execute("PRAGMA busy_timeout=5000")
         con.execute("PRAGMA wal_autocheckpoint=1000")
-    except Exception:
+    except sqlite3.DatabaseError:
         pass
     return con
 
@@ -386,6 +472,8 @@ def _ensure_context_schema(con: sqlite3.Connection) -> None:
 def checkpoint_context_history(mode: str = "PASSIVE") -> Dict[str, Any]:
     """Checkpoint context WAL state without scanning unrelated storage."""
     requested = str(mode or "PASSIVE").strip().upper()
+    if not os.path.isfile(CONTEXT_DB_PATH):
+        return {"ok": False, "mode": requested, "reason": "context_database_not_initialized"}
     if requested not in {"PASSIVE", "FULL", "RESTART", "TRUNCATE"}:
         requested = "PASSIVE"
     try:
@@ -578,7 +666,7 @@ class AdvancedAgentState:
     """Centralized state management for the advanced AI agent"""
     def __init__(self):
         # Hierarchical planning
-        self.task_queue: queue.PriorityQueue = queue.PriorityQueue()
+        self.task_queue: queue.PriorityQueue = queue.PriorityQueue(maxsize=128)
         self.active_tasks: Dict[str, Task] = {}
         self.completed_tasks: deque = deque(maxlen=1000)
         self.task_graph: Dict[str, Set[str]] = defaultdict(set)
@@ -608,7 +696,7 @@ class AdvancedAgentState:
         # Multi-agent coordination
         self.peer_agents: Dict[str, Dict] = {}
         self.shared_knowledge: Dict[str, Any] = {}
-        self.collaboration_requests: queue.Queue = queue.Queue()
+        self.collaboration_requests: queue.Queue = queue.Queue(maxsize=64)
 
         # Autonomous learning
         self.learning_buffer: List[Dict] = []
@@ -642,7 +730,7 @@ class AdvancedAgentState:
             'error_rate': 0.0,
             'learning_effectiveness': 1.0
         }
-        self.diagnostic_queue: queue.Queue = queue.Queue()
+        self.diagnostic_queue: queue.Queue = queue.Queue(maxsize=64)
 
         # Thread management
         self.executor_threads: List[threading.Thread] = []
@@ -663,18 +751,44 @@ class AdvancedAgentState:
             logger.info("[AdvancedAgent] Initialization complete.")
 
     def _load_persistent_state(self):
-        """Load persistent state from disk"""
+        """Load bounded JSON v9.1 state; never unpickle legacy files."""
+        state_file = os.path.join(DATASETS_DIR, "advanced_agent_state.json")
         try:
-            state_file = os.path.join(DATASETS_DIR, 'advanced_agent_state.pkl')
-            if os.path.exists(state_file):
-                with open(state_file, 'rb') as f:
-                    saved_state = pickle.load(f)
-                    self.knowledge_graph = saved_state.get('knowledge_graph', {})
-                    self.metrics.task_success_rate = saved_state.get('task_success_rate', defaultdict(list))
-                    self.user_patterns = saved_state.get('user_patterns', defaultdict(list))
-                    logger.info(f"[AdvancedAgent] Loaded {len(self.knowledge_graph)} knowledge nodes from disk")
-        except Exception as e:
-            logger.warning(f"[AdvancedAgent] Could not load persistent state: {e}")
+            if not os.path.isfile(state_file) or os.path.getsize(state_file) > 4 * 1024 * 1024:
+                return
+            with open(state_file, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            if not isinstance(saved, dict) or saved.get("schema") != "SarahMemory.AiFunctions.State.v9.1":
+                logger.warning("[AdvancedAgent] Invalid state schema; skipped")
+                return
+            nodes = saved.get("knowledge_graph") or []
+            for row in nodes[:512] if isinstance(nodes, list) else []:
+                if not isinstance(row, dict) or not isinstance(row.get("content"), str):
+                    continue
+                try:
+                    node = KnowledgeNode(id=str(row.get("id") or "")[:120],
+                        content=row["content"][:2048],
+                        embedding=[float(v) for v in (row.get("embedding") or [])[:4096]],
+                        node_type=str(row.get("node_type") or "experience")[:40],
+                        timestamp=float(row.get("timestamp") or 0),
+                        source=str(row.get("source") or "restored")[:96],
+                        reliability=max(0.0, min(1.0, float(row.get("reliability", 0.5)))))
+                    if node.id and node.embedding and all(math.isfinite(x) for x in node.embedding):
+                        self.knowledge_graph[node.id] = node
+                except (ValueError, TypeError, OverflowError):
+                    continue
+            metrics = saved.get("task_success_rate") or {}
+            if isinstance(metrics, dict):
+                for k,v in list(metrics.items())[:64]:
+                    if isinstance(v,list):
+                        self.metrics.task_success_rate[str(k)[:80]] = [bool(x) for x in v[-100:]]
+            patterns = saved.get("user_patterns") or {}
+            if isinstance(patterns,dict):
+                for k, v in list(patterns.items())[:128]:
+                    if isinstance(v,list):
+                        self.user_patterns[str(k)[:96]] = [x for x in v[-32:] if isinstance(x,dict)]
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            logger.warning("[AdvancedAgent] JSON state read failed: %s", exc)
 
     def _start_background_processes(self):
         """Start exactly one daemon worker per lifecycle loop."""
@@ -746,8 +860,11 @@ class AdvancedAgentState:
             return
 
         recent_decisions = list(self.decision_history)[-10:]
-        successful = sum(1 for d in recent_decisions if d.was_correct)
-        accuracy = successful / len(recent_decisions) if recent_decisions else 0.0
+        observed = [d for d in recent_decisions if d.was_correct is not None]
+        if len(observed) < 5:
+            return
+        successful = sum(1 for d in observed if d.was_correct is True)
+        accuracy = successful / len(observed)
 
         if accuracy < 0.6:
             logger.warning(f"[MetaCognitive] Low decision accuracy: {accuracy:.2%}")
@@ -765,17 +882,17 @@ class AdvancedAgentState:
         logger.info(f"[MetaCognitive] Adjusted confidence threshold to {self.confidence_threshold:.2f}")
 
     def _process_learning_buffer(self):
-        """Process accumulated learning experiences"""
-        if not self.learning_buffer:
+        """Process only explicitly enabled bounded learning observations."""
+        if not _sm_flag("AI_FUNCTIONS_LEARNING_ENABLED", False):
+            self.learning_buffer.clear()
             return
-
         for experience in self.learning_buffer[:10]:
-            try:
-                self._incorporate_experience(experience)
-            except Exception as e:
-                logger.error(f"[Learning] Failed to process experience: {e}")
-
-        self.learning_buffer = self.learning_buffer[10:]
+            if isinstance(experience, dict):
+                try:
+                    self._incorporate_experience(experience)
+                except Exception as exc:
+                    logger.debug("[Learning] Skipped malformed observation: %s", exc)
+        del self.learning_buffer[:10]
 
     def _incorporate_experience(self, experience: Dict):
         """Incorporate a learning experience into the knowledge base"""
@@ -817,40 +934,21 @@ class AdvancedAgentState:
             logger.error(f"[SelfDiagnostic] Diagnostic error: {e}")
 
     def _generate_predictions(self):
-        """Generate predictions about future user needs"""
+        """Make bounded, observational predictions without autonomous activation."""
         try:
-            if not self.user_patterns:
-                return
-
-            current_time = datetime.now()
-            current_hour = current_time.hour
-            current_day = current_time.weekday()
-
-            # Find similar time patterns
-            for pattern_key, pattern_list in self.user_patterns.items():
-                if len(pattern_list) < 3:
+            now = datetime.now()
+            for key, rows in list(self.user_patterns.items())[:128]:
+                if not isinstance(rows, list) or len(rows) < 3:
                     continue
-
-                # Simple time-based prediction
-                similar_contexts = [p for p in pattern_list
-                                   if abs(p.get('hour', 0) - current_hour) < 2
-                                   and p.get('day', 0) == current_day]
-
-                if len(similar_contexts) >= 2:
-                    predicted_intent = similar_contexts[-1].get('intent')
-                    confidence = len(similar_contexts) / len(pattern_list)
-
-                    if confidence > 0.3:
-                        try:
-                            self.predicted_intents.put_nowait({
-                                'intent': predicted_intent,
-                                'confidence': confidence,
-                                'context': pattern_key
-                            })
-                        except queue.Full:
-                            pass
-        except Exception as e:
-            logger.error(f"[PredictiveModel] Prediction error: {e}")
+                recent = [x for x in rows[-32:] if isinstance(x,dict) and
+                    x.get("day") == now.weekday() and abs(int(x.get("hour", -100)) - now.hour) < 2]
+                if len(recent) < 2:
+                    continue
+                score = len(recent) / min(32, len(rows))
+                if score > 0.3 and not self.predicted_intents.full():
+                    self.predicted_intents.put_nowait({"intent": recent[-1].get("intent"), "confidence": score, "context": key, "execution_authority": False})
+        except Exception as exc:
+            logger.debug("[PredictiveModel] Prediction unavailable: %s", exc)
 
     def shutdown(self, timeout: float = 3.0) -> Dict[str, Any]:
         """Stop lifecycle workers within one shared deadline and persist state."""
@@ -874,28 +972,40 @@ class AdvancedAgentState:
         return {"ok": not alive, "joined": joined, "alive": alive}
 
     def save_state(self):
-        """Save persistent state to disk"""
+        """Persist bounded, versioned JSON only when explicitly enabled."""
+        if not _sm_flag("AI_FUNCTIONS_PERSISTENT_LEARNING_ENABLED", False):
+            return
+        state_file = os.path.join(DATASETS_DIR, "advanced_agent_state.json")
         try:
-            state_file = os.path.join(DATASETS_DIR, 'advanced_agent_state.pkl')
-            os.makedirs(os.path.dirname(state_file), exist_ok=True)
-
-            state_to_save = {
-                'knowledge_graph': self.knowledge_graph,
-                'task_success_rate': dict(self.metrics.task_success_rate),
-                'user_patterns': dict(self.user_patterns),
-                'timestamp': time.time()
+            nodes = list(self.knowledge_graph.values())[-512:]
+            state = {
+                "schema": "SarahMemory.AiFunctions.State.v9.1", "timestamp": time.time(),
+                "knowledge_graph": [
+                    {"id": str(n.id)[:120], "content": str(n.content)[:2048],
+                     "embedding": [float(x) for x in list(n.embedding)[:4096]],
+                     "node_type": str(n.node_type)[:40], "timestamp": n.timestamp,
+                     "source": str(n.source)[:96], "reliability": n.reliability}
+                    for n in nodes],
+                "task_success_rate": {str(k)[:80]: list(v)[-100:] for k,v in list(self.metrics.task_success_rate.items())[:64]},
+                "user_patterns": {str(k)[:96]: list(v)[-32:] for k,v in list(self.user_patterns.items())[:128]},
             }
-
+            encoded = json.dumps(state, allow_nan=False, ensure_ascii=False).encode("utf-8")
+            if len(encoded) > 4 * 1024 * 1024:
+                logger.warning("[AdvancedAgent] State exceeds persistence capacity")
+                return
+            os.makedirs(os.path.dirname(state_file), exist_ok=True)
             tmp_file = state_file + f".{os.getpid()}.{threading.get_ident()}.tmp"
-            with open(tmp_file, 'wb') as f:
-                pickle.dump(state_to_save, f, protocol=pickle.HIGHEST_PROTOCOL)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_file, state_file)
-
-            logger.info(f"[AdvancedAgent] Saved state: {len(self.knowledge_graph)} knowledge nodes")
-        except Exception as e:
-            logger.error(f"[AdvancedAgent] Failed to save state: {e}")
+            try:
+                with open(tmp_file, "wb") as f:
+                    f.write(encoded)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_file, state_file)
+            finally:
+                if os.path.exists(tmp_file):
+                    os.unlink(tmp_file)
+        except Exception as exc:
+            logger.error("[AdvancedAgent] JSON state save failed: %s", exc)
 
 # Global advanced agent state
 ADVANCED_AGENT = AdvancedAgentState()
@@ -967,7 +1077,8 @@ class HierarchicalPlanner:
 
     def create_task(self, description: str, intent: str, priority: TaskPriority = TaskPriority.NORMAL) -> Task:
         """Create a new task with automatic decomposition"""
-        task_id = hashlib.md5(f"{description}{time.time()}".encode()).hexdigest()[:12]
+        description = str(description or "")[:2000]
+        task_id = uuid.uuid4().hex[:12]
 
         task = Task(
             id=task_id,
@@ -1005,7 +1116,7 @@ class HierarchicalPlanner:
         # Check decomposition rules
         for pattern, steps in self.decomposition_rules.items():
             if pattern.replace('_', ' ') in description_lower:
-                for step_name, step_type in steps:
+                for step_name, step_type in steps[:16]:
                     subtask = Task(
                         id=f"{task.id}_{len(subtasks)}",
                         description=f"{step_name} for: {task.description}",
@@ -1020,7 +1131,7 @@ class HierarchicalPlanner:
 
         # Default decomposition for complex tasks
         if 'and' in description_lower:
-            parts = description_lower.split(' and ')
+            parts = description_lower.split(' and ')[:16]
             for i, part in enumerate(parts):
                 subtask = Task(
                     id=f"{task.id}_{i}",
@@ -1036,33 +1147,20 @@ class HierarchicalPlanner:
         return subtasks
 
     def _identify_tools(self, task: Task) -> List[str]:
-        """Identify tools needed for task execution"""
-        tools = []
-        description_lower = task.description.lower()
-        intent_lower = task.intent.lower()
-
-        # Map keywords to tools
-        tool_keywords = {
-            'web_search': ['search', 'find', 'look up', 'research'],
-            'calc': ['calculate', 'compute', 'math', 'add', 'subtract', 'multiply'],
-            'file_read': ['read', 'open', 'view', 'check'],
-            'file_write': ['write', 'save', 'create file', 'store'],
-            'agent': ['move mouse', 'click', 'press', 'type'],
-            'memory_search': ['remember', 'recall', 'previous'],
-            'open_url': ['open', 'browse', 'navigate', 'http'],
-            'open_app': ['launch', 'start', 'run application']
+        """Plan only explicit command-like tool intents; questions remain questions."""
+        desc = str(task.description or "").strip().lower()
+        if not desc or not _sm_user_command(desc):
+            if re.fullmatch(r"[\d\s+*/().%-]{1,180}", desc):
+                return ["calc"]
+            return []
+        rule_map = {
+            "web_search": ("search", "research", "look up"),
+            "calc": ("calculate", "compute"),
+            "memory_search": ("recall", "remember"),
+            "open_url": ("open url", "browse", "navigate"),
+            "agent": ("move mouse", "click", "press", "type", "scroll"),
         }
-
-        for tool, keywords in tool_keywords.items():
-            if any(kw in description_lower or kw in intent_lower for kw in keywords):
-                tools.append(tool)
-
-        # Check task template
-        if task.intent in self.task_templates:
-            template_tools = self.task_templates[task.intent]['tools']
-            tools.extend([t for t in template_tools if t not in tools])
-
-        return tools
+        return [tool for tool,phrases in rule_map.items() if any(_sm_phrase(desc, p) for p in phrases)]
 
     def _estimate_duration(self, task: Task) -> float:
         """Estimate task execution duration"""
@@ -1096,35 +1194,24 @@ class HierarchicalPlanner:
         return execution_plan
 
     def optimize_parallel_execution(self, tasks: List[Task]) -> List[List[Task]]:
-        """Group tasks for parallel execution where possible"""
-        parallel_groups = []
-        current_group = []
-        dependencies_met = set()
-
-        for task in sorted(tasks, key=lambda t: t.priority.value):
-            # Check if all dependencies are met
-            deps_satisfied = all(dep in dependencies_met for dep in task.dependencies)
-
-            can_parallelize = (
-                deps_satisfied and
-                task.intent in self.task_templates and
-                self.task_templates[task.intent].get('can_parallelize', False) and
-                len(current_group) < self.agent.max_parallel_tools
-            )
-
-            if can_parallelize:
-                current_group.append(task)
-            else:
-                if current_group:
-                    parallel_groups.append(current_group)
-                current_group = [task]
-
-            dependencies_met.add(task.id)
-
-        if current_group:
-            parallel_groups.append(current_group)
-
-        return parallel_groups
+        """Topological scheduling: dependencies never share a parallel group."""
+        pending = {t.id:t for t in list(tasks)[:128]}
+        groups = []
+        done = set()
+        while pending:
+            ready = [t for t in pending.values() if all(d in done for d in t.dependencies)]
+            if not ready:
+                # Unknown dependency or cycle: fail closed without scheduling.
+                break
+            ready.sort(key=lambda x: x.priority.value)
+            if not self.agent.parallel_execution_enabled:
+                ready = ready[:1]
+            ready = ready[:max(1, min(self.agent.max_parallel_tools, 8))]
+            groups.append(ready)
+            for t in ready:
+                done.add(t.id)
+                pending.pop(t.id, None)
+        return groups
 
 # ================================================================================
 # META-COGNITIVE REASONING ENGINE
@@ -1255,35 +1342,28 @@ class KnowledgeGraphEngine:
         self.agent = agent_state
 
     def add_knowledge(self, content: str, node_type: str = 'fact', source: str = 'user_interaction') -> str:
-        """Add new knowledge to the graph"""
-        # Create embedding
-        embedding = lite_embed([content])[0]
-
-        # Generate unique ID
-        node_id = hashlib.md5(f"{content}{time.time()}".encode()).hexdigest()[:12]
-
-        # Create knowledge node
-        node = KnowledgeNode(
-            id=node_id,
-            content=content,
-            embedding=embedding,
-            node_type=node_type,
-            timestamp=time.time(),
-            source=source
-        )
-
-        # Find related nodes
-        related = self._find_related_nodes(embedding)
-        for related_id, similarity in related[:5]:
-            node.connections[related_id] = similarity
-            if related_id in self.agent.knowledge_graph:
-                self.agent.knowledge_graph[related_id].connections[node_id] = similarity
-
-        # Store in graph
-        self.agent.knowledge_graph[node_id] = node
-
-        logger.info(f"[KnowledgeGraph] Added node {node_id} with {len(node.connections)} connections")
-
+        """Add bounded RAM-only knowledge; this is not authority or verified fact."""
+        body = str(content or "")[:2048]
+        if not body:
+            return ""
+        embedding = lite_embed([body])[0]
+        node_id = uuid.uuid4().hex[:12]
+        with self.agent.lock:
+            related = self._find_related_nodes(embedding)
+            node = KnowledgeNode(id=node_id, content=body, embedding=embedding,
+                node_type=str(node_type)[:40], timestamp=time.time(),
+                source=str(source)[:96], reliability=0.5)
+            for related_id, similarity in related[:5]:
+                node.connections[related_id] = float(similarity)
+                old = self.agent.knowledge_graph.get(related_id)
+                if old:
+                    old.connections[node_id] = float(similarity)
+            self.agent.knowledge_graph[node_id] = node
+            while len(self.agent.knowledge_graph) > 512:
+                oldest = next(iter(self.agent.knowledge_graph))
+                self.agent.knowledge_graph.pop(oldest, None)
+                for n in self.agent.knowledge_graph.values():
+                    n.connections.pop(oldest, None)
         return node_id
 
     def _find_related_nodes(self, embedding: List[float], top_k: int = 10) -> List[Tuple[str, float]]:
@@ -1301,16 +1381,15 @@ class KnowledgeGraphEngine:
         return similarities[:top_k]
 
     def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
-        """Calculate cosine similarity between two vectors"""
         try:
-            arr1 = np.array(vec1)
-            arr2 = np.array(vec2)
-            dot_product = np.dot(arr1, arr2)
-            norm1 = np.linalg.norm(arr1)
-            norm2 = np.linalg.norm(arr2)
-            if norm1 == 0 or norm2 == 0:
+            if len(vec1) != len(vec2) or not vec1:
                 return 0.0
-            return dot_product / (norm1 * norm2)
+            a = np.asarray(vec1, dtype=float)
+            b = np.asarray(vec2, dtype=float)
+            if not (np.isfinite(a).all() and np.isfinite(b).all()):
+                return 0.0
+            denominator = float(np.linalg.norm(a) * np.linalg.norm(b))
+            return float(np.dot(a,b) / denominator) if denominator > 0 else 0.0
         except Exception:
             return 0.0
 
@@ -1417,7 +1496,7 @@ class ToolOrchestrator:
         parallel_calls = []
         sequential_calls = []
 
-        for tool_name, arg in tool_calls:
+        for tool_name, arg in list(tool_calls)[:32]:
             if tool_name in self.agent.tool_registry:
                 tool_info = self.agent.tool_registry[tool_name]
                 if tool_info['can_parallel'] and self.agent.parallel_execution_enabled:
@@ -1431,7 +1510,7 @@ class ToolOrchestrator:
             results.update(parallel_results)
 
         # Sequential tools still run behind a hard deadline so UI callers cannot stall.
-        for tool_name, arg in sequential_calls:
+        for tool_name, arg in sequential_calls[:16]:
             result, duration, success = self._execute_bounded_tool(tool_name, arg)
             results[tool_name] = result
             self.agent.metrics.record_tool_execution(tool_name, duration, success)
@@ -1463,106 +1542,93 @@ class ToolOrchestrator:
 
     def _execute_bounded_tool(self, tool_name: str, arg: Any, timeout: Optional[float] = None) -> Tuple[Any, float, bool]:
         if not self._circuit_available(tool_name):
-            return f"Circuit open: {tool_name}", 0.0, False
-        deadline = max(0.1, float(timeout if timeout is not None else self._tool_timeout(tool_name)))
-        result_queue: queue.Queue = queue.Queue(maxsize=1)
+            return "Circuit open: " + tool_name, 0.0, False
+        if not _TOOL_WORKER_SLOTS.acquire(blocking=False):
+            return "Deferred: tool capacity exhausted", 0.0, False
+        deadline = max(0.1, min(float(timeout if timeout is not None else self._tool_timeout(tool_name)), 60.0))
+        result_queue = queue.Queue(maxsize=1)
         started = time.monotonic()
-
-        def runner() -> None:
+        def runner():
             try:
                 result_queue.put_nowait((True, self._execute_single_tool(tool_name, arg)))
             except Exception as exc:
-                try:
-                    result_queue.put_nowait((False, f"Error: {exc}"))
-                except queue.Full:
-                    pass
-
-        thread = threading.Thread(target=runner, name=f"SM-Tool-{tool_name}", daemon=True)
-        thread.start()
+                result_queue.put_nowait((False, "Error: " + str(exc)[:180]))
+            finally:
+                _TOOL_WORKER_SLOTS.release()
+        thread = threading.Thread(target=runner, name="SM-Tool-"+str(tool_name), daemon=True)
+        try:
+            thread.start()
+        except Exception:
+            _TOOL_WORKER_SLOTS.release()
+            return "Error: tool thread unavailable", 0.0, False
         thread.join(timeout=deadline)
         duration = time.monotonic() - started
         if thread.is_alive():
             self._record_tool_result(tool_name, False)
-            return f"Timeout: {tool_name} exceeded {deadline:.2f}s", duration, False
+            return "INDETERMINATE: timeout; worker may still be running (not cancelled)", duration, False
         try:
             success, result = result_queue.get_nowait()
         except queue.Empty:
-            success, result = False, f"Error: {tool_name} returned no deterministic result"
+            success, result = False, "Error: tool returned no result"
         self._record_tool_result(tool_name, bool(success))
         return result, duration, bool(success)
 
     def _execute_parallel(self, tool_calls: List[Tuple[str, Any]]) -> Dict[str, Any]:
-        """Execute a bounded parallel batch under one total deadline."""
-        if not tool_calls:
-            return {}
-        max_workers = max(1, int(getattr(self.agent, "max_parallel_tools", 5) or 5))
-        batch = list(tool_calls[:max_workers])
-        overflow = list(tool_calls[max_workers:])
-        batch_timeout = max(0.25, float(getattr(config, "AI_AGENT_PARALLEL_BATCH_TIMEOUT_SECONDS", 12.0) or 12.0))
-        deadline = time.monotonic() + batch_timeout
-        result_queue: queue.Queue = queue.Queue()
-        threads: Dict[str, threading.Thread] = {}
-        starts: Dict[str, float] = {}
-
-        def worker(tool_name: str, arg: Any) -> None:
-            started = time.monotonic()
-            if not self._circuit_available(tool_name):
-                result_queue.put((tool_name, f"Circuit open: {tool_name}", 0.0, False))
-                return
-            try:
-                result = self._execute_single_tool(tool_name, arg)
-                result_queue.put((tool_name, result, time.monotonic() - started, True))
-            except Exception as exc:
-                result_queue.put((tool_name, f"Error: {exc}", time.monotonic() - started, False))
-
-        for index, (tool_name, arg) in enumerate(batch):
-            key = tool_name if tool_name not in threads else f"{tool_name}#{index + 1}"
-            starts[key] = time.monotonic()
-            thread = threading.Thread(target=worker, args=(tool_name, arg), name=f"SM-Tool-{key}", daemon=True)
-            threads[key] = thread
-            thread.start()
-
-        results: Dict[str, Any] = {}
-        completed: Set[str] = set()
-        while len(completed) < len(batch):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0.0:
-                break
-            try:
-                tool_name, result, duration, success = result_queue.get(timeout=remaining)
-            except queue.Empty:
-                break
-            result_key = tool_name if tool_name not in completed else f"{tool_name}#{len(completed) + 1}"
-            completed.add(result_key)
-            results[result_key] = result
-            self._record_tool_result(tool_name, bool(success))
-            self.agent.metrics.record_tool_execution(tool_name, duration, bool(success))
-
-        for key, thread in threads.items():
-            if thread.is_alive():
-                tool_name = key.split("#", 1)[0]
-                duration = time.monotonic() - starts.get(key, time.monotonic())
-                results[key] = f"Timeout: {tool_name} exceeded batch deadline {batch_timeout:.2f}s"
-                self._record_tool_result(tool_name, False)
-                self.agent.metrics.record_tool_execution(tool_name, duration, False)
-            elif key not in results and key not in completed:
-                results[key] = f"Error: {key} returned no deterministic result"
-
-        for index, (tool_name, _arg) in enumerate(overflow, start=len(batch) + 1):
-            key = tool_name if tool_name not in results else f"{tool_name}#{index}"
-            results[key] = f"Deferred: parallel capacity limit {max_workers} reached"
-            self.agent.metrics.record_tool_execution(tool_name, 0.0, False)
+        """Run a finite batch; timed-out workers remain accounted for until exit."""
+        calls = list(tool_calls)[:16]
+        max_workers = max(1, min(int(self.agent.max_parallel_tools or 5), 8))
+        deadline = max(0.25, min(float(getattr(config, "AI_AGENT_PARALLEL_BATCH_TIMEOUT_SECONDS", 12.0) or 12.0), 60.0))
+        results = {}
+        for offset in range(0, len(calls), max_workers):
+            chunk = calls[offset:offset+max_workers]
+            batch_result = queue.Queue()
+            threads = []
+            end = time.monotonic() + deadline
+            for i,(name,arg) in enumerate(chunk, start=offset):
+                key = str(name) + ("#" + str(i+1) if sum(1 for n,_ in calls[:i] if n==name) else "")
+                if not _TOOL_WORKER_SLOTS.acquire(blocking=False):
+                    results[key] = "Deferred: tool capacity exhausted"
+                    continue
+                def run(n=name,a=arg,k=key):
+                    start=time.monotonic()
+                    try:
+                        answer=self._execute_single_tool(n,a)
+                        batch_result.put((k,n,answer,time.monotonic()-start,True))
+                    except Exception as exc:
+                        batch_result.put((k,n,"Error: " + str(exc)[:180],time.monotonic()-start,False))
+                    finally:
+                        _TOOL_WORKER_SLOTS.release()
+                thread=threading.Thread(target=run,daemon=True,name="SM-Parallel-"+str(name))
+                thread.start()
+                threads.append((key,name,thread))
+            remaining=len(threads)
+            while remaining and time.monotonic()<end:
+                try:
+                    key,name,answer,duration,success=batch_result.get(timeout=max(0.01,end-time.monotonic()))
+                except queue.Empty:
+                    break
+                remaining-=1
+                results[key]=answer
+                self._record_tool_result(name,success)
+                self.agent.metrics.record_tool_execution(name,duration,success)
+            for key,name,thread in threads:
+                if key not in results:
+                    results[key]="INDETERMINATE: batch timeout; worker may still be running"
+                    self._record_tool_result(name,False)
         return results
 
     def _execute_single_tool(self, tool_name: str, arg: Any) -> Any:
-        """Execute a single tool"""
         if tool_name not in self.agent.tool_registry:
-            raise ValueError(f"Unknown tool: {tool_name}")
-        if not _sm_tool_allowed(tool_name) and tool_name != 'creative':
+            raise ValueError("Unknown tool: " + str(tool_name))
+        if not _sm_tool_allowed(tool_name) and tool_name != "creative":
             raise PermissionError(_sm_tool_error(tool_name))
-
-        tool_func = self.agent.tool_registry[tool_name]['function']
-        return tool_func(arg)
+        if tool_name in {"open_url", "agent"}:
+            permitted, reason = _sm_action_permission("url" if tool_name == "open_url" else "desktop")
+            if not permitted:
+                raise PermissionError(reason)
+        if tool_name == "web_search" and not _sm_network_allowed():
+            raise PermissionError("network_forbidden_by_runtime_mode")
+        return self.agent.tool_registry[tool_name]["function"](arg)
 
     # Tool implementations
     def _tool_memory_search(self, query: str) -> str:
@@ -1577,16 +1643,15 @@ class ToolOrchestrator:
             return f"Memory search unavailable: {e}"
 
     def _tool_web_search(self, query: str) -> str:
-        """Perform web search"""
         if not _sm_module_approved("SarahMemoryResearch"):
             return _sm_tool_error("web_search")
-        if SAFE_MODE or LOCAL_ONLY_MODE or is_offline():
+        if not _sm_network_allowed():
             return "Web search disabled in current mode"
         try:
             from SarahMemoryResearch import perform_web_search
-            return perform_web_search(query)
-        except Exception as e:
-            return f"Web search failed: {e}"
+            return perform_web_search(str(query)[:2000])
+        except Exception:
+            return "Web search unavailable"
 
     def _tool_calc(self, expression: str) -> str:
         """Perform calculation"""
@@ -1600,22 +1665,10 @@ class ToolOrchestrator:
             return f"Calculation failed: {e}"
 
     def _tool_open_url(self, url: str) -> str:
-        """Open URL in browser"""
-        if SAFE_MODE or LOCAL_ONLY_MODE:
-            return "URL opening disabled in current mode"
-        try:
-            import webbrowser
-            webbrowser.open(url)
-            return f"Opened {url}"
-        except Exception as e:
-            return f"Failed to open URL: {e}"
+        return open_url_in_chrome(url)
 
     def _tool_agent_control(self, command: str) -> str:
-        """Execute agent control command"""
-        try:
-            return handle_ai_agent_command(command)
-        except Exception as e:
-            return f"Agent control failed: {e}"
+        return handle_ai_agent_command(command)
 
     def _tool_creative(self, payload: Any) -> str:
         """Governed CreativeStudios bridge."""
@@ -1654,7 +1707,7 @@ def shutdown_advanced_agent(timeout: float = 3.0) -> Dict[str, Any]:
         watcher_alive = _watch_thread.is_alive()
     agent_started = bool(getattr(ADVANCED_AGENT, "_initialized", False)) or any(t.is_alive() for t in getattr(ADVANCED_AGENT, "executor_threads", []))
     agent_result = ADVANCED_AGENT.shutdown(timeout=max(0.1, float(timeout))) if agent_started else {"ok": True, "standby": True}
-    checkpoint = checkpoint_context_history("PASSIVE") if bool(globals().get("_CONTEXT_INITIALIZED", False)) else {"ok": True, "standby": True}
+    checkpoint = checkpoint_context_history("PASSIVE") if bool(globals().get("_CONTEXT_INITIALIZED", False)) and _sm_flag("AI_FUNCTIONS_CONTEXT_PERSIST_ENABLED", False) and os.path.isfile(CONTEXT_DB_PATH) else {"ok": True, "standby": True}
     _watch_thread_started = bool(watcher_alive)
     return {"ok": bool(agent_result.get("ok")) and not watcher_alive, "agent": agent_result, "watcher_alive": watcher_alive, "checkpoint": checkpoint}
 
@@ -1676,7 +1729,8 @@ def advanced_agent_query(user_text: str, context: Optional[Dict] = None) -> str:
     except Exception:
         pass
     if not bool(getattr(ADVANCED_AGENT, "_initialized", False)):
-        initialize_advanced_agent()
+        if _sm_flag("AI_FUNCTIONS_BACKGROUND_ENABLED", False) and _sm_flag("AI_AGENT_ENABLED", False):
+            initialize_advanced_agent()
     ADVANCED_AGENT.interaction_count += 1
     kg_engine = None  # created lazily; avoids NameError if Step 3 fails
 
@@ -1803,21 +1857,24 @@ def advanced_agent_query(user_text: str, context: Optional[Dict] = None) -> str:
         # Step 6: Execute based on decision
         orchestrator = ToolOrchestrator(ADVANCED_AGENT)
 
-        if decision.decision == "hierarchical_decomposition":
+        if decision.decision in {"hierarchical_decomposition", "direct_tool_execution"} and not _sm_flag("AI_FUNCTIONS_AUTO_TOOL_EXECUTION_ENABLED", False):
+            result_text = "I'm unsure how to respond."
+            success = False
+        elif decision.decision == "hierarchical_decomposition":
             # Execute with full hierarchical planning
             execution_plan = planner.plan_execution(task)
             results = orchestrator.execute_tools(execution_plan)
 
             # Combine results
             result_text = _combine_tool_results(results, user_text)
-            success = bool(results)
+            success = bool(results) and result_text not in {"I encountered errors with all available tools.", "I'm unsure how to respond."}
 
         elif decision.decision == "direct_tool_execution":
             # Execute tools directly
             tool_calls = [(tool, user_text) for tool in task.tools_required]
             results = orchestrator.execute_tools(tool_calls)
             result_text = _combine_tool_results(results, user_text)
-            success = bool(results)
+            success = bool(results) and result_text not in {"I encountered errors with all available tools.", "I'm unsure how to respond."}
 
         elif decision.decision == "knowledge_based_response":
             # Use knowledge graph
@@ -1830,19 +1887,21 @@ def advanced_agent_query(user_text: str, context: Optional[Dict] = None) -> str:
             success = True
 
         # Step 7: Learn from interaction
-        ADVANCED_AGENT.learning_buffer.append({
-            'type': 'task_success' if success else 'task_failure',
-            'pattern': intent,
-            'context': user_text,
-            'decision': decision.decision,
-            'timestamp': time.time()
-        })
+        if _sm_flag("AI_FUNCTIONS_LEARNING_ENABLED", False):
+            ADVANCED_AGENT.learning_buffer.append({
+                'type': 'task_success' if success else 'task_failure',
+                'pattern': intent,
+                'context_hash': hashlib.sha256(str(user_text).encode()).hexdigest(),
+                'decision': decision.decision,
+                'timestamp': time.time()
+            })
+            del ADVANCED_AGENT.learning_buffer[:-128]
 
         # Step 8: Add to knowledge graph
         # Step 8: Add to knowledge graph (only when we have a real answer)
         try:
             _rt_store = (result_text or '').strip()
-            if _rt_store:
+            if _rt_store and success and _sm_flag("AI_FUNCTIONS_LEARNING_ENABLED", False):
                 if kg_engine is None:
                     kg_engine = KnowledgeGraphEngine(ADVANCED_AGENT)
                 kg_engine.add_knowledge(
@@ -1855,23 +1914,25 @@ def advanced_agent_query(user_text: str, context: Optional[Dict] = None) -> str:
 
 
         # Step 9: Reflect on outcome
-        reasoner.reflect_on_outcome(decision, result_text, success)
+        if _sm_flag("AI_FUNCTIONS_LEARNING_ENABLED", False):
+            reasoner.reflect_on_outcome(decision, result_text, success)
 
         # Step 10: Record metrics
         duration = time.time() - start_time
         ADVANCED_AGENT.metrics.response_times.append(duration)
+        del ADVANCED_AGENT.metrics.response_times[:-100]
         ADVANCED_AGENT.metrics.record_task_outcome(intent, success)
 
         # Step 11: Update user patterns for prediction
         current_time = datetime.now()
         pattern_key = f"{current_time.hour}_{current_time.weekday()}"
-        ADVANCED_AGENT.user_patterns[pattern_key].append({
-            'intent': intent,
-            'query': user_text[:50],
-            'hour': current_time.hour,
-            'day': current_time.weekday(),
-            'timestamp': time.time()
-        })
+        if _sm_flag("AI_FUNCTIONS_LEARNING_ENABLED", False):
+            patterns = ADVANCED_AGENT.user_patterns[pattern_key]
+            patterns.append({
+                'intent': intent, 'query_hash': hashlib.sha256(str(user_text).encode()).hexdigest(),
+                'hour': current_time.hour, 'day': current_time.weekday(), 'timestamp': time.time()
+            })
+            del patterns[:-32]
 
         logger.info(f"[AdvancedAgent] Completed in {duration:.2f}s | Success: {success}")
 
@@ -1887,8 +1948,11 @@ def _combine_tool_results(results: Dict[str, Any], original_query: str) -> str:
         return "I couldn't find a suitable response."
 
     # Filter out errors
+    rejected = ("error:", "timeout:", "indeterminate:", "deferred:", "circuit open:",
+                "action requires", "agent control denied:", "url opening denied:",
+                "web search disabled", "memory search unavailable")
     successful_results = {k: v for k, v in results.items()
-                         if not str(v).startswith("Error:")}
+                         if v is not None and not str(v).strip().lower().startswith(rejected)}
 
     if not successful_results:
         return "I encountered errors with all available tools."
@@ -2004,7 +2068,7 @@ def _generate_conversational_response(text: str, context: Optional[Dict]) -> str
         )
 
     # Greeting
-    if any(g in text_lower for g in ("hello", "hi", "hey")):
+    if any(_sm_phrase(text_lower, g) for g in ("hello", "hi", "hey")):
         return "Hello! How can I assist you today?"
 
     # Thanks
@@ -2085,64 +2149,52 @@ def _update_gui_status():
 
 
 def intercept_agent_control_phrases(text: str):
-    if not text:
+    """Accept exact agent-control commands, not quoted phrases or substrings."""
+    global _agent_state
+    t = re.sub(r"[.!?]+$", "", str(text or "").strip().lower())
+    if not t:
         return None
-    t = text.strip().lower()
-    if any(p in t for p in AI_AGENT_STOP_PHRASES):
+    if t in {p.strip().lower() for p in AI_AGENT_STOP_PHRASES}:
         _agent_state["mode"] = "HALTED"
         _agent_state["resume_eta_ms"] = _now_ms() + AI_AGENT_RESUME_DELAY
         _update_gui_status()
-        try:
-            synthesize_voice("Emergency stop acknowledged. Agent halted.")
-        except Exception:
-            pass
         return "Agent halted."
-    if any(p in t for p in AI_AGENT_HALT_PHRASES):
+    if t in {p.strip().lower() for p in AI_AGENT_HALT_PHRASES}:
         _agent_state["mode"] = "HALTED"
-        _agent_state["resume_eta_ms"] = _now_ms() + AI_AGENT_RESUME_DELAY
         _update_gui_status()
         return "Paused."
-    if any(p in t for p in AI_AGENT_RESUME_PHRASES):
-        if _now_ms() >= _agent_state.get("resume_eta_ms", 0):
-            _agent_state["mode"] = "ACTIVE"
-            _update_gui_status()
-            return "Resuming."
-        else:
-            wait_ms = max(0, _agent_state["resume_eta_ms"] - _now_ms())
-            return f"Cannot resume yet. Waiting {int(wait_ms/1000)} seconds."
+    if t in {p.strip().lower() for p in AI_AGENT_RESUME_PHRASES}:
+        if not _sm_flag("AI_AGENT_ENABLED", False):
+            return "Agent control is disabled."
+        if _now_ms() < _agent_state.get("resume_eta_ms", 0):
+            return "Agent cooling down."
+        _agent_state["mode"] = "ACTIVE"
+        _update_gui_status()
+        return "Resuming."
     return None
 
 
 def agent_guard():
-    # Start watchers on first use
+    """Human interruption guard; never self-activates from IDLE."""
+    if not _sm_flag("AI_AGENT_ENABLED", False):
+        return False
     _start_input_watchers()
     now = _now_ms()
-    # If recent human input, ensure we are halted
     if now - _agent_state.get("last_human_ts", 0) < AI_AGENT_USER_ACTIVITY_TIMEOUT_MS:
         _agent_state["mode"] = "HALTED"
         _agent_state["resume_eta_ms"] = now + AI_AGENT_RESUME_DELAY
         _update_gui_status()
         return False
-    # If we are halted but resume window elapsed, return True but keep ACTIVE
-    if _agent_state["mode"] in ("HALTED","RESUME_PENDING"):
-        if now >= _agent_state.get("resume_eta_ms", 0):
-            _agent_state["mode"] = "ACTIVE"
-            _update_gui_status()
-            return True
-        else:
-            _agent_state["mode"] = "HALTED"
-            _update_gui_status()
-            return False
-    # Normal
-    if _agent_state["mode"] == "IDLE":
-        _agent_state["mode"] = "ACTIVE"
-        _update_gui_status()
-    return True
+    return _agent_state.get("mode") == "ACTIVE" and now >= _agent_state.get("resume_eta_ms", 0)
 
 
 
 
 # === Media Job Helpers (addons/media) ===
+_media_jobs_q = queue.Queue(maxsize=64)
+_media_results = {}
+_media_lock = threading.RLock()
+
 def _media_init():
     global _media_jobs_q, _media_results, _media_lock
     if _media_jobs_q is None:
@@ -2153,17 +2205,23 @@ def _media_init():
         _media_lock = threading.RLock()
 
 def submit_media_job(job: Dict[str, Any]) -> str:
-    """Submit a media job request. Returns job_id."""
+    """Queue a bounded media job as a proposal, without executing it."""
     _media_init()
     if not isinstance(job, dict):
         raise ValueError("job must be a dict")
-    job_id = str(job.get("job_id") or uuid.uuid4())
-    job = dict(job)
-    job["job_id"] = job_id
-    job["ts_submit"] = time.time()
+    job_id = str(job.get("job_id") or uuid.uuid4())[:120]
+    record = {**job, "job_id": job_id, "ts_submit": time.time(), "execution_authority": False}
     with _media_lock:
-        _media_results.setdefault(job_id, {"status": "queued", "job": job, "result": None})
-    _media_jobs_q.put(job)
+        if job_id in _media_results:
+            return job_id
+        if len(_media_results) >= 128 or _media_jobs_q.full():
+            raise RuntimeError("media_job_capacity_reached")
+        _media_results[job_id] = {"status": "queued", "job": record, "result": None}
+        try:
+            _media_jobs_q.put_nowait(record)
+        except queue.Full:
+            _media_results.pop(job_id, None)
+            raise RuntimeError("media_job_queue_full")
     return job_id
 
 def poll_media_job() -> Optional[Dict[str, Any]]:
@@ -2175,24 +2233,25 @@ def poll_media_job() -> Optional[Dict[str, Any]]:
         return None
 
 def store_media_result(job_id: str, result: Dict[str, Any], status: str = "done") -> None:
-    """Store a media result for later retrieval by UI."""
+    """Store one bounded media result, retaining the existing public contract."""
     _media_init()
-    if not job_id:
-        raise ValueError("job_id required")
-    if not isinstance(result, dict):
-        raise ValueError("result must be a dict")
+    if not job_id or not isinstance(result, dict):
+        raise ValueError("job_id and dictionary result required")
     with _media_lock:
-        rec = _media_results.get(job_id) or {"status": "unknown", "job": None, "result": None}
-        rec["status"] = status
-        rec["result"] = result
-        rec["ts_done"] = time.time()
+        rec = _media_results.get(job_id)
+        if rec is None:
+            if len(_media_results) >= 128:
+                raise RuntimeError("media_result_capacity_reached")
+            rec = {"status": "unknown", "job": None, "result": None}
+        rec.update({"status": str(status)[:48], "result": dict(result), "ts_done": time.time()})
         _media_results[job_id] = rec
 
 def get_media_result(job_id: str) -> Dict[str, Any]:
-    """Get job status/result by id."""
+    """Return a snapshot rather than the mutable internal dictionary."""
     _media_init()
     with _media_lock:
-        return dict(_media_results.get(job_id) or {"status": "missing", "job": None, "result": None})
+        rec = _media_results.get(job_id)
+        return dict(rec) if rec is not None else {"status": "missing", "job": None, "result": None}
 
 
 # === Governed Plug-in Connectors ===
@@ -2208,12 +2267,11 @@ def local_memory_lookup(text):
 
 
 def web_research_query(text):
-    if not _sm_module_approved("SarahMemoryResearch"):
+    if not _sm_network_allowed() or not _sm_module_approved("SarahMemoryResearch"):
         return None
     try:
         from SarahMemoryResearch import perform_web_search
-
-        return perform_web_search(text)
+        return perform_web_search(str(text or "")[:2000])
     except Exception:
         return None
 
@@ -2231,12 +2289,14 @@ def symbolic_calc_answer(text):
         return None
 
 def deep_learn_context(text):
+    if not _sm_flag("AI_FUNCTIONS_LEARNING_ENABLED", False) or not _sm_module_approved("SarahMemoryDL"):
+        return None
     try:
         from SarahMemoryDL import learn_from_input
-        learn_from_input(text)
-        return None
-    except:
-        return None
+        learn_from_input(str(text or "")[:2000])
+    except Exception:
+        pass
+    return None
 
 # === Additional Functions ===
 
@@ -2253,96 +2313,90 @@ def clear_context():
 
 
 def add_to_context(interaction):
-    # NEW: ensure we have an embedding if caller didn’t provide one
+    """Maintain a bounded RAM ring; persistent storage and sync are opt-in."""
+    if not isinstance(interaction,dict):
+        return
+    item=dict(interaction)
     try:
-        if "embedding" not in interaction or not interaction["embedding"]:
-            src_text = interaction.get("input") or interaction.get("final_response") or ""
-            try:
-                interaction["embedding"] = lite_embed(src_text)[0]
-            except Exception:
-                interaction["embedding"] = _fallback_embed(src_text)
-    except Exception:
-        # keep going even if embedding fails
-        pass
-
+        embedding=item.get("embedding")
+        if not isinstance(embedding,(list,tuple,np.ndarray)) or not len(embedding):
+            embedding=lite_embed(str(item.get("input") or item.get("final_response") or ""))[0]
+        vector=[float(x) for x in list(embedding)[:4096]]
+        if not vector or not all(math.isfinite(x) for x in vector):
+            return
+    except (TypeError,ValueError,OverflowError):
+        return
+    item["embedding"]=vector
+    capacity=max(1,min(int(getattr(config,"CONTEXT_BUFFER_SIZE",20) or 20),256))
     with _CONTEXT_LOCK:
-        context_buffer.append(dict(interaction))
-        if len(context_buffer) > config.CONTEXT_BUFFER_SIZE:
-            context_buffer.pop(0)
-
-        if "embedding" in interaction:
-            context_embeddings.append(np.array(interaction["embedding"]))
-            if len(context_embeddings) > config.CONTEXT_BUFFER_SIZE:
-                context_embeddings.pop(0)
-
-    try:
-        conn = _context_db_connect()
-        _ensure_context_schema(conn)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO context_history (timestamp, input, embedding, final_response, source, intent) VALUES (?, ?, ?, ?, ?, ?)",
-            (interaction.get("timestamp"), interaction.get("input"), json.dumps(interaction.get("embedding")),
-             interaction.get("final_response"), interaction.get("source"), interaction.get("intent"))
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.error(f"Error persisting context history: {e}")
-
-    # Remote hub broadcast (best-effort)
-    try:
-        hub = _get_hub()
-        if hub and isinstance(interaction.get("final_response"), str):
-            #_fire_and_forget(hub.broadcast_context, interaction.get("final_response"), {"intent": interaction.get("intent"), "source": interaction.get("source")})
-            _fire_and_forget(hub.context_update, interaction.get("final_response"),
-                            tags=[interaction.get("intent"), interaction.get("source")])
-    except Exception:
-        pass
+        context_buffer.append(item)
+        context_embeddings.append(np.array(vector,dtype=float))
+        del context_buffer[:-capacity]
+        del context_embeddings[:-capacity]
+    if _sm_flag("AI_FUNCTIONS_CONTEXT_PERSIST_ENABLED", False):
+        try:
+            with contextlib.closing(_context_db_connect()) as con:
+                _ensure_context_schema(con)
+                con.execute("INSERT INTO context_history (timestamp,input,embedding,final_response,source,intent) VALUES (?,?,?,?,?,?)",
+                    (item.get("timestamp"),str(item.get("input") or "")[:4000],json.dumps(vector),
+                     str(item.get("final_response") or "")[:4000],str(item.get("source") or "")[:96],str(item.get("intent") or "")[:96]))
+                retention = max(128,min(int(getattr(config,"AI_FUNCTIONS_CONTEXT_MAX_ROWS",2048) or 2048),4096))
+                cursor = con.execute("SELECT id FROM context_history ORDER BY id DESC LIMIT 1 OFFSET ?",(retention,))
+                row = cursor.fetchone()
+                if row:
+                    con.execute("DELETE FROM context_history WHERE id IN (SELECT id FROM context_history WHERE id <= ? ORDER BY id ASC LIMIT 32)",(row[0],))
+                con.commit()
+        except Exception as exc:
+            logger.warning("[Context] Persistence failed: %s",exc)
+    if (_sm_network_allowed() and _sm_flag("AI_FUNCTIONS_CONTEXT_SYNC_ENABLED",False)
+        and _sm_flag("ALLOW_HUB_SYNC",False)):
+        hub=_get_hub()
+        if hub and callable(getattr(hub,"context_update",None)) and isinstance(item.get("final_response"),str):
+            _fire_and_forget(hub.context_update,item["final_response"][:4000],tags=[item.get("intent"),item.get("source")])
 
 
 def retrieve_similar_context(current_embedding, top_n=3):
-    with _CONTEXT_LOCK:
-        embeddings = [np.array(item, copy=True) for item in context_embeddings]
-        buffer_snapshot = [dict(item) if isinstance(item, dict) else item for item in context_buffer]
-    if not embeddings or not buffer_snapshot:
+    try:
+        current=np.asarray(current_embedding,dtype=float)
+        if current.ndim!=1 or not np.isfinite(current).all():
+            return []
+        current_norm=float(np.linalg.norm(current))
+        if current_norm<=0:
+            return []
+        with _CONTEXT_LOCK:
+            pairs=list(zip(context_buffer,context_embeddings))
+        ranked=[]
+        for i,(record,emb) in enumerate(pairs):
+            try:
+                v=np.asarray(emb,dtype=float)
+                if v.shape!=current.shape or not np.isfinite(v).all():
+                    continue
+                norm=float(np.linalg.norm(v))*current_norm
+                if norm>0:
+                    ranked.append((float(np.dot(current,v)/norm),i,dict(record)))
+            except (TypeError,ValueError):
+                continue
+        ranked.sort(key=lambda row:(row[0],row[1]),reverse=True)
+        return [row[2] for row in ranked[:max(0,min(int(top_n),32))]]
+    except (ValueError,TypeError):
         return []
-    similarities = []
-    current = np.array(current_embedding, dtype=float)
-    current_norm = float(np.linalg.norm(current))
-    if current_norm <= 0.0:
-        return []
-    for emb in embeddings:
-        denom = current_norm * float(np.linalg.norm(emb))
-        similarities.append(float(np.dot(current, emb) / denom) if denom > 0.0 else -1.0)
-    limit = max(1, min(int(top_n or 3), len(similarities)))
-    top_indices = np.argsort(similarities)[-limit:][::-1]
-    return [buffer_snapshot[int(i)] for i in top_indices if int(i) < len(buffer_snapshot)]
 
 
 def log_ai_functions_event(event, details):
+    """Bounded optional local event log, disabled by default."""
+    if not _sm_flag("AI_FUNCTIONS_EVENT_LOG_ENABLED",False):
+        return
     try:
-        db_path = os.path.join(config.DATASETS_DIR, "functions.db")
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            '''CREATE TABLE IF NOT EXISTS ai_functions_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT,
-                event TEXT,
-                details TEXT
-            )'''
-        )
-        timestamp = datetime.now().isoformat()
-        cursor.execute(
-            "INSERT INTO ai_functions_events (timestamp, event, details) VALUES (?, ?, ?)",
-            (timestamp, event, details)
-        )
-        conn.commit()
-        conn.close()
-        logger.info("Logged AI functions event to functions.db successfully.")
-    except Exception as e:
-        logger.error(f"Error logging AI functions event to functions.db: {e}")
+        message=re.sub(r"(?i)(password|secret|token|api[_-]?key)\s*[:=]\s*\S+",r"\1=<redacted>",str(details or "")[:1024])
+        path=os.path.join(config.DATASETS_DIR,"functions.db")
+        os.makedirs(os.path.dirname(path),exist_ok=True)
+        with contextlib.closing(sqlite3.connect(path,timeout=3.0)) as con:
+            con.execute("CREATE TABLE IF NOT EXISTS ai_functions_events (id INTEGER PRIMARY KEY AUTOINCREMENT,timestamp TEXT,event TEXT,details TEXT)")
+            con.execute("INSERT INTO ai_functions_events (timestamp,event,details) VALUES (?,?,?)",
+                (datetime.now().isoformat(),str(event or "")[:96],message))
+            con.commit()
+    except Exception as exc:
+        logger.warning("[AiFunctions] Event log unavailable: %s",exc)
 
 if __name__ == '__main__':
     logger.info("Starting Enhanced SarahMemoryAiFunctions module test.")
@@ -2373,9 +2427,14 @@ def handle_ai_agent_command(command_text):
     """
     import time
     import re as _re
+    allowed, reason = _sm_action_permission("desktop")
+    if not allowed:
+        return "Agent control denied: " + reason
+    if not _sm_user_command(str(command_text or "")):
+        return "Agent control denied: explicit command required"
     try:
         import pyautogui as _pag
-        _pag.FAILSAFE = False
+        _pag.FAILSAFE = True
     except Exception as e:
         logger.error(f"[AI-Agent] pyautogui unavailable: {e}")
         return "Desktop control is unavailable on this system."
@@ -2387,23 +2446,10 @@ def handle_ai_agent_command(command_text):
     raw = command_text or ""
     cmd = raw.strip().lower()
 
-    # If risky action requires consent
-    for risky in AI_AGENT_REQUIRE_CONSENT:
-        if risky in cmd:
-            synthesize_voice(f"I need your permission to {risky}. Say yes or no.")
-            # Simple yes/no listen using speech_recognition if available; else deny
-            try:
-                r = sr.Recognizer()
-                with sr.Microphone() as source:
-                    audio = r.listen(source, timeout=4, phrase_time_limit=3)
-                    utter = r.recognize_google(audio).strip().lower()
-            except Exception:
-                utter = ""
-            if utter in AI_AGENT_CONFIRM_YES:
-                log_ai_functions_event("AgentConsent", f"Granted: {risky}")
-            else:
-                log_ai_functions_event("AgentConsent", f"Denied: {risky}")
-                return "Okay, I won't proceed."
+    # String-only legacy entry points cannot verify a live user approval receipt.
+    # Never transmit audio for cloud speech recognition to obtain permission.
+    if any(_sm_phrase(cmd, str(risky)) for risky in AI_AGENT_REQUIRE_CONSENT):
+        return "Action requires verified OperatorCore approval; direct agent command denied."
 
     # Human activity guard
     if not agent_guard():
@@ -2461,7 +2507,7 @@ def handle_ai_agent_command(command_text):
     # Wait
     m = _re.search(r"\bwait\s+(\d+(?:\.\d+)?)", cmd)
     if m:
-        time.sleep(float(m.group(1))); return "Waiting done."
+        time.sleep(min(3.0, max(0.0, float(m.group(1))))); return "Waiting done."
 
     # --- Game micro-controls (WASD etc.) ---
     def _hold(key, dur=0.2):
@@ -2546,14 +2592,12 @@ def select_sentence_transformer(preferred: list = None):
     def _local_candidates(name: str) -> list:
         root = _models_root()
         n = str(name or "").strip()
-        if not n:
+        if not n or os.path.isabs(n) or ".." in n.replace("\\", "/").split("/"):
             return []
-        return [
-            os.path.join(root, n),
-            os.path.join(root, n.replace("/", "_")),
-            os.path.join(root, n.replace("-", "_")),
-            os.path.join(root, n.replace("/", os.sep)),
-        ]
+        base = os.path.realpath(root)
+        raw = [os.path.join(root, n), os.path.join(root, n.replace("/", "_")),
+               os.path.join(root, n.replace("-", "_")), os.path.join(root, n.replace("/", os.sep))]
+        return [p for p in raw if os.path.commonpath((base, os.path.realpath(p))) == base]
 
     def _pick_auto_from_resolver() -> list:
         """
@@ -2700,64 +2744,17 @@ def _ensure_response_table(db_path=None):
             import logging; logging.warning("[DB] ensure `response` failed: %s", e)
         except Exception:
             pass
-try:
-    _ensure_response_table()
-except Exception:
-    pass
+# Database schema is created only by an explicit storage operation.
 
 def add_to_context_entry(interaction_or_text, final_response=None, intent="chat", source="local"):
-    """
-    Persist one exchange into context_history.db and in-memory buffer.
-    Accepts either:
-      - a dict: {"timestamp","input","embedding","final_response","source","intent"}
-      - or (text, final_response, intent, source)
-    Never raises.
-    """
-    try:
-        import time, json, sqlite3, numpy as _np
-        ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
-
-        if isinstance(interaction_or_text, dict):
-            data = interaction_or_text
-            text = str(data.get("input", "") or "")
-            resp = str(data.get("final_response", "") or "")
-            emb = data.get("embedding", None)
-            intent = data.get("intent", intent)
-            source = data.get("source", source)
-            ts = data.get("timestamp", ts)
-        else:
-            text = str(interaction_or_text or "")
-            resp = str(final_response or "")
-            try:
-                emb = lite_embed(text)[0]  # existing small embedder
-            except Exception:
-                emb = None
-
-        # Persist through the bounded crash-safe context store.
-        with _context_db_connect() as con:
-            _ensure_context_schema(con)
-            cur = con.cursor()
-            cur.execute(
-                "INSERT INTO context_history (timestamp, input, embedding, final_response, source, intent) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (ts, text, json.dumps(list(emb)) if emb is not None else None, resp, source, intent)
-            )
-            con.commit()
-
-        # Update RAM ring if present
-        try:
-            with _CONTEXT_LOCK:
-                context_buffer.append({'timestamp': ts, 'input': text, 'embedding': list(emb) if emb is not None else []})
-                context_embeddings.append(_np.array(emb) if emb is not None else _np.zeros((64,), dtype=float))
-                maxn = int(getattr(config, "CONTEXT_BUFFER_SIZE", 20))
-                while len(context_buffer) > maxn:
-                    del context_buffer[0]
-                while len(context_embeddings) > maxn:
-                    del context_embeddings[0]
-        except Exception:
-            pass
-    except Exception:
-        pass
+    """Compatibility context helper; inserts once via the governed RAM ring."""
+    if isinstance(interaction_or_text,dict):
+        data=dict(interaction_or_text)
+    else:
+        data={"input":str(interaction_or_text or ""),"final_response":str(final_response or ""),
+              "intent":str(intent or "chat"),"source":str(source or "local")}
+    data.setdefault("timestamp",datetime.now().isoformat())
+    add_to_context(data)
 
 
 
@@ -2794,36 +2791,36 @@ def get_relevant_context(query: str, top_n: int = 3):
 
 
 def init_context_history():
-    """Initialize the bounded RAM ring exactly once from durable context."""
+    """Hydrate context only when local persistence was explicitly opted into."""
     global _CONTEXT_INITIALIZED
     with _CONTEXT_LOCK:
         if _CONTEXT_INITIALIZED:
             return
+        if not _sm_flag("AI_FUNCTIONS_CONTEXT_PERSIST_ENABLED", False):
+            _CONTEXT_INITIALIZED=True
+            return
         try:
-            con = _context_db_connect()
-            try:
+            with contextlib.closing(_context_db_connect()) as con:
                 _ensure_context_schema(con)
-                cursor = con.cursor()
-                cursor.execute(
-                    'SELECT timestamp, input, embedding FROM context_history ORDER BY id DESC LIMIT ?',
-                    (int(getattr(config, "CONTEXT_BUFFER_SIZE", 20) or 20),),
-                )
-                rows = cursor.fetchall()
-            finally:
-                con.close()
+                rows=con.execute("SELECT timestamp,input,embedding FROM context_history ORDER BY id DESC LIMIT ?",
+                    (max(1,min(int(getattr(config,"CONTEXT_BUFFER_SIZE",20) or 20),256)),)).fetchall()
             context_buffer.clear()
             context_embeddings.clear()
-            for ts, ui, emb in reversed(rows):
+            for ts,ui,emb in reversed(rows):
                 try:
-                    embedding = json.loads(emb) if emb else []
-                    context_buffer.append({'timestamp': ts, 'input': ui, 'embedding': embedding})
-                    context_embeddings.append(np.array(embedding, dtype=float))
-                except Exception as exc:
-                    logger.debug("[Context] Skipped malformed entry: %s", exc)
-            _CONTEXT_INITIALIZED = True
-            logger.info("Initialized context history with %d entries.", len(context_buffer))
+                    vec=json.loads(emb) if emb else []
+                    if not isinstance(vec,list) or not vec:
+                        continue
+                    floats=[float(v) for v in vec[:4096]]
+                    if not all(math.isfinite(x) for x in floats):
+                        continue
+                    context_buffer.append({"timestamp":ts,"input":ui,"embedding":floats})
+                    context_embeddings.append(np.asarray(floats,dtype=float))
+                except (TypeError,ValueError):
+                    continue
+            _CONTEXT_INITIALIZED=True
         except Exception as exc:
-            logger.error("Error initializing context history: %s", exc)
+            logger.warning("[Context] Initialization failed: %s",exc)
 
 def route_query(user_text: str) -> str:
     """
@@ -2905,34 +2902,14 @@ def route_query(user_text: str) -> str:
         return "I'm unsure how to respond."
 
 def _legacy_route_query(user_text: str) -> str:
-    """Legacy query routing (backward compatibility)"""
-    t = (user_text or "").strip()
+    t = str(user_text or "").strip()
     if not t:
         return "I didn't catch that."
-
-    # Simple routing
-    tl = t.lower()
-
-    # URL
-    if tl.startswith(("http://", "https://", "www.")):
-        try:
-            import webbrowser
-            webbrowser.open(t)
-            return f"Opening {t}"
-        except Exception as e:
-            return f"Failed to open URL: {e}"
-
-    # Math
-    if any(ch in t for ch in "+-*/^=") or tl.startswith("calculate"):
-        try:
-            from SarahMemoryWebSYM import WebSemanticSynthesizer
-            calc = WebSemanticSynthesizer()
-            return str(calc.sarah_calculator(t))
-        except Exception as e:
-            return f"Calculation error: {e}"
-
-    # Default
-    return "I'm unsure how to respond to that."
+    if t.lower().startswith(("https://", "http://", "www.")):
+        return open_url_in_chrome(t)
+    if re.fullmatch(r"[\d\s+*/().%^-]{1,200}",t) or t.lower().startswith("calculate "):
+        return symbolic_calc_answer(t) or "I'm unsure how to respond."
+    return "I'm unsure how to respond."
 
 # ================================================================================
 # MODULE INITIALIZATION
@@ -2941,7 +2918,7 @@ def _legacy_route_query(user_text: str) -> str:
 def _module_init():
     """Initialize module on import"""
     try:
-        import_autostart = bool(getattr(config, "ADVANCED_AGENT_IMPORT_AUTOSTART", True))
+        import_autostart = _sm_flag("ADVANCED_AGENT_IMPORT_AUTOSTART", False) and _sm_flag("AI_FUNCTIONS_IMPORT_AUTOSTART_APPROVED", False)
 
         # Initialize context history only when import autostart is enabled.
         # Cloud/public web WSGI boot should not hydrate DB-backed agent context
@@ -3014,22 +2991,19 @@ def smart_reply(user_text: str) -> str:
         return "I'm working on that. Let me try again."
 
 def create_chunks(text: str, chunk_size_tokens: int = 256, overlap_tokens: int = 64, language: str = "en") -> list:
-    """
-    Deterministic chunker by whitespace tokens with overlap.
-    Returns list of dicts: {"id": idx, "text": chunk, "start": token_idx, "end": token_idx}
-    """
-    import re
-    toks = re.findall(r"\S+", text or "")
+    """Finite, bounded token chunker with compatible result schema."""
+    size = max(1, min(int(chunk_size_tokens or 256), 4096))
+    overlap = max(0, min(int(overlap_tokens or 0), size - 1))
+    words = re.findall(r"\S+", str(text or ""))[:65536]
     chunks = []
-    i = 0
-    idx = 0
-    while i < len(toks):
-        start = max(0, i - overlap_tokens if idx > 0 else i)
-        end = min(len(toks), i + chunk_size_tokens)
-        chunk = " ".join(toks[start:end])
-        chunks.append({"id": idx, "text": chunk, "start": start, "end": end})
-        i += chunk_size_tokens - overlap_tokens if idx > 0 else chunk_size_tokens
-        idx += 1
+    step = size - overlap
+    for idx, start in enumerate(range(0, len(words), step)):
+        if idx >= 512:
+            break
+        end = min(start + size, len(words))
+        chunks.append({"id": idx, "text": " ".join(words[start:end]), "start": start, "end": end})
+        if end == len(words):
+            break
     return chunks
 
 def detect_command_intent(text: str) -> str:
@@ -3057,59 +3031,35 @@ def normalize_text(text: str) -> str:
         return text
 
 def open_url_in_chrome(url: str) -> str:
-    """Open a URL in Chrome if present, else default browser"""
+    """Use browser APIs, never os.startfile(command-line) composition."""
+    permitted, reason = _sm_action_permission("url")
+    if not permitted:
+        return "URL opening denied: " + reason
     try:
-        if not url:
-            return "No URL provided."
-        import os
-        chrome_paths = [r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"]
-        for cp in chrome_paths:
-            if os.path.exists(cp):
-                os.startfile(f'"{cp}" "{url}"')  # nosec
-                return f"Opening in Chrome: {url}"
+        parsed = urllib.parse.urlsplit(str(url or "").strip())
+        if parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username or parsed.password:
+            return "URL opening denied: public HTTPS URL required"
         import webbrowser
-        webbrowser.open(url)
-        return f"Opening in default browser: {url}"
-    except Exception as e:
-        return f"Failed to open URL: {e}"
+        opened = bool(webbrowser.open(parsed.geturl(), new=2))
+        return "Opened " + parsed.geturl() if opened else "Browser did not confirm launch."
+    except Exception as exc:
+        return "URL opening failed: " + str(exc)[:160]
 
 def draw_in_paint(subject: str = "dinosaur") -> str:
-    """Open Microsoft Paint and draw a simple outline using pyautogui (best effort)"""
+    """Legacy desktop drawing entry point; requires governed desktop execution."""
+    permitted, reason = _sm_action_permission("desktop")
+    if not permitted:
+        return "Paint drawing denied: " + reason
+    if not agent_guard():
+        return "Paint drawing denied: agent not active or operator interacting"
     try:
-        import os
-        paint_path = r"C:\Windows\System32\mspaint.exe"
-        if os.path.exists(paint_path):
-            os.startfile(paint_path)  # nosec
-            import time
-            time.sleep(2.5)
-            try:
-                import pyautogui as pag
-                pag.FAILSAFE = False
-                # Maximize
-                pag.hotkey('alt', 'space')
-                time.sleep(0.2)
-                pag.press('x')
-                time.sleep(0.3)
-                w, h = pag.size()
-                cx, cy = int(w * 0.5), int(h * 0.6)
-                pag.moveTo(cx - 220, cy)
-                pag.mouseDown()
-                pag.moveRel(80, -60, 0.35)
-                pag.moveRel(70, 55, 0.35)
-                pag.moveRel(100, 40, 0.4)
-                pag.moveRel(-50, 60, 0.3)
-                pag.moveRel(-90, -10, 0.35)
-                pag.moveRel(-60, -40, 0.35)
-                pag.moveRel(20, 35, 0.2)
-                pag.moveRel(35, 10, 0.2)
-                pag.mouseUp()
-                return f"Drew a simple {subject} in Paint."
-            except Exception as e:
-                return f"Paint opened but drawing failed: {e}"
-        return "Paint not found on this system."
-    except Exception as e:
-        return f"Could not draw in Paint: {e}"
+        import SarahMemorySi as si
+        fn = getattr(si, "manage_application_request", None)
+        if not callable(fn) or not fn("open mspaint"):
+            return "Paint launch could not be verified."
+        return "Paint opened; drawing requires a verified CreativeStudios executor."
+    except Exception:
+        return "Paint launcher unavailable."
 
 
 
@@ -3144,7 +3094,8 @@ def _sm_surface_topic_text(topic: str, title: str = "") -> str:
 
 def _sm_website_scaffold(topic: str) -> dict:
     topic = _sm_norm(topic or 'website topic')
-    title = topic.title() if topic else 'Website Topic'
+    title = html.escape(topic.title() if topic else 'Website Topic', quote=True)
+    topic = html.escape(topic, quote=True)
     index_html = f"""<!DOCTYPE html>
 <html lang=\"en\">
 <head>
@@ -3188,15 +3139,19 @@ def _sm_website_scaffold(topic: str) -> dict:
 
 
 def _sm_with_pag():
+    if not _sm_action_permission("surface")[0]:
+        return None
     try:
         import pyautogui as pag
-        pag.FAILSAFE = False
+        pag.FAILSAFE = True
         return pag
     except Exception:
         return None
 
 
 def _sm_focus_app(app_name: str, timeout: float = 10.0) -> bool:
+    if not _sm_action_permission("surface")[0]:
+        return False
     try:
         import SarahMemorySi as _Si  # type: ignore
         if hasattr(_Si, 'wait_for_application_window'):
@@ -3210,6 +3165,8 @@ def _sm_focus_app(app_name: str, timeout: float = 10.0) -> bool:
 
 
 def _sm_type_text(text: str, interval: float = 0.01, press_enter: bool = False) -> bool:
+    if not _sm_action_permission("surface")[0]:
+        return False
     try:
         import SarahMemorySi as _Si  # type: ignore
         fn = getattr(_Si, 'type_text_to_active_window', None)
@@ -3230,6 +3187,8 @@ def _sm_type_text(text: str, interval: float = 0.01, press_enter: bool = False) 
 
 
 def _sm_hotkey(*keys: str) -> bool:
+    if not _sm_action_permission("surface")[0]:
+        return False
     try:
         import SarahMemorySi as _Si  # type: ignore
         fn = getattr(_Si, 'press_hotkey', None)
@@ -3248,6 +3207,8 @@ def _sm_hotkey(*keys: str) -> bool:
 
 
 def _sm_open_and_focus(app_name: str) -> bool:
+    if not _sm_action_permission("surface")[0]:
+        return False
     try:
         import SarahMemorySi as _Si  # type: ignore
         if hasattr(_Si, 'manage_application_request'):
@@ -3262,6 +3223,8 @@ def _sm_open_and_focus(app_name: str) -> bool:
 
 
 def _sm_prepare_word_surface() -> bool:
+    if not _sm_action_permission("surface")[0]:
+        return False
     _sm_focus_app('winword', timeout=10.0)
     time.sleep(0.4)
     if not _sm_hotkey('ctrl', 'n'):
@@ -3271,6 +3234,8 @@ def _sm_prepare_word_surface() -> bool:
 
 
 def _sm_prepare_excel_surface() -> bool:
+    if not _sm_action_permission("surface")[0]:
+        return False
     _sm_focus_app('excel', timeout=10.0)
     time.sleep(0.4)
     if not _sm_hotkey('ctrl', 'n'):
@@ -3280,28 +3245,34 @@ def _sm_prepare_excel_surface() -> bool:
 
 
 def _sm_prepare_notepad_surface() -> bool:
+    if not _sm_action_permission("surface")[0]:
+        return False
     _sm_focus_app('notepad', timeout=10.0)
     time.sleep(0.4)
     return True
 
 
 def _sm_execute_browser_task(app_name: str, task: dict) -> dict:
+    if not _sm_action_permission("surface")[0]:
+        return {"ok": False, "reason": "governed_operatorcore_execution_required", "execution_authority": False}
     query = _sm_norm(task.get('search_query') or task.get('topic') or '')
     url = _sm_norm(task.get('target_url') or '')
     try:
         import SarahMemorySi as _Si  # type: ignore
         if query and hasattr(_Si, 'browser_search'):
             ok = bool(_Si.browser_search(app_name, query, timeout=10.0))
-            return {'ok': ok, 'surface_open': ok, 'surface_focused': ok, 'working_context_ready': ok, 'content_applied': ok, 'result_verified': ok, 'task_kind': 'browser_search', 'query': query}
+            return {'ok': ok, 'surface_open': ok, 'surface_focused': ok, 'working_context_ready': ok, 'content_applied': ok, 'result_verified': False, 'task_kind': 'browser_search', 'query': query}
         if url and hasattr(_Si, 'browser_open_url'):
             ok = bool(_Si.browser_open_url(app_name, url, timeout=10.0))
-            return {'ok': ok, 'surface_open': ok, 'surface_focused': ok, 'working_context_ready': ok, 'content_applied': ok, 'result_verified': ok, 'task_kind': 'browser_open_url', 'target_url': url}
+            return {'ok': ok, 'surface_open': ok, 'surface_focused': ok, 'working_context_ready': ok, 'content_applied': ok, 'result_verified': False, 'task_kind': 'browser_open_url', 'target_url': url}
     except Exception as e:
         return {'ok': False, 'error': str(e), 'task_kind': task.get('task_kind')}
     return {'ok': False, 'task_kind': task.get('task_kind'), 'reason': 'browser_helper_unavailable'}
 
 
 def _sm_execute_word_task(task: dict, user_text: str = '') -> dict:
+    if not _sm_action_permission("surface")[0]:
+        return {"ok": False, "reason": "governed_operatorcore_execution_required", "execution_authority": False}
     if not _sm_open_and_focus('winword'):
         return {'ok': False, 'task_kind': task.get('task_kind'), 'reason': 'word_open_failed'}
     if task.get('task_kind') == 'open_named_document':
@@ -3314,17 +3285,19 @@ def _sm_execute_word_task(task: dict, user_text: str = '') -> dict:
             return {'ok': False, 'task_kind': 'open_named_document', 'surface_open': True, 'surface_focused': True, 'reason': 'open_dialog_hotkey_failed'}
         time.sleep(0.8)
         ok = _sm_type_text(name, interval=0.01, press_enter=True)
-        return {'ok': bool(ok), 'task_kind': 'open_named_document', 'surface_open': True, 'surface_focused': True, 'working_context_ready': True, 'content_applied': bool(ok), 'result_verified': bool(ok), 'document_name': name}
+        return {'ok': bool(ok), 'task_kind': 'open_named_document', 'surface_open': True, 'surface_focused': True, 'working_context_ready': True, 'content_applied': bool(ok), 'result_verified': False, 'document_name': name}
     if not _sm_prepare_word_surface():
         return {'ok': False, 'task_kind': task.get('task_kind'), 'surface_open': True, 'reason': 'word_surface_prepare_failed'}
     title = _sm_norm(task.get('title') or task.get('topic') or 'Document')
     topic = _sm_norm(task.get('topic') or user_text or 'the requested topic')
     body = _sm_norm(task.get('document_text') or _sm_surface_topic_text(topic, title))
     ok = _sm_type_text(body, interval=0.008, press_enter=False)
-    return {'ok': bool(ok), 'task_kind': task.get('task_kind') or 'document_write', 'surface_open': True, 'surface_focused': True, 'working_context_ready': True, 'content_generated': True, 'content_applied': bool(ok), 'result_verified': bool(ok), 'candidate_text': body, 'title': title, 'topic': topic}
+    return {'ok': bool(ok), 'task_kind': task.get('task_kind') or 'document_write', 'surface_open': True, 'surface_focused': True, 'working_context_ready': True, 'content_generated': True, 'content_applied': bool(ok), 'result_verified': False, 'candidate_text': body, 'title': title, 'topic': topic}
 
 
 def _sm_execute_excel_task(task: dict) -> dict:
+    if not _sm_action_permission("surface")[0]:
+        return {"ok": False, "reason": "governed_operatorcore_execution_required", "execution_authority": False}
     if not _sm_open_and_focus('excel'):
         return {'ok': False, 'task_kind': task.get('task_kind'), 'reason': 'excel_open_failed'}
     if not _sm_prepare_excel_surface():
@@ -3334,10 +3307,12 @@ def _sm_execute_excel_task(task: dict) -> dict:
     sample_rows = ['\n' + '\t'.join(['', '', '', '', '', '']) for _ in range(8)]
     sheet_text = str(task.get('title') or 'Checkbook Register') + '\n' + header_line + ''.join(sample_rows)
     ok = _sm_type_text(sheet_text, interval=0.006, press_enter=False)
-    return {'ok': bool(ok), 'task_kind': task.get('task_kind') or 'spreadsheet_template', 'surface_open': True, 'surface_focused': True, 'working_context_ready': True, 'content_generated': True, 'content_applied': bool(ok), 'result_verified': bool(ok), 'candidate_text': sheet_text}
+    return {'ok': bool(ok), 'task_kind': task.get('task_kind') or 'spreadsheet_template', 'surface_open': True, 'surface_focused': True, 'working_context_ready': True, 'content_generated': True, 'content_applied': bool(ok), 'result_verified': False, 'candidate_text': sheet_text}
 
 
 def _sm_execute_editor_task(app_name: str, task: dict) -> dict:
+    if not _sm_action_permission("surface")[0]:
+        return {"ok": False, "reason": "governed_operatorcore_execution_required", "execution_authority": False}
     if not _sm_open_and_focus(app_name):
         return {'ok': False, 'task_kind': task.get('task_kind'), 'reason': f'{app_name}_open_failed'}
     if app_name == 'notepad':
@@ -3349,37 +3324,46 @@ def _sm_execute_editor_task(app_name: str, task: dict) -> dict:
         block.append(f'<!-- {name} -->\n{html}\n')
     payload = '\n\n'.join(block)
     ok = _sm_type_text(payload, interval=0.004, press_enter=False)
-    return {'ok': bool(ok), 'task_kind': task.get('task_kind') or 'website_scaffold', 'surface_open': True, 'surface_focused': True, 'working_context_ready': True, 'content_generated': True, 'content_applied': bool(ok), 'result_verified': bool(ok), 'candidate_text': payload, 'pages': list(pages.keys())}
+    return {'ok': bool(ok), 'task_kind': task.get('task_kind') or 'website_scaffold', 'surface_open': True, 'surface_focused': True, 'working_context_ready': True, 'content_generated': True, 'content_applied': bool(ok), 'result_verified': False, 'candidate_text': payload, 'pages': list(pages.keys())}
 
 
 def _sm_execute_paint_task(task: dict) -> dict:
+    if not _sm_action_permission("surface")[0]:
+        return {"ok": False, "reason": "governed_operatorcore_execution_required", "execution_authority": False}
     subject = _sm_norm(task.get('draw_subject') or task.get('shape') or 'shape')
     try:
         result_text = draw_in_paint(subject)
         ok = not str(result_text or '').lower().startswith(('paint opened but drawing failed', 'paint not found', 'could not draw'))
-        return {'ok': bool(ok), 'task_kind': task.get('task_kind') or 'paint_draw', 'surface_open': True if 'paint' in str(result_text).lower() or ok else False, 'surface_focused': bool(ok), 'working_context_ready': bool(ok), 'content_generated': True, 'content_applied': bool(ok), 'result_verified': bool(ok), 'result': result_text, 'candidate_text': str(result_text)}
+        return {'ok': bool(ok), 'task_kind': task.get('task_kind') or 'paint_draw', 'surface_open': True if 'paint' in str(result_text).lower() or ok else False, 'surface_focused': bool(ok), 'working_context_ready': bool(ok), 'content_generated': True, 'content_applied': bool(ok), 'result_verified': False, 'result': result_text, 'candidate_text': str(result_text)}
     except Exception as e:
         return {'ok': False, 'task_kind': task.get('task_kind') or 'paint_draw', 'error': str(e)}
 
 
 def execute_surface_task(canonical_app: str, task: dict, user_text: str = '') -> dict:
-    """Best-effort desktop surface executor for governed follow-through after app launch."""
-    app_name = _sm_norm(canonical_app or task.get('requested_app_exec') or task.get('requested_app') or '')
+    """Legacy surface adapter; fail closed unless caller supplies verified authority."""
+    permitted, reason = _sm_action_permission("surface")
+    if not permitted:
+        return {"ok": False, "reason": reason, "execution_authority": False,
+                "task_kind": str((task or {}).get("task_kind") or "unknown")}
     task = dict(task or {})
-    task_kind = _sm_norm(task.get('task_kind') or '')
-    if not app_name and task.get('requested_app_exec'):
-        app_name = _sm_norm(task.get('requested_app_exec'))
-    if task_kind in {'browser_search', 'browser_open_url'} or app_name in {'msedge', 'chrome', 'firefox', 'brave', 'opera'}:
-        return _sm_execute_browser_task(app_name or 'msedge', task)
-    if app_name == 'winword' or task_kind in {'document_write', 'open_named_document'}:
+    if not _sm_user_command(user_text or str(task.get("command") or "")):
+        return {"ok": False, "reason": "explicit_user_command_required", "execution_authority": False}
+    app_name = _sm_norm(canonical_app or task.get("requested_app_exec") or task.get("requested_app") or "")
+    kind = _sm_norm(task.get("task_kind") or "")
+    if kind in {"browser_search", "browser_open_url"}:
+        if not _sm_network_allowed():
+            return {"ok": False, "reason": "network_forbidden_by_runtime_mode", "execution_authority": False}
+        return _sm_execute_browser_task(app_name or "msedge", task)
+    if app_name == "winword" or kind in {"document_write", "open_named_document"}:
         return _sm_execute_word_task(task, user_text=user_text)
-    if app_name == 'excel' or task_kind == 'spreadsheet_template':
+    if app_name == "excel" or kind == "spreadsheet_template":
         return _sm_execute_excel_task(task)
-    if app_name in {'notepad', 'code', 'dreamweaver'} and task_kind == 'website_scaffold':
+    if app_name in {"notepad", "code", "dreamweaver"} and kind == "website_scaffold":
         return _sm_execute_editor_task(app_name, task)
-    if app_name == 'mspaint' or task_kind == 'paint_draw':
+    if app_name == "mspaint" or kind == "paint_draw":
         return _sm_execute_paint_task(task)
-    return {'ok': False, 'task_kind': task_kind or 'unknown', 'reason': 'no_surface_executor_available', 'requested_app': app_name, 'task': task}
+    return {"ok": False, "reason": "no_surface_executor_available", "execution_authority": False,
+            "task_kind": kind or "unknown", "requested_app": app_name}
 
 
 def rerank(query: str, candidates: list, cross_encoder=None) -> list:
@@ -3414,27 +3398,27 @@ def list_tools() -> list:
     return tools
 
 def exec_tool(name: str, arg: str = "") -> dict:
-    """Execute a tool through governed core policy"""
-    tools = {
-        "memory_search": lambda a: {"result": local_memory_lookup(a)},
-        "web_search": lambda a: {"result": web_research_query(a)},
-        "calc": lambda a: {"result": symbolic_calc_answer(a)},
-        "open_url": lambda a: {"result": open_url_in_chrome(a)},
-        "agent": lambda a: {"result": handle_ai_agent_command(a)},
-        "creative": lambda a: {"result": f"CreativeStudios available: {', '.join(sorted(_sm_creative_studio_registry().keys()))}"},
-    }
-
-    if name not in tools:
-        return {"error": f"Unknown tool: {name}"}
+    """Compatibility facade; all calls use the same policy as ToolOrchestrator."""
     if name == "creative":
-        if not _sm_creative_studio_registry():
-            return {"error": "CreativeStudios are not registered/approved."}
-    elif not _sm_tool_allowed(name):
-        return {"error": _sm_tool_error(name)}
+        return {"result": sorted(_sm_creative_studio_registry())} if _sm_creative_studio_registry() else {"error":"creative_unavailable"}
+    if name not in {"memory_search","web_search","calc","open_url","agent"}:
+        return {"error":"unknown_tool"}
+    if not _sm_tool_allowed(name):
+        return {"error":_sm_tool_error(name)}
+    if name == "web_search" and not _sm_network_allowed():
+        return {"error":"network_forbidden_by_runtime_mode"}
+    if name in {"agent", "open_url"}:
+        allowed, reason = _sm_action_permission("desktop" if name=="agent" else "url")
+        if not allowed:
+            return {"error":reason}
     try:
-        return tools[name](arg)
-    except Exception as e:
-        return {"error": str(e)}
+        if name == "memory_search": return {"result":local_memory_lookup(arg)}
+        if name == "web_search": return {"result":web_research_query(arg)}
+        if name == "calc": return {"result":symbolic_calc_answer(arg)}
+        if name == "open_url": return {"result":open_url_in_chrome(arg)}
+        return {"result":handle_ai_agent_command(arg)}
+    except Exception as exc:
+        return {"error":str(exc)[:180]}
 
 def _simple_plan(text: str) -> list:
     """Simple task planning"""
@@ -3445,21 +3429,12 @@ def _simple_plan(text: str) -> list:
     ]
 
 def plan_and_act(user_text: str, max_steps: int = 4) -> dict:
-    """Plan and execute actions"""
-    plan = _simple_plan(user_text)
-    results = []
-
-    for step in plan[:max_steps]:
-        results.append({
-            "step": step["action"],
-            "result": f"Executed: {step['description']}"
-        })
-
-    return {
-        "plan": plan,
-        "results": results,
-        "final": "Task completed"
-    }
+    """Return a bounded, non-executing proposal; never fabricate completion."""
+    plan = _simple_plan(str(user_text or "")[:2000])[:max(0, min(int(max_steps), 16))]
+    return {"plan": plan,
+            "results": [{"step": s["action"], "result": "PROPOSED: " + s["description"], "executed": False} for s in plan],
+            "final": "Proposal only; execution requires existing governed approval.",
+            "status": "PROPOSED", "execution_started": False, "execution_authority": False}
 
 # Update exports to include all functions
 _LEGACY_EXPORTS = [
@@ -3505,7 +3480,7 @@ class SarahMemoryAgentRuntime:
         rhythm_guard = _sm_rhythm_throttle("sovereign_agent_submit", context=rhythm_context, min_interval_sec=float(rhythm_packet.get("agent_step_interval_sec", 0.75) or 0.75))
         task = {
             "task_id": tid,
-            "created_ts": datetime.utcnow().isoformat() + "Z" if 'datetime' in globals() else str(time.time()),
+            "created_ts": datetime.now(__import__("datetime").timezone.utc).isoformat(),
             "goal": str(user_goal or "")[:2000],
             "status": "PROPOSED",
             "context": dict(context or {}),
@@ -3569,20 +3544,77 @@ except Exception:
 
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
 # ====================================================================
-# END OF SarahMemoryAiFunctions.py v9.0.0
+# END OF SarahMemoryAiFunctions.py v9.1.0a
 # ====================================================================
+
+
+# ---------------------------------------------------------------------------
+# v9.1.0a: compatibility contracts used by existing CORE and API callers.
+# All return evidence/proposals; no automatic execution or memory authority.
+# ---------------------------------------------------------------------------
+def plan_actions(intent, entities=None, user_context=None, device_context=None):
+    """Diagnostics-compatible planning only (no tools, network, or side effects)."""
+    query = str((user_context or {}).get("raw_text") or "") if isinstance(user_context, dict) else ""
+    task = HierarchicalPlanner(ADVANCED_AGENT).create_task(query[:2000], str(intent or "unknown"))
+    return [{"tool": name, "description": task.description[:200], "status": "PROPOSED",
+             "requires_approval": True, "execution_authority": False}
+            for name in task.tools_required[:16]]
+
+
+def record_ai_response(intent, response, confidence=0.0, source="ai_functions"):
+    """Personality compatibility: opt-in local context observation only."""
+    if not _sm_flag("AI_FUNCTIONS_RECORD_RESPONSES_ENABLED", False):
+        return {"ok": False, "reason": "response_recording_disabled", "execution_authority": False}
+    add_to_context({"input": "", "final_response": str(response or "")[:2000],
+                    "intent": str(intent or "")[:96], "source": str(source or "")[:96],
+                    "timestamp": datetime.now().isoformat(),
+                    "confidence": max(0.0, min(1.0, float(confidence or 0.0)))})
+    return {"ok": True, "recorded": "ram_ring", "execution_authority": False}
+
+
+def vector_backed_local_answer(text: str):
+    """Reply-compatible local retrieval; never treats unverified memory as fact."""
+    if not str(text or "").strip():
+        return None
+    try:
+        from SarahMemoryAdvCU import resolve_local_fast_answer
+        result = resolve_local_fast_answer(str(text)[:2000], allow_learning_record=False,
+                                           approved_for_learning=False)
+        if (isinstance(result, dict) and result.get("ok") and result.get("answer")
+                and str(result.get("source") or "").lower() in {"verified_qa_cache", "verified_qa", "local_verified_qa", "verified_local_qa_cache"}):
+            return str(result["answer"])[:4000]
+    except Exception:
+        pass
+    return None
+
+
+def run_automation(payload):
+    """API compatibility: stage an automation proposal; never claim it ran."""
+    if not isinstance(payload, dict):
+        return {"ok": False, "reason": "payload_must_be_object", "execution_started": False}
+    description = str(payload.get("goal") or payload.get("task") or payload.get("command") or "")[:2000]
+    if not description:
+        return {"ok": False, "reason": "task_required", "execution_started": False}
+    return {"ok": False, "status": "AWAITING_GOVERNED_EXECUTOR", "goal": description,
+            "reason": "automation_requires_existing_operatorcore_approval_and_executor",
+            "execution_started": False, "execution_authority": False}
+
+try:
+    __all__.extend(["plan_actions", "record_ai_response", "vector_backed_local_answer", "run_automation"])
+except Exception:
+    pass
 
 # --- SML ORGAN ADAPTER START ---
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryAiFunctions',
-    "version": "v9.0.0-alpha-sml-0.2",
-    "category": 'Unknown',
+    "version": "v9.1.0a-alpha-sml-0.2",
+    "category": 'AgentOrchestration',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
     "omega_registry_version": "Ω/1.0",
-    "capabilities": [],
-    "supported_missions": ['Conversation'],
+    "capabilities": ['planning', 'coordination', 'bounded_tools'],
+    "supported_missions": ['Conversation', 'Planning', 'Governance'],
     "supported_omega": ['Ω001'],
     "required_authority": ['Read'],
     "priority": 40,
@@ -3598,19 +3630,16 @@ def sml_get_metadata():
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
-    return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
-    }
+    """Truthful non-invasive vector; unknown values use numeric sentinels."""
+    workers=list(getattr(ADVANCED_AGENT,"executor_threads",[]))
+    active=sum(bool(t.is_alive()) for t in workers)
+    started=bool(getattr(ADVANCED_AGENT,"_initialized",False))
+    return {"status":"Operational" if started and active == 4 else "Degraded" if started else "Standby",
+        "availability": (active / 4.0) if started else 0.0,
+        "integrity":0.0,"performance":0.0,"reliability":0.0,
+        "confidence":0.0,"latency_ms":0.0,"stability":0.0,"compatibility":0.0,
+        "notes":["Unknown metrics are not asserted as healthy", "active_workers="+str(active),
+                 "standby is intentional when autostart is disabled"]}
 
 
 def sml_diagnostics():

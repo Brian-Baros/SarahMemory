@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryUpdater.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 AUTO-UPDATER SYSTEM v9.0.0
@@ -95,7 +94,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -534,75 +533,9 @@ def _manifest_iter_files(manifest: dict) -> List[dict]:
 
 
 def _sync_mods_from_manifest(manifest: dict, source: str) -> Tuple[int, int, List[str]]:
-    """
-    Downloads missing/outdated files described by manifest into MODS_ROOT.
-    Returns (downloaded_count, skipped_count, notes)
-    """
-    downloaded = 0
-    skipped = 0
-    notes: List[str] = []
-    files = _manifest_iter_files(manifest)
-    if not files:
-        return 0, 0, ["manifest has no files"]
-
-    for item in files:
-        rel = str(item.get("path") or "").lstrip("/")
-        want_sha = str(item.get("sha256") or "").strip().lower()
-        if not rel:
-            skipped += 1
-            continue
-
-        local_path = os.path.join(MODS_ROOT, rel)
-        # If exists and sha matches, skip
-        try:
-            if os.path.isfile(local_path) and want_sha:
-                with open(local_path, "rb") as f:
-                    have = _sha256_bytes(f.read())
-                if have.lower() == want_sha:
-                    skipped += 1
-                    continue
-        except Exception:
-            # Fall through to re-download
-            pass
-
-        # Build URL per source
-        url = None
-        if source == "corporate":
-            url = _mods_file_url_corporate(rel)
-        elif source == "github":
-            url = _mods_file_url_github(rel)
-
-        if not url:
-            skipped += 1
-            notes.append(f"no URL for {rel}")
-            continue
-
-        headers = {}
-        # GitHub token support (optional)
-        if source == "github" and SM_GITHUB_READ_TOKEN:
-            headers["Authorization"] = f"token {SM_GITHUB_READ_TOKEN}"
-
-        data = _http_get(url, headers=headers)
-        if not data:
-            skipped += 1
-            notes.append(f"download failed: {rel}")
-            continue
-
-        # Verify sha if provided
-        if want_sha:
-            got_sha = _sha256_bytes(data)
-            if got_sha.lower() != want_sha:
-                skipped += 1
-                notes.append(f"sha mismatch: {rel}")
-                continue
-
-        if _write_file_atomic(local_path, data):
-            downloaded += 1
-        else:
-            skipped += 1
-            notes.append(f"write failed: {rel}")
-
-    return downloaded, skipped, notes
+    """Patch feeds are inspect-only until signed manifest and promotion verification."""
+    files = _manifest_iter_files(manifest) if isinstance(manifest, dict) else []
+    return 0, len(files), ['feed_staging_required: no authenticated promotion receipt']
 
 
 def sync_patch_feeds() -> Tuple[bool, List[str]]:
@@ -1126,52 +1059,12 @@ def _backup_file(path: str) -> str:
 
 
 def _write_and_sanity_check(path: str, new_text: str) -> Tuple[bool, Optional[str]]:
-    """
-    Write new file content with syntax validation.
-    
-    Args:
-        path: Path to file
-        new_text: New file content
-    
-    Returns:
-        tuple: (success, error_message)
-    """
-    # Write to temp first
-    tmp = path + ".__tmp_updater__"
+    """Source mutation belongs to governed promotion, not the review/updater organ."""
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(new_text)
-    except Exception as e:
-        logger.error(f"[v8.0] Error writing temp file: {e}")
-        return False, str(e)
-    
-    # Syntax sanity for .py files
-    ok = True
-    err = None
-    if path.endswith(".py"):
-        import py_compile
-        try:
-            py_compile.compile(tmp, doraise=True)
-            logger.debug(f"[v8.0] Syntax check passed: {path}")
-        except Exception as e:
-            ok, err = False, str(e)
-            logger.error(f"[v8.0] Syntax check failed: {path} - {err}")
-    
-    # Move in place or cleanup
-    if ok:
-        try:
-            shutil.move(tmp, path)
-            logger.debug(f"[v8.0] Successfully wrote: {path}")
-        except Exception as e:
-            ok, err = False, str(e)
-            logger.error(f"[v8.0] Error moving file: {e}")
-    else:
-        try:
-            os.remove(tmp)
-        except Exception:
-            pass
-    
-    return ok, err
+        compile(str(new_text), str(path), 'exec')
+    except Exception as exc:
+        return False, 'candidate_syntax_invalid:'+type(exc).__name__
+    return False, 'governed_promotion_receipt_required'
 
 
 def _create_opt_backup(tag="F"):
@@ -1379,245 +1272,18 @@ def _update_state_for(path: str, state: Dict[str, Any], outcome: Dict[str, Any])
 
 
 def _git_push_if_enabled(summary_msg: str) -> bool:
+    """Never push production code from an AI-generated review result."""
+    return False
+
+
+def run_updater(invoked_by_main: bool = False, includes: Optional[List[str]] = None, excludes: Optional[List[str]] = None, exts: Optional[List[str]] = None, model: Optional[str] = None) -> bool:
+    """Legacy auto-update is unavailable without a verified governed review/promotion flow.
+
+    This function does not read source to cloud, change CORE, push Git, or claim a
+    successful update. The existing patch-feed preview helpers remain separate.
     """
-    Push changes to git if enabled.
-    
-    Args:
-        summary_msg: Commit message
-    
-    Returns:
-        bool: True if successful
-    """
-    if not GIT_PUSH:
-        return False
-    
-    try:
-        # Prefer user's push helper if present
-        helper = os.path.join(BASE_DIR, "Push_SarahMemory.bat")
-        if os.path.exists(helper):
-            _log("Running Push_SarahMemory.bat …")
-            subprocess.run([helper], check=False)
-            return True
-        
-        # Generic git flow
-        cmds = [
-            ["git", "add", "."],
-            ["git", "commit", "-m", summary_msg],
-            ["git", "push"],
-        ]
-        for c in cmds:
-            subprocess.run(c, cwd=BASE_DIR, check=False)
-        
-        logger.info("[v8.0] Git push completed")
-        return True
-        
-    except Exception as e:
-        _log(f"Git push failed: {e}")
-        logger.error(f"[v8.0] Git push error: {e}")
-        return False
-
-
-def run_updater(
-    invoked_by_main: bool = False,
-    includes: Optional[List[str]] = None,
-    excludes: Optional[List[str]] = None,
-    exts: Optional[List[str]] = None,
-    model: Optional[str] = None,
-) -> bool:
-    """
-    v8.0: Enhanced main updater function with comprehensive error handling.
-    
-    Runs the auto-updater to review and apply minimal fixes to Python files.
-    
-    Args:
-        invoked_by_main: Whether called from SarahMemoryMain.py
-        includes: List of paths to include
-        excludes: List of patterns to exclude
-        exts: List of file extensions to process
-        model: AI model to use
-    
-    Returns:
-        bool: True if ran to completion (internet or not), False only on fatal error
-    """
-    logger.info("[v8.0] Starting updater run")
-    _ensure_dirs()
-    state = _load_state()
-
-    # Respect schedule from Globals
-    try:
-        if hasattr(G, "update_due") and callable(G.update_due):
-            if not G.update_due(state.get("last_run")):
-                _log("Updater skipped (per schedule policy).")
-                logger.info("[v8.0] Updater skipped due to schedule")
-                return True
-    except Exception as e:
-        _log(f"Schedule check failed; proceeding conservatively. ({e})")
-        logger.warning(f"[v8.0] Schedule check error: {e}")
-
-    if not _has_internet():
-        _log("No internet connectivity detected – skipping updater and continuing normal boot.")
-        logger.info("[v8.0] No internet, skipping updater")
-        return True
-
-    # v8.0: Sync mods/patch feeds (corporate GoogieHost if licensed, else GitHub)
-    try:
-        ok, notes = sync_patch_feeds()
-        if ok:
-            for n in (notes or [])[:50]:
-                _log(f"PatchFeed: {n}")
-        else:
-            for n in (notes or [])[:50]:
-                _log(f"PatchFeed WARN: {n}")
-    except Exception as e:
-        _log(f"PatchFeed ERROR: {e}")
-        logger.warning(f"[v8.0] Patch feed sync error: {e}")
-
-    # Build file set (ROOT-ONLY scan by default)
-    includes = includes or [BASE_DIR]
-    excludes = (excludes or []) + DEFAULT_EXCLUDES
-    exts = exts or DEFAULT_EXTS
-
-    candidates: List[str] = []
-    for target in includes:
-        if os.path.isfile(target):
-            candidates.append(os.path.abspath(target))
-        elif os.path.isdir(target):
-            # Collect files directly under the directory (no recursion)
-            for p in _iter_root_files_only(target, exts, excludes):
-                # Avoid updating this very file during its own run
-                if os.path.abspath(p) == os.path.abspath(__file__):
-                    continue
-                candidates.append(os.path.abspath(p))
-
-    # Filter down by content hash
-    worklist = [p for p in candidates if _should_consider(p, state)]
-    
-    if not worklist:
-        _log("All files unchanged since last run – nothing to review.")
-        logger.info("[v8.0] No files need updating")
-        state["last_run"] = dt.datetime.now().isoformat(timespec="seconds")
-        _save_state(state)
-        return True
-
-    _log(f"Found {len(worklist)} candidate file(s) for review.")
-    logger.info(f"[v8.0] Processing {len(worklist)} files")
-    
-    chat = _ChatAdapter()
-
-    # Short-circuit if neither SarahMemoryAPI nor OPENAI_API_KEY is available
-    if not getattr(chat, "available", False):
-        _log("Updater online path skipped: no SarahMemoryAPI send_to_api or OPENAI_API_KEY available. Continuing boot.")
-        logger.info("[v8.0] No AI service available, skipping")
-        _save_state(state)
-        return True
-
-    any_updates_applied = False
-    pre_update_backup_done = False
-    
-    for path in worklist:
-        rel = os.path.relpath(path, BASE_DIR)
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                old_text = f.read()
-        except Exception as e:
-            _log(f"Skip {rel}: unable to read – {e}")
-            logger.error(f"[v8.0] Cannot read {rel}: {e}")
-            continue
-
-        messages = _build_messages(path)
-        try:
-            raw = chat.chat(messages=messages, model=(model or MODEL_NAME))
-        except Exception as e:
-            _log(f"Chat adapter failure on {rel}: {e}")
-            logger.error(f"[v8.0] AI chat failed for {rel}: {e}")
-            continue
-
-        # Expect strict JSON
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            # Try to salvage JSON if model wrapped code blocks
-            m = re.search(r"\{[\s\S]*\}\s*$", raw)
-            if not m:
-                _log(f"{rel}: model did not return JSON; skipping.")
-                logger.warning(f"[v8.0] Invalid JSON response for {rel}")
-                continue
-            try:
-                payload = json.loads(m.group(0))
-            except Exception:
-                _log(f"{rel}: invalid JSON payload; skipping.")
-                logger.warning(f"[v8.0] Cannot parse JSON for {rel}")
-                continue
-
-        decision = (payload.get("decision") or "").strip().lower()
-        reason = payload.get("reason", "")
-        updated = payload.get("updated_code", "")
-
-        if decision not in ("accept", "skip"):
-            _log(f"{rel}: unknown decision '{decision}'; skipping.")
-            _update_state_for(path, state, {"decision": "invalid_decision", "raw": raw[:200]})
-            continue
-
-        if decision == "skip" or not updated.strip():
-            _log(f"{rel}: no changes suggested. Reason: {reason or 'n/a'}")
-            logger.debug(f"[v8.0] No changes for {rel}")
-            _update_state_for(path, state, {"decision": "skip", "reason": reason})
-            continue
-
-        diff_text = _unified_diff(old_text, updated, rel)
-        
-        # Auto behavior when user chose apply-all or skip-all
-        global _APPLY_ALL, _SKIP_ALL
-        if not (_APPLY_ALL or _SKIP_ALL):
-            approved = _ask_approval(diff_text, rel)
-        else:
-            approved = not _SKIP_ALL
-        
-        if not approved:
-            _log(f"{rel}: user declined changes.")
-            logger.info(f"[v8.0] Changes declined for {rel}")
-            _update_state_for(path, state, {"decision": "declined", "reason": reason})
-            continue
-
-        # One-time full-system opt-backup prior to applying the first update
-        if not pre_update_backup_done:
-            if _UPDATER_OPT_BACKUP_ENABLED:
-                _create_opt_backup(tag="F")
-            pre_update_backup_done = True
-
-        # Backup, write, sanity
-        bkp = _backup_file(path)
-        ok, err = _write_and_sanity_check(path, updated)
-        
-        if not ok:
-            _log(f"{rel}: write rejected due to syntax error; rolled back. Error: {err}")
-            logger.error(f"[v8.0] Syntax error in {rel}, rolled back")
-            _update_state_for(path, state, {"decision": "error", "error": err, "backup": bkp})
-            continue
-
-        _log(f"{rel}: updated successfully. Reason: {reason or 'n/a'} | backup={os.path.basename(bkp)}")
-        logger.info(f"[v8.0] Successfully updated: {rel}")
-        _update_state_for(path, state, {"decision": "applied", "reason": reason, "backup": bkp})
-        any_updates_applied = True
-
-    # Update last run timestamp
-    state["last_run"] = dt.datetime.now().isoformat(timespec="seconds")
-    _save_state(state)
-
-    if any_updates_applied:
-        pushed = _git_push_if_enabled(
-            summary_msg=f"[Updater] Automated minimal fixes on {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-        if pushed:
-            state["last_git_push"] = dt.datetime.now().isoformat(timespec="seconds")
-            _save_state(state)
-            _log("Git push performed.")
-        else:
-            _log("Git push skipped (disabled or failed).")
-
-    _log("Updater run complete.")
-    logger.info("[v8.0] Updater run completed successfully")
-    return True
+    logger.warning('Updater held in staging mode: verified execution receipt required')
+    return False
 
 
 def update_from_zip(zip_path: str) -> bool:
@@ -1692,22 +1358,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML registration confirmed; runtime measurements not performed"],
     }
 
 
@@ -1717,7 +1383,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryUpdater',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

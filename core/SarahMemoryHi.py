@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryHi.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 SYSTEM INFORMATION MODULE v9.0.0
@@ -111,7 +110,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -127,6 +126,9 @@ import os
 import json
 import sqlite3
 import socket
+import copy
+import math
+import tempfile
 import asyncio
 import time
 from datetime import datetime, timedelta
@@ -716,58 +718,113 @@ def get_system_info() -> Dict[str, Any]:
         return {"error": str(e), "version": "9.0.0"}
 
 # =============================================================================
+# GCAIOS hosted desktop: bounded operational snapshot
+# =============================================================================
+def get_shell_operational_snapshot() -> Dict[str, Any]:
+    """Return minimal real host metrics for the local GCAIOS shell.
+
+    Read-only and non-blocking: no filesystem traversal, external network probes,
+    powershell commands, host identifiers, path disclosure or persistent writes.
+    The API Bridge owns locality/access checks before presenting this information.
+    A missing sensor is reported as None, never fabricated as zero usage.
+    """
+    def _percentage(value: Any) -> Optional[float]:
+        try:
+            reading = float(value)
+            if not (0 <= reading <= 100):
+                return None
+            return round(reading, 1)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    snapshot: Dict[str, Any] = {
+        "source": "SarahMemoryHi",
+        "kind": "hosted_runtime",
+        "timestamp": datetime.now().astimezone().isoformat(),
+        "cpu_percent": None,
+        "memory_percent": None,
+        "disk_percent": None,
+        "memory_used_gb": None,
+        "memory_total_gb": None,
+        "uptime_seconds": None,
+        "logical_processors": None,
+        "processes": [],
+    }
+    try:
+        # interval=None avoids blocking an API worker for CPU sampling.
+        snapshot["cpu_percent"] = _percentage(psutil.cpu_percent(interval=None))
+    except Exception:
+        pass
+    try:
+        memory = psutil.virtual_memory()
+        snapshot["memory_percent"] = _percentage(memory.percent)
+        snapshot["memory_used_gb"] = round((memory.total - memory.available) / (1024 ** 3), 2)
+        snapshot["memory_total_gb"] = round(memory.total / (1024 ** 3), 2)
+    except Exception:
+        pass
+    try:
+        # Use the current installed host volume only; do not enumerate volumes.
+        disk = psutil.disk_usage(os.path.abspath(os.sep))
+        snapshot["disk_percent"] = _percentage(disk.percent)
+    except Exception:
+        pass
+    try:
+        snapshot["uptime_seconds"] = max(0, int(time.time() - psutil.boot_time()))
+    except Exception:
+        pass
+    try:
+        snapshot["logical_processors"] = psutil.cpu_count(logical=True)
+    except Exception:
+        pass
+    # A bounded local Task Manager preview. No process arguments, executable
+    # paths, environment variables, user names, handles or remote enumeration.
+    # Cap both count and elapsed time to avoid blocking a busy host.
+    try:
+        started = time.monotonic()
+        processes = []
+        for index, proc in enumerate(psutil.process_iter(attrs=["pid", "name", "memory_info"], ad_value=None)):
+            if index >= 128 or time.monotonic() - started > 0.15:
+                break
+            try:
+                info = proc.info
+                rss = info.get("memory_info")
+                memory_mb = round(rss.rss / (1024 ** 2), 1) if rss else None
+                name = str(info.get("name") or "Unknown")[:80]
+                processes.append({"pid": int(info["pid"]), "name": name, "memory_mb": memory_mb})
+            except (psutil.Error, ValueError, TypeError, KeyError):
+                continue
+        snapshot["processes"] = sorted(processes, key=lambda item: item["memory_mb"] or 0, reverse=True)[:12]
+    except Exception:
+        pass
+    return snapshot
+
+
+# =============================================================================
 # DXDiag INFORMATION - v8.0 Enhanced
 # =============================================================================
 def get_dxdiag_info() -> str:
-    """
-    Get DirectX diagnostic information on Windows.
-    v8.0: Enhanced with better error handling and timeout.
-    
-    Returns:
-        DXDiag information as string or error message
-    """
+    """Run DXDiag through a private unique output file; never unlink unrelated files."""
+    if platform.system()!='Windows':
+        return 'Not available on non-Windows platforms'
+    import tempfile
+    path=None
     try:
-        if platform.system() != "Windows":
-            return "Not available on non-Windows platforms"
-        
-        output_file = "dxdiag_output.txt"
-        
-        # Run DXDiag with timeout
-        result = subprocess.run(
-            ["dxdiag", "/t", output_file],
-            shell=True,
-            capture_output=True,
-            timeout=30
-        )
-        
-        # Wait for file to be written
-        import time
+        with tempfile.NamedTemporaryFile(prefix='sm_dxdiag_',suffix='.txt',delete=False) as fh:
+            path=fh.name
+        result=subprocess.run(['dxdiag','/t',path],shell=False,capture_output=True,timeout=30)
+        if result.returncode!=0: return 'DXDiag command failed'
         for _ in range(10):
-            if os.path.exists(output_file):
-                break
-            time.sleep(0.5)
-        
-        if not os.path.exists(output_file):
-            return "DXDiag output file not generated"
-        
-        # Read and cleanup
-        with open(output_file, "r", encoding="utf-8", errors="ignore") as f:
-            dx_data = f.read()
-        
-        try:
-            os.remove(output_file)
-        except Exception:
-            pass
-        
-        # Extract key information (first 5000 chars to avoid overwhelming)
-        return dx_data[:5000] + ("..." if len(dx_data) > 5000 else "")
-        
-    except subprocess.TimeoutExpired:
-        logger.warning("[v8.0] DXDiag timeout")
-        return "DXDiag timeout (process took too long)"
-    except Exception as e:
-        logger.warning(f"[v8.0] DXDiag error: {e}")
-        return f"DXDiag info not available: {e}"
+            if os.path.getsize(path)>0: break
+            time.sleep(0.2)
+        with open(path,'r',encoding='utf-8',errors='replace') as fh:
+            return fh.read(5000)
+    except Exception as exc:
+        logger.debug('DXDiag unavailable: %s',exc)
+        return 'DXDiag unavailable'
+    finally:
+        if path:
+            try: os.remove(path)
+            except Exception: pass
 
 # =============================================================================
 # EXTENDED SYSTEM INFORMATION - v8.0 New
@@ -1030,24 +1087,12 @@ def log_system_info_to_db(info: Dict[str, Any]) -> None:
 # NETWORK CONNECTIVITY - Backward Compatible
 # =============================================================================
 def is_connected(host: str = "8.8.8.8", port: int = 53, timeout: float = 3) -> bool:
-    """
-    Check network connectivity to a host.
-    v8.0: Enhanced with better error handling.
-    
-    Args:
-        host: Target host
-        port: Target port
-        timeout: Connection timeout
-        
-    Returns:
-        True if connected, False otherwise
-    """
+    """Socket-local connectivity check; never mutate process-wide default timeout."""
+    if str(getattr(config,'LOCAL_ONLY_MODE', True)).strip().lower() in ('1','true','yes','on') and not str(getattr(config,'SARAHMEMORY_ONLINE_SESSION_ARMED',False)).strip().lower() in ('1','true','yes','on'):
+        return False
     try:
-        socket.setdefaulttimeout(timeout)
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((host, port))
-        sock.close()
-        return True
+        with socket.create_connection((host,port),timeout=max(0.1,min(float(timeout),5.0))):
+            return True
     except Exception:
         return False
 
@@ -1133,42 +1178,29 @@ async def async_update_network_state() -> str:
 # SYSTEM HEALTH SCORE - v8.0 New
 # =============================================================================
 def get_system_health_score() -> Dict[str, Any]:
-    """
-    Calculate overall system health score.
-    v8.0: New function for health assessment.
-    
-    Returns:
-        Dictionary with health score and components
-    """
+    """Observe only measured, plausible percentages; incomplete is UNKNOWN."""
     try:
-        info = get_system_info()
-        
-        # Component scores (0-100)
-        cpu_score = max(0, 100 - info.get('CPU Usage (%)', 0))
-        mem_score = max(0, 100 - info.get('Memory Usage (%)', 0))
-        disk_score = max(0, 100 - info.get('Disk Usage (%)', 0))
-        
-        # Network score
-        net_state = info.get('Network State', 'unknown')
-        net_score = {'green': 100, 'yellow': 70, 'red': 30, 'unknown': 50}.get(net_state, 50)
-        
-        # Overall score (weighted average)
-        overall = (cpu_score * 0.3 + mem_score * 0.3 + disk_score * 0.25 + net_score * 0.15)
-        
-        return {
-            'overall_score': round(overall, 2),
-            'cpu_health': round(cpu_score, 2),
-            'memory_health': round(mem_score, 2),
-            'disk_health': round(disk_score, 2),
-            'network_health': round(net_score, 2),
-            'status': 'excellent' if overall >= 80 else 'good' if overall >= 60 else 'fair' if overall >= 40 else 'poor',
-            'timestamp': datetime.now().isoformat(),
-            'version': '9.0.0'
-        }
-        
-    except Exception as e:
-        logger.error(f"[v8.0] Health score error: {e}")
-        return {'overall_score': 0, 'status': 'error', 'message': str(e)}
+        info=get_system_info()
+        if not isinstance(info,dict):info={}
+        components={}
+        for key,label in (('CPU Usage (%)','cpu_health'),('Memory Usage (%)','memory_health'),('Disk Usage (%)','disk_health')):
+            try:
+                num=float(info[key])
+                if not math.isfinite(num) or not 0<=num<=100:raise ValueError('out_of_range')
+                components[label]=round(100-num,2)
+            except (ValueError,TypeError,KeyError):
+                components[label]=None
+        state=str(info.get('Network State') or 'unknown').lower()
+        components['network_health']={'green':100.0,'yellow':70.0,'red':30.0}.get(state)
+        weights=(('cpu_health',0.30),('memory_health',0.30),('disk_health',0.25),('network_health',0.15))
+        vals=[(components[k],w) for k,w in weights if components[k] is not None]
+        complete=len(vals)==len(weights)
+        score=round(sum(v*w for v,w in vals)/sum(w for _,w in vals),2) if vals else None
+        status='unknown' if not complete else ('excellent' if score>=80 else 'good' if score>=60 else 'fair' if score>=40 else 'poor')
+        return {'overall_score':score, **components,'status':status,'complete':complete,
+                'observed_components':len(vals),'timestamp':datetime.now().isoformat(),'version':'9.1.0a'}
+    except Exception as exc:
+        return {'overall_score':None,'status':'error','complete':False,'message':str(exc)}
 
 # =============================================================================
 # B-LEVEL DRIVER READINESS REPORTING - v8.0 New
@@ -1697,7 +1729,7 @@ logger.info("[v8.0] SarahMemoryHi module loaded successfully")
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryHi',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Unknown',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -1715,23 +1747,15 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
-    return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
-    }
+    """Non-executing adapter presence probe. No fabricated live quality measurements."""
+    return {"status":"Unverified", "availability":None, "integrity":None,
+            "performance":None, "reliability":None, "confidence":0.0,
+            "latency_ms":None, "stability":None, "compatibility":None,
+            "notes":["SarahMemoryHi.py: module adapter present; live health not measured"]}
 
 
 def sml_diagnostics():
@@ -1740,7 +1764,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryHi',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

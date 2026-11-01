@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryOperatorCore.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 - Governed local operator control plane for SarahMemory AiOS / SMGET.
@@ -62,7 +61,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -186,7 +185,7 @@ logger.propagate = False
 # Constants / lifecycle
 # ---------------------------------------------------------------------------
 MODULE_NAME = "SarahMemoryOperatorCore"
-MODULE_VERSION = "9.0.0"
+MODULE_VERSION = "9.1.0a"
 _OPERATOR_DB_NAME = "operator_core.db"
 
 STATE_RECEIVED = "RECEIVED"
@@ -516,8 +515,7 @@ class BaseExecutor:
         return {"ok": False, "executed": False, "reason": "BaseExecutor cannot execute actions directly."}
 
     def verify(self, contract: ActionContract, execution_result: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
-        ok = bool(execution_result.get("ok"))
-        return ok, {"ok": ok, "verification": "default_pass_through"}
+        return False, {"ok": False, "verification": "independent_witness_required"}
 
     def rollback(self, contract: ActionContract, execution_result: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "rolled_back": False, "reason": "No rollback implemented."}
@@ -532,7 +530,15 @@ class NoOpExecutor(BaseExecutor):
     name = "noop_executor"
     capability = "noop"
 
+    def preflight_check(self, contract: ActionContract) -> Tuple[bool, Dict[str, Any]]:
+        # A missing real executor must never enter OperatorCore's apply lifecycle.
+        if contract.execution_mode == MODE_APPLY:
+            return False, {"ok": False, "reason": "no_registered_apply_executor_for_action"}
+        return True, {"ok": True, "reason": "non_apply_staging_only"}
+
     def execute(self, contract: ActionContract) -> Dict[str, Any]:
+        if contract.execution_mode == MODE_APPLY:
+            return {"ok": False, "executed": False, "reason": "no_registered_apply_executor_for_action"}
         return {
             "ok": True,
             "executed": False,
@@ -849,9 +855,18 @@ def executor_registry_snapshot() -> Dict[str, Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+def _positive_gate(out: Any) -> bool:
+    """A governance/security/assurance response must positively and consistently allow."""
+    return (isinstance(out, dict) and out.get("allow") is True and out.get("ok") is not False and
+            str(out.get("decision") or "").strip().upper() in {"ALLOW", "ALLOW_WITH_CONSTRAINTS"})
+
+
 def _flag(name: str, default: bool = False) -> bool:
     try:
-        return bool(getattr(config, name, default))
+        v = getattr(config, name, default)
+        if isinstance(v, bool):
+            return v
+        return str(v).strip().lower() in ("1", "true", "yes", "on")
     except Exception:
         return default
 
@@ -887,7 +902,7 @@ def _core_module_approved(module_name: str, capability: Optional[str] = None, im
             return bool(fn(key, capability=capability))
     except Exception:
         pass
-    return bool(import_obj is not None)
+    return False  # An imported module is not proof of registry approval.
 
 
 def _governance_profile() -> Dict[str, Any]:
@@ -1219,7 +1234,7 @@ class SarahMemoryOperatorCore:
                 "proposed_action": proposed_action,
                 "surface_action": surface_action,
                 "operator_family": "SMGET",
-                "user_confirmed": bool(meta.get("user_confirmed") or meta.get("user_consented") or meta.get("confirmed")),
+                "user_confirmed": False,  # User claims cannot mint verified approval.
                 "authority_lease_required": bool(proposed_action.get("authority_lease_required", meta.get("authority_lease_required", False))),
             },
         )
@@ -1486,7 +1501,7 @@ class SarahMemoryOperatorCore:
 
         governance = self._govern_contract(contract)
         trace["governance"] = governance
-        if not bool(governance.get("allow", governance.get("decision") == "ALLOW")):
+        if not _positive_gate(governance):
             self._transition(contract, STATE_FAILED, "Governance denied or deferred action.", meta=governance)
             result = ActionResult(
                 contract_id=contract.contract_id,
@@ -1508,7 +1523,7 @@ class SarahMemoryOperatorCore:
 
         security = self._security_gate(contract, governance)
         trace["security"] = security
-        if not bool(security.get("allow", security.get("decision") == "ALLOW")):
+        if not _positive_gate(security):
             self._transition(contract, STATE_FAILED, "SecurityGovernor blocked action.", meta=security)
             result = ActionResult(
                 contract_id=contract.contract_id,
@@ -1529,7 +1544,7 @@ class SarahMemoryOperatorCore:
 
         assurance = self._assurance_gate(contract, governance, security)
         trace["assurance"] = assurance
-        if not bool(assurance.get("allow", True)):
+        if not _positive_gate(assurance):
             self._transition(contract, STATE_FAILED, "Assurance gate blocked action.", meta=assurance)
             result = ActionResult(
                 contract_id=contract.contract_id,
@@ -1882,20 +1897,20 @@ def authorize_external_domain_action(
 
     governance = core._govern_contract(contract)
     trace["governance"] = governance
-    if not bool(governance.get("allow", governance.get("decision") == "ALLOW")):
+    if not _positive_gate(governance):
         core._transition(contract, STATE_FAILED, "Governance blocked external domain action.", meta=governance)
         return {"ok": False, "decision": str(governance.get("decision") or "DENY"), "allow": False, "domain_execution_authorized": False, "execution_authority": False, "contract": contract.to_dict(), "trace": trace, "reason": "; ".join(str(x) for x in (governance.get("reasons") or [])) or "governance_block"}
     core._transition(contract, STATE_AUTHORIZED, "Governance authorized external domain action.", meta=governance)
 
     security = core._security_gate(contract, governance)
     trace["security"] = security
-    if not bool(security.get("allow", security.get("decision") == "ALLOW")):
+    if not _positive_gate(security):
         core._transition(contract, STATE_FAILED, "SecurityGovernor blocked external domain action.", meta=security)
         return {"ok": False, "decision": str(security.get("decision") or "DENY"), "allow": False, "domain_execution_authorized": False, "execution_authority": False, "contract": contract.to_dict(), "trace": trace, "reason": "; ".join(str(x) for x in (security.get("reasons") or [])) or "security_block"}
 
     assurance = core._assurance_gate(contract, governance, security)
     trace["assurance"] = assurance
-    if not bool(assurance.get("allow", False)):
+    if not _positive_gate(assurance):
         core._transition(contract, STATE_FAILED, "AssuranceGate blocked external domain action.", meta=assurance)
         return {"ok": False, "decision": str(assurance.get("decision") or "DENY"), "allow": False, "domain_execution_authorized": False, "execution_authority": False, "contract": contract.to_dict(), "trace": trace, "reason": "; ".join(str(x) for x in (assurance.get("reasons") or [])) or "assurance_block"}
 
@@ -1931,9 +1946,14 @@ def record_external_domain_action_result(
             deadline_expired = float(contract.get("state_deadline_ts")) <= time.time()
         except Exception:
             deadline_expired = True
-    if deadline_expired:
-        verified = False
-    state = STATE_VERIFIED if bool(verified) else STATE_FAILED
+    execution_ok = (isinstance(execution_result, dict) and
+                    execution_result.get("ok") is True and
+                    execution_result.get("executed") is True)
+    authorized = (auth.get("ok") is True and auth.get("allow") is True and
+                  auth.get("domain_execution_authorized") is True and
+                  str(auth.get("authorization_owner") or "") == MODULE_NAME)
+    verified = False  # Legacy result API provides no independent witness or signed receipt.
+    state = STATE_VERIFIED if verified else STATE_FAILED
     summary = "External domain action verified." if verified else ("External domain action exceeded its deadline and failed verification." if deadline_expired else "External domain action failed verification.")
     if not verified and bool(contract.get("safe_stop_required")):
         log_operator_event(
@@ -2274,22 +2294,23 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    import copy
+    return copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter present; runtime health and integration not independently measured"],
     }
 
 
@@ -2299,7 +2320,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryOperatorCore',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": sml_get_metadata(),
         "health": sml_health(),
     }
 

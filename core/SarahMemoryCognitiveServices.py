@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryCognitiveServices.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 PURPOSE (v9.0.0):
@@ -73,7 +72,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -128,8 +127,7 @@ _THINKER_CONSULT_STATE = threading.local()
 # -----------------------------------------------------------------------------
 # Safety defaults (offline-first)
 # -----------------------------------------------------------------------------
-if not hasattr(config, "COGNITIVE_ONLINE_ENABLED"):
-    config.COGNITIVE_ONLINE_ENABLED = False  # default OFF for safety
+# Missing flag means disabled. Import must not mutate shared governance globals.
 
 # Local cognitive fallback data path (owner-controlled, optional)
 LOCAL_COGNITIVE_DATA_PATH = os.path.join(getattr(config, "DATA_DIR", os.getcwd()), "local_cognitive.json")
@@ -150,6 +148,17 @@ IMAGE_ANALYSIS_KEY = os.environ.get("COG_IMAGE_ANALYSIS_KEY", "YOUR_IMAGE_ANALYS
 # -----------------------------------------------------------------------------
 # DB paths (MUST align to SarahMemoryGlobals portable paths)
 # -----------------------------------------------------------------------------
+def _bool_flag(value: Any) -> bool:
+    """Strict conversion prevents textual 'false' becoming True."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    return False
+
+
 def _datasets_dir() -> str:
     try:
         return getattr(
@@ -268,9 +277,10 @@ def _route_role_for_decision(dec: Dict[str, Any], caller_context: Optional[Dict[
     decision = str(dec.get("decision") or "")
     ctx = caller_context or {}
 
-    # If caller indicates sandbox results are verified, move to deploy stage.
-    if bool(ctx.get("sandbox_verified")) or bool(ctx.get("sandbox_complete")):
-        return "deploy"
+    # Caller progress flags are evidence claims, not deployment authorization.
+    # An authenticated promotion receipt must be verified by OperatorCore downstream.
+    if ctx.get("sandbox_verified") or ctx.get("sandbox_complete"):
+        return "test" if decision == "ALLOW" else "improve"
 
     if intent in ("DIAGNOSTICS", "CHAT", "NETWORK_ACCESS"):
         return "monitor"
@@ -281,37 +291,8 @@ def _route_role_for_decision(dec: Dict[str, Any], caller_context: Optional[Dict[
         return "improve"    # denied/deferred require improvement/clarification lane
 
     if intent == "CREATIVE_REQUEST":
-        questions.extend(
-            [
-                "Is this a creative artifact request rather than a direct system mutation?",
-                "Can the request be routed to Creative Lane and resolved through registered CreativeStudios modules?",
-                "Does the request require local filesystem writes, preview, or browser-open actions that may need confirmation?",
-            ]
-        )
-
-        creative_targets = [m for m in _suggest_module_hints(intent) if _is_core_module_approved(m)]
-        answers["creative_registered_modules"] = creative_targets
-
-        if not creative_targets:
-            decision["decision"] = "DEFER"
-            decision["allow"] = False
-            decision["require_user"] = True
-            decision["reasons"].append("No approved CreativeStudios modules are currently registered for this request.")
-            decision["recommended_next"] = "Register/approve a CreativeStudios module, then re-evaluate through Creative Lane."
-            _risk_add(risk, 10, "no_registered_creative_modules")
-            decision["risk_score"] = risk["risk_score"]
-            decision["risk_factors"] = risk["risk_factors"]
-            return _finalize(decision)
-
-        decision["decision"] = "ALLOW"
-        decision["allow"] = True
-        decision["require_user"] = False
-        decision["reasons"].append("Creative request approved for governed routing; execution belongs to Creative Lane.")
-        decision["recommended_next"] = "Route to Creative Lane and selected CreativeStudios module; validate artifacts before final presentation."
-        decision["risk_score"] = risk["risk_score"]
-        decision["risk_factors"] = risk["risk_factors"]
-        return _finalize(decision)
-
+        # Partition publication is advisory; never mutate the governor verdict here.
+        return "monitor" if decision == "ALLOW" else "improve"
 
     if intent == "FILESYSTEM_WRITE":
         if decision == "ALLOW":
@@ -565,8 +546,8 @@ def get_cognitive_policy_snapshot() -> Dict[str, Any]:
         "context_engine_enabled": bool(
             getattr(config, "CONTEXT_ENGINE_ENABLED", getattr(config, "ENABLE_CONTEXT_BUFFER", True))
         ),
-        "cognitive_online_enabled": bool(getattr(config, "COGNITIVE_ONLINE_ENABLED", False)),
-        "kill_switch_neoskymatrix": bool(getattr(config, "NEOSKYMATRIX", False)),
+        "cognitive_online_enabled": _bool_flag(getattr(config, "COGNITIVE_ONLINE_ENABLED", False)),
+        "kill_switch_neoskymatrix": _bool_flag(getattr(config, "NEOSKYMATRIX", False)),
     }
     try:
         gp = getattr(config, "sm_get_core_governance_profile", None)
@@ -746,13 +727,11 @@ def _build_smget_contract_preview(
 
 def _smget_security_review(action_contract: Dict[str, Any], governance: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(action_contract, dict) or not action_contract:
-        return {}
+        return {"decision": "DEFER", "allow": False, "reasons": ["missing_action_contract"]}
     if _SecurityGovernor is None:
-        return {
-            "decision": "ALLOW",
-            "allow": True,
-            "reasons": ["SecurityGovernor unavailable; SMGET preview remains governance-only."],
-        }
+        return {"decision": "DEFER", "allow": False,
+                "reasons": ["SecurityGovernor unavailable: security approval not established."],
+                "review_available": False}
     for fn_name in ("evaluate_action", "govern_action", "review_action_contract"):
         try:
             fn = getattr(_SecurityGovernor, fn_name, None)
@@ -767,15 +746,12 @@ def _smget_security_review(action_contract: Dict[str, Any], governance: Dict[str
 
 def _smget_assurance_review(action_contract: Dict[str, Any], governance: Dict[str, Any], security: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(action_contract, dict) or not action_contract:
-        return {}
+        return {"decision": "DEFER", "allow": False, "reasons": ["missing_action_contract"]}
     if _AssuranceGate is None:
-        return {
-            "decision": "ALLOW",
-            "allow": True,
-            "confidence": 1.0,
-            "assurance_score": 1.0,
-            "reasons": ["AssuranceGate unavailable; SMGET preview remains governance/security-only."],
-        }
+        return {"decision": "DEFER", "allow": False,
+                "confidence": None, "assurance_score": None,
+                "reasons": ["AssuranceGate unavailable: assurance approval not established."],
+                "review_available": False}
     for fn_name in ("evaluate_action_assurance", "review_action_assurance", "assure_action"):
         try:
             fn = getattr(_AssuranceGate, fn_name, None)
@@ -810,10 +786,10 @@ def _apply_smget_review_to_decision(dec: Dict[str, Any], smget: Dict[str, Any]) 
     assurance = smget.get("assurance") if isinstance(smget.get("assurance"), dict) else {}
 
     sec_decision = str(security.get("decision") or "").strip().lower()
-    sec_allow = bool(security.get("allow", sec_decision == "allow"))
+    sec_allow = sec_decision == "allow" and security.get("allow") is True
 
     assurance_decision = str(assurance.get("decision") or "").strip().lower()
-    assurance_allow = bool(assurance.get("allow", assurance_decision == "allow"))
+    assurance_allow = assurance_decision == "allow" and assurance.get("allow") is True
 
     if not sec_allow:
         if sec_decision in {"require_user"}:
@@ -898,6 +874,15 @@ def _maybe_attach_smget_preview(
         governance=dec,
     )
     if not contract:
+        if str(dec.get("intent") or "").upper() == "CREATIVE_REQUEST" and not proposed_action:
+            # Advisory creative planning only; no output/write authority is granted.
+            dec["execution_allowed"] = False
+            return dec
+        dec["decision"] = "DEFER"
+        dec["allow"] = False
+        dec["execution_allowed"] = False
+        dec["require_user"] = True
+        dec.setdefault("reasons", []).append("SMGET action contract unavailable; execution cannot be approved")
         return dec
 
     security = _smget_security_review(contract, dec)
@@ -1397,10 +1382,10 @@ def govern_request(
     except Exception:
         mode_flags = {}
 
-    local_only = bool(mode_flags.get("LOCAL_ONLY_MODE") or ctx.get("local_only") or ctx.get("offline") or cognitive_self_summary.get("local_only"))
-    safe_mode = bool(mode_flags.get("SAFE_MODE") or ctx.get("safe_mode") or cognitive_self_summary.get("safe_mode"))
-    neoskymatrix = bool(mode_flags.get("NEOSKYMATRIX") or ctx.get("neoskymatrix"))
-    developersmode = bool(mode_flags.get("DEVELOPERSMODE") or ctx.get("developersmode"))
+    local_only = any(_bool_flag(x) for x in (mode_flags.get("LOCAL_ONLY_MODE"), ctx.get("local_only"), ctx.get("offline"), cognitive_self_summary.get("local_only")))
+    safe_mode = any(_bool_flag(x) for x in (mode_flags.get("SAFE_MODE"), ctx.get("safe_mode"), cognitive_self_summary.get("safe_mode")))
+    neoskymatrix = any(_bool_flag(x) for x in (mode_flags.get("NEOSKYMATRIX"), ctx.get("neoskymatrix")))
+    developersmode = any(_bool_flag(x) for x in (mode_flags.get("DEVELOPERSMODE"), ctx.get("developersmode")))
 
     device_mode = str(mode_flags.get("DEVICE_MODE") or ctx.get("device_mode") or "").strip()
     run_mode = str(mode_flags.get("RUN_MODE") or ctx.get("run_mode") or "").strip()
@@ -3757,22 +3742,22 @@ def gcop_authority_review(packet=None, event=None, continuity_state=None, select
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
+        "status": "Degraded",
         "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": None,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter importable; end-to-end readiness not tested"],
     }
 
 
@@ -3782,7 +3767,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryCognitiveServices',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

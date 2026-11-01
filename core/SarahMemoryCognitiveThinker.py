@@ -1,8 +1,9 @@
 """--== SarahMemory Project ==--
 File: SarahMemoryCognitiveThinker.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v9.0.0
-Date: 2026-07-11
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.1.0a (Enterprise)
+Date: 2026-10-15
+Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
@@ -13,6 +14,7 @@ https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
 ===============================================================================
+
 PURPOSE:
 - Philosophical / ethical / emotional / possibility governance plane
 - The dreamer, conscience, and imaginative counterpart to SarahMemoryCognitiveServices.py
@@ -202,7 +204,12 @@ def _thinker_db_path() -> str:
 
 def _flag(name: str, default: bool = False) -> bool:
     try:
-        return bool(getattr(config, name, default))
+        value = getattr(config, name, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value == 1
+        return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
     except Exception:
         return default
 
@@ -591,7 +598,7 @@ def _governor_snapshot() -> Dict[str, Any]:
     return {
         "ts": datetime.now().isoformat(),
         "cognitive_online_enabled": not _local_only(),
-        "kill_switch_neoskymatrix": not _neosky(),
+        "kill_switch_neoskymatrix": _neosky(),
         "context_engine_enabled": True,
         "core_governance": {},
     }
@@ -672,13 +679,10 @@ def _human_approved_validated_promotion(context: Optional[Dict[str, Any]], propo
     pa = dict(proposed_action or {})
     approval_source = str(pa.get("approval_source") or ctx.get("approval_source") or "").strip().lower()
     promotion_stage = str(pa.get("promotion_stage") or ctx.get("promotion_stage") or "").strip().lower()
-    return bool(
-        promotion_stage == "approved_apply"
-        and pa.get("validated_sandbox") is True
-        and pa.get("user_approved_promotion") is True
-        and approval_source in {"human", "user"}
-        and bool(ctx.get("user_consented"))
-    )
+    # These fields are all caller-controlled. Only an authenticated external
+    # OperatorCore approval can promote a sandbox artifact; this advisory organ
+    # cannot validate such a receipt through this legacy interface.
+    return False
 
 # -----------------------------------------------------------------------------
 # Lens scoring
@@ -1958,22 +1962,22 @@ def gcop_candidate_set(packet=None, event=None, continuity_state=None, runtime_c
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
+        "status": "Degraded",
         "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": None,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter importable; end-to-end readiness not tested"],
     }
 
 
@@ -1983,7 +1987,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryCognitiveThinker',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryDiagnostics.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v9.0.0
-Date: 2026-07-11
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -15,6 +15,7 @@ https://ai.sarahmemory.com
 https://store.sarahmemory.com
 ===============================================================================
 """
+
 from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "A"
@@ -454,7 +455,7 @@ def _mask_secret(value: str) -> str:
         return "NOT_SET"
     if len(value) <= 8:
         return "*" * len(value)
-    return f"{value[:4]}{'*' * (len(value) - 8)}{value[-4:]}"
+    return '*' * len(value)
 
 def _mask_sensitive_values(text: str) -> str:
     """
@@ -2547,14 +2548,8 @@ def run_system_diagnostics() -> dict:
                 elif not os.path.isdir(path):
                     _add("dir", attr, False, f"{path!r} is not a directory.")
                 else:
-                    test_file = os.path.join(path, ".diag_write_test.tmp")
-                    try:
-                        with open(test_file, "w", encoding="utf-8") as f:
-                            f.write("ok")
-                        os.remove(test_file)
-                        _add("dir", attr, True, f"{path!r} exists and is writable.")
-                    except Exception as e:
-                        _add("dir", attr, False, f"{path!r} exists but not writable: {e}")
+                    # Read-only directory-health probe: never write/delete canary files.
+                    _add('dir', attr, True, f'{path!r} exists; writeability not tested (read_only).')
             except Exception as e:
                 _add("dir", attr, False, f"Directory check failed: {e}")
 
@@ -3374,31 +3369,30 @@ def run_sarahnet_api_self_repair() -> dict:
         report["steps"].append("privacy_tables_check_failed")
         report["errors"].append(str(e))
 
-    # Safe import of api/server/app.py (to expose path issues)
+    # Read and parse API source without executing its import-time code.
     try:
-        app_py = api_dir / "server" / "app.py"
-        if app_py.exists():
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("_sm_api_app_import_probe", os.fspath(app_py))
-            if spec and spec.loader:
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)  # type: ignore
-            report["steps"].append("app_py_import_probe_ok")
+        import ast
+        app_py = api_dir / 'server' / 'app.py'
+        if app_py.is_file() and not app_py.is_symlink() and app_py.stat().st_size <= 4 * 1024 * 1024:
+            with app_py.open('r', encoding='utf-8') as handle:
+                source = handle.read(4 * 1024 * 1024 + 1)
+            ast.parse(source, filename=str(app_py))
+            report['steps'].append('app_py_ast_parse_ok_no_execution')
         else:
-            report["steps"].append("app_py_missing")
-            report["ok"] = False
-    except Exception as e:
-        report["ok"] = False
-        report["errors"].append(f"app_py_import_probe_failed:{e}")
-        try:
-            logger.exception("app.py import probe failed")
-        except Exception:
-            pass
+            report['ok'] = False
+            report['errors'].append('app_py_missing_or_untrusted')
+    except Exception as exc:
+        report['ok'] = False
+        report['errors'].append('app_py_parse_failed:' + str(exc)[:160])
+
 
     # Persist report
     try:
         out = data_dir / "reports" / "v800" / "selfrepair_last.json"
-        out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        if out.is_symlink():
+            raise RuntimeError('self_repair_report_symlink_denied')
+        with out.open('w', encoding='utf-8') as f:
+            json.dump(report, f, indent=2)
         report["steps"].append(f"wrote_report:{out}")
     except Exception:
         pass
@@ -4035,7 +4029,7 @@ def run_database_poison_diagnostics(max_rows: int = 5000) -> dict:
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryDiagnostics',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Diagnostics',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -4053,22 +4047,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter present; runtime health not independently measured"],
     }
 
 
@@ -4078,7 +4072,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryDiagnostics',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

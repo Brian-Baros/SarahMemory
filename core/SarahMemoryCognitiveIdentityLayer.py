@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryCognitiveIdentityLayer.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-10-04
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,8 +13,8 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
+
 Tri-layer identity/context packet helpers for SarahMemory AiOS.
 
 - Build governed, read-only input packets for the Artificial Living System stack.
@@ -50,7 +50,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -76,7 +76,7 @@ if not logger.handlers:
     logger.addHandler(logging.NullHandler())
 
 MODULE_NAME = "SarahMemoryCognitiveIdentityLayer"
-MODULE_VERSION = "9.0.0"
+MODULE_VERSION = "9.1.0a"
 
 QUESTION_WORDS = ("who", "why", "what", "when", "where", "how")
 DETERMINERS = {"a", "an", "the", "this", "that", "these", "those", "my", "your", "our", "his", "her", "their"}
@@ -232,6 +232,10 @@ def _subject_object(raw: str, words: List[str], phrase_locks: List[str]) -> Tupl
     for q in QUESTION_WORDS:
         if words and words[0].lower() == q and len(words) > 1:
             return words[1], ""
+    # Common multiword imperative: treat particles as part of the operation.
+    imperative = re.match(r"^\s*(turn|switch|shut)\s+(on|off)\s+(?:the\s+)?(.+?)\s*[.!?]*$", text, flags=re.I)
+    if imperative:
+        return imperative.group(3).strip(), f"{imperative.group(1).lower()} {imperative.group(2).lower()}"
     # Imperative: first verb and rest as object-ish topic.
     for i, w in enumerate(words):
         if w.lower() in ACTION_VERBS:
@@ -388,14 +392,13 @@ def build_emotion_affect_packet(text: str, context_packet: Optional[Dict[str, An
     emotion_state: Dict[str, Any] = {}
     try:
         import SarahMemoryAdaptive as _Adaptive  # type: ignore
-        fn = getattr(_Adaptive, "advanced_emotional_learning", None)
-        if callable(fn):
-            adaptive = fn(raw) or {}
+        # Packet construction is read-only; never invoke Adaptive's learning mutation.
         load = getattr(_Adaptive, "load_emotional_state", None)
         if callable(load):
             emotion_state = load() or {}
     except Exception as e:
-        adaptive = {"error": str(e)}
+        adaptive = {}
+        emotion_state = {}
 
     candidates: Dict[str, float] = {}
     for key in ("joy", "trust", "fear", "surprise", "sadness", "disgust", "anger", "anticipation"):
@@ -444,7 +447,7 @@ def build_emotion_affect_packet(text: str, context_packet: Optional[Dict[str, An
         "emotional_intensity": max(0.0, min(1.0, intensity)),
         "urgency": max(0.0, min(1.0, lexical["urgency"])),
         "stress": max(0.0, min(1.0, lexical["stress"])),
-        "confidence": 0.64 if adaptive else 0.42,
+        "confidence": 0.64 if emotion_state else 0.42,
         "sarcasm_likelihood": 0.15 if re.search(r"\b(yeah right|sure buddy|obviously)\b", raw, re.I) else 0.0,
         "engagement": float(adaptive.get("engagement", 0.5) or 0.5) if isinstance(adaptive, dict) else 0.5,
         "openness": float(adaptive.get("openness", 0.5) or 0.5) if isinstance(adaptive, dict) else 0.5,
@@ -820,22 +823,22 @@ def gcop_identity_context(packet, event=None, continuity_state=None, runtime_con
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
+        "status": "Degraded",
         "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": None,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter importable; end-to-end readiness not tested"],
     }
 
 
@@ -845,7 +848,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryCognitiveIdentityLayer',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

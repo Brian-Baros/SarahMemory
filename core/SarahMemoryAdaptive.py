@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryAdaptive.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v9.0.0
-Date: 2026-07-11
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -67,7 +67,7 @@ DATABASE TABLES:
 
 from __future__ import annotations
 # --- SARAHMETA START ---
-# GRADE = "B"
+# GRADE = "A"
 # ROLE = "adaptive_engine"
 # CATEGORY = "personality_adaptation"
 # USER_FACING = False
@@ -78,8 +78,8 @@ from __future__ import annotations
 # INTERNAL_ONLY = True
 # CAPABILITY_NAME = "adaptive_behavior"
 # FAMILY = "core_adaptation"
-# GOVERNANCE_LEVEL = "bounded"
-# AUTONOMOUS_SAFE = True
+# GOVERNANCE_LEVEL = "bounded_read_only_advisory"
+# AUTONOMOUS_SAFE = False
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
@@ -97,9 +97,14 @@ import time
 import json
 import math
 import threading
+import copy
+import re
+import contextvars
+from contextlib import contextmanager, closing
+import pathlib
 from typing import Dict, List, Optional, Tuple, Any, Union
 from dataclasses import dataclass, field, asdict
-from collections import deque
+from collections import deque, OrderedDict
 from enum import Enum
 
 # ------------------------- Safe Imports -------------------------
@@ -272,25 +277,9 @@ class EmotionalState:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'EmotionalState':
-        """Create from dictionary."""
-        return cls(
-            joy=float(data.get("joy", 0.5)),
-            trust=float(data.get("trust", 0.3)),
-            fear=float(data.get("fear", 0.2)),
-            surprise=float(data.get("surprise", 0.1)),
-            sadness=float(data.get("sadness", 0.1)),
-            disgust=float(data.get("disgust", 0.05)),
-            anger=float(data.get("anger", 0.1)),
-            anticipation=float(data.get("anticipation", 0.3)),
-            emotional_balance=float(data.get("emotional_balance", 0.0)),
-            openness=float(data.get("openness", 0.6)),
-            engagement=float(data.get("engagement", 0.4)),
-            mode=str(data.get("mode", "balanced")),
-            cpu=float(data.get("cpu", 0.0)),
-            memory=float(data.get("memory", 0.0)),
-            last_updated=str(data.get("last_updated", "")),
-            adjustments=list(data.get("adjustments", []))
-        )
+        """Finite, validated reconstruction from persisted or untrusted JSON."""
+        state = _validated_state(data)
+        return cls(**{key: state[key] for key in cls.__dataclass_fields__})
     
     def get_dominant_emotion(self) -> Tuple[str, float]:
         """Return the strongest emotion and its intensity."""
@@ -393,7 +382,7 @@ DEFAULT_EMOTIONS: Dict[str, Any] = {
 }
 
 # Initialize STATE with defaults
-STATE = DEFAULT_EMOTIONS.copy()
+STATE = copy.deepcopy(DEFAULT_EMOTIONS)
 
 # Interaction history buffer (in-memory ring buffer)
 _interaction_buffer: deque = deque(maxlen=100)
@@ -402,41 +391,181 @@ _interaction_buffer: deque = deque(maxlen=100)
 _emotion_momentum: deque = deque(maxlen=20)
 
 
+
+# ============================================================================
+# ENTERPRISE RUNTIME BOUNDARIES -- local-first, bounded, advisory only
+# ============================================================================
+# Explicit scope is REQUIRED at the API/request boundary for multi-user use.
+# The unscoped legacy interfaces continue to share the original STATE for
+# backward compatibility. A scope identifier is hashed before persistence.
+_ADAPTIVE_SCOPE = contextvars.ContextVar("sarahmemory_adaptive_scope", default="")
+_SCOPED_STATES: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+_SCOPED_MOMENTUM: "OrderedDict[str, deque]" = OrderedDict()
+_SCOPED_INTERACTIONS: "OrderedDict[str, deque]" = OrderedDict()
+_MAX_ACTIVE_SCOPES = 64
+_SCHEMA_LOCK = threading.RLock()
+_SCHEMA_READY: Dict[str, Tuple[int, int]] = {}
+_EMOTION_FIELDS = ("joy", "trust", "fear", "surprise", "sadness", "disgust", "anger", "anticipation")
+_STATE_FIELDS = frozenset(DEFAULT_EMOTIONS)
+_ADAPTIVE_INPUT_LIMIT = 65536
+_ADAPTIVE_TEXT_STORAGE_LIMIT = 16384
+
+
+def _safe_float(value: Any, default: float = 0.0, lo: float = -1.0, hi: float = 1.0) -> float:
+    """Reject nonfinite and out-of-range values at the adaptive trust boundary."""
+    try:
+        result = float(value)
+        return max(lo, min(hi, result)) if math.isfinite(result) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _validated_state(data: Any) -> Dict[str, Any]:
+    """Accept only declared state keys, bounded finite floats and bounded history."""
+    state = copy.deepcopy(DEFAULT_EMOTIONS)
+    if not isinstance(data, dict):
+        return state
+    for field_name in _EMOTION_FIELDS + ("openness", "engagement"):
+        state[field_name] = _safe_float(data.get(field_name), state[field_name], 0.0, 1.0)
+    state["emotional_balance"] = _safe_float(data.get("emotional_balance"), 0.0)
+    for name in ("cpu", "memory"):
+        state[name] = _safe_float(data.get(name), 0.0, -1.0, 100.0)
+    mode = str(data.get("mode", "balanced"))[:32]
+    state["mode"] = mode if mode in {m.value for m in SystemMode} else "safe"
+    state["last_updated"] = str(data.get("last_updated") or "")[:64]
+    changes = data.get("adjustments")
+    if isinstance(changes, list):
+        state["adjustments"] = [str(x)[:180] for x in changes[-10:]]
+    return state
+
+
+def _scope_key() -> str:
+    return _ADAPTIVE_SCOPE.get()
+
+
+@contextmanager
+def adaptive_scope(scope_id: str):
+    """Bind a trusted, nonempty session/user/node key for one request.
+
+    The caller MUST authenticate scope_id; this function does not authorize it.
+    Scope identifiers are never stored in raw form. Nested scopes restore state.
+    """
+    if not isinstance(scope_id, str) or not scope_id.strip() or len(scope_id) > 512:
+        raise ValueError("adaptive scope requires an authenticated, bounded identifier")
+    digest = hashlib.sha256(scope_id.encode("utf-8")).hexdigest()
+    token = _ADAPTIVE_SCOPE.set("scope_" + digest)
+    try:
+        yield
+    finally:
+        _ADAPTIVE_SCOPE.reset(token)
+
+
+def _bounded_scoped_cache(cache: OrderedDict, key: str, constructor):
+    if key not in cache:
+        if len(cache) >= _MAX_ACTIVE_SCOPES:
+            cache.popitem(last=False)
+        cache[key] = constructor()
+    cache.move_to_end(key)
+    return cache[key]
+
+
+def _current_state() -> Dict[str, Any]:
+    key = _scope_key()
+    if not key:
+        return STATE
+    return _bounded_scoped_cache(_SCOPED_STATES, key, lambda: copy.deepcopy(DEFAULT_EMOTIONS))
+
+
+def _replace_current_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    global STATE
+    validated = _validated_state(state)
+    if _scope_key():
+        _SCOPED_STATES[_scope_key()] = validated
+        _SCOPED_STATES.move_to_end(_scope_key())
+    else:
+        STATE = validated
+    return validated
+
+
+def _momentum_buffer() -> deque:
+    key = _scope_key()
+    if not key:
+        return _emotion_momentum
+    return _bounded_scoped_cache(_SCOPED_MOMENTUM, key, lambda: deque(maxlen=20))
+
+
+def _interaction_history_buffer() -> deque:
+    key = _scope_key()
+    if not key:
+        return _interaction_buffer
+    return _bounded_scoped_cache(_SCOPED_INTERACTIONS, key, lambda: deque(maxlen=100))
+
+
+def clear_adaptive_runtime_scope() -> bool:
+    """Forget the current in-memory scope only; does not delete persistent data."""
+    key = _scope_key()
+    if not key:
+        return False
+    with _state_lock:
+        _SCOPED_STATES.pop(key, None)
+        _SCOPED_MOMENTUM.pop(key, None)
+        _SCOPED_INTERACTIONS.pop(key, None)
+    return True
+
+
+def _db_file_identity(db_path: str) -> Tuple[int, int]:
+    try:
+        s = os.stat(db_path)
+        return (s.st_dev, s.st_ino)
+    except OSError:
+        return (-1, -1)
+
+
+def _scope_allowed() -> bool:
+    """Fail closed on multi-user hosts configured to require request scopes."""
+    return bool(_scope_key()) or not bool(getattr(config, "ADAPTIVE_REQUIRE_SCOPE", False))
+
+
+def _adaptive_can_store_raw() -> bool:
+    """Legacy raw history defaults enabled; may be disabled by the owner."""
+    return bool(getattr(config, "ADAPTIVE_STORE_RAW_CONVERSATIONS", True))
+
+
+def _adaptive_storage_text(value: Any) -> str:
+    return str(value or "")[:_ADAPTIVE_TEXT_STORAGE_LIMIT]
+
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
 
 def _sigmoid(x: float) -> float:
-    """Compute sigmoid function for normalization."""
-    try:
-        if _HAS_NUMPY:
-            return float(1.0 / (1.0 + np.exp(-x)))
-        else:
-            return 1.0 / (1.0 + math.exp(-x))
-    except (OverflowError, ValueError):
-        return 0.5
+    """Stable finite logistic transform for backward compatibility."""
+    x = _safe_float(x, 0.0, -1000.0, 1000.0)
+    if x >= 0:
+        ex = math.exp(-x)
+        return 1.0 / (1.0 + ex)
+    ex = math.exp(x)
+    return ex / (1.0 + ex)
 
 
 def _clamp(value: float, min_val: float = 0.0, max_val: float = 1.0) -> float:
-    """Clamp a value to a specified range."""
-    return max(min_val, min(max_val, value))
+    """Clamp finite values; nonfinite inputs cannot propagate to state or JSON."""
+    return _safe_float(value, min_val, min_val, max_val)
+
 
 
 def _get_system_resources() -> Tuple[float, float]:
-    """
-    Get current CPU and memory usage percentages.
-    Returns (cpu_percent, memory_percent).
-    """
-    if not _HAS_PSUTIL:
-        return (50.0, 50.0)  # Default neutral values
-    
+    """Live pressure percentages; (-1, -1) means unavailable, never synthetic."""
+    if not _HAS_PSUTIL or psutil is None:
+        return (-1.0, -1.0)
     try:
-        cpu = psutil.cpu_percent(interval=None)
-        mem = psutil.virtual_memory().percent
-        return (cpu, mem)
-    except Exception as e:
-        logger.warning(f"Failed to get system resources: {e}")
-        return (50.0, 50.0)
+        cpu = _safe_float(psutil.cpu_percent(interval=None), -1.0, 0.0, 100.0)
+        mem = _safe_float(psutil.virtual_memory().percent, -1.0, 0.0, 100.0)
+        return cpu, mem
+    except (AttributeError, OSError, RuntimeError, ValueError) as exc:
+        logger.warning("System telemetry unavailable: %s", type(exc).__name__)
+        return (-1.0, -1.0)
+
 
 
 def _get_timestamp() -> str:
@@ -445,12 +574,11 @@ def _get_timestamp() -> str:
 
 
 def _tokenize(text: str) -> List[str]:
-    """Simple tokenization of text into lowercase words."""
-    if not text:
+    """Bounded Unicode-aware words, preserving negation contractions."""
+    if not isinstance(text, str):
         return []
-    # Remove punctuation and split
-    cleaned = ''.join(c.lower() if c.isalnum() or c.isspace() else ' ' for c in text)
-    return cleaned.split()
+    return re.findall(r"[^\W_]+(?:['’][^\W_]+)*", text[:_ADAPTIVE_INPUT_LIMIT].lower(), flags=re.UNICODE)
+
 
 
 # ============================================================================
@@ -458,83 +586,63 @@ def _tokenize(text: str) -> List[str]:
 # ============================================================================
 
 def _ensure_memory_db_schema(conn: sqlite3.Connection) -> None:
-    """Ensure the memory database has all required tables."""
-    cursor = conn.cursor()
-    
-    # Conversations table (interaction history)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS conversations (
+    """Idempotent additive schema migration; never drops user data."""
+    with conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL,
+            user_input TEXT, ai_response TEXT, intent TEXT,
+            sentiment_score REAL DEFAULT 0.0, emotional_state TEXT, session_id TEXT)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS interaction_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL,
+            word_count INTEGER, sentiment_score REAL, emotional_intensity REAL,
+            response_quality REAL, mode TEXT, session_id TEXT)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS user_preferences (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
-            user_input TEXT,
-            ai_response TEXT,
-            intent TEXT,
-            sentiment_score REAL DEFAULT 0.0,
-            emotional_state TEXT,
-            session_id TEXT
-        )
-    """)
-    
-    # Interaction metrics table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS interaction_metrics (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
-            word_count INTEGER,
-            sentiment_score REAL,
-            emotional_intensity REAL,
-            response_quality REAL,
-            mode TEXT
-        )
-    """)
-    
-    # User preferences learned over time
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_preferences (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            preference_key TEXT UNIQUE NOT NULL,
-            preference_value TEXT,
-            confidence REAL DEFAULT 0.5,
-            last_updated TEXT
-        )
-    """)
-    
-    # Create indices for performance
-    cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_conversations_timestamp 
-        ON conversations(timestamp)
-    """)
-    
-    conn.commit()
+            preference_key TEXT UNIQUE NOT NULL, preference_value TEXT,
+            confidence REAL DEFAULT 0.5, last_updated TEXT)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS adaptive_scoped_preferences (
+            scope_id TEXT NOT NULL, preference_key TEXT NOT NULL,
+            preference_value TEXT, confidence REAL NOT NULL,
+            last_updated TEXT, PRIMARY KEY(scope_id, preference_key))""")
+        compat = {
+            "conversations": {"timestamp":"TEXT", "user_input":"TEXT", "ai_response":"TEXT",
+                "intent":"TEXT", "sentiment_score":"REAL", "emotional_state":"TEXT", "session_id":"TEXT"},
+            "interaction_metrics": {"timestamp":"TEXT", "word_count":"INTEGER", "sentiment_score":"REAL",
+                "emotional_intensity":"REAL", "response_quality":"REAL", "mode":"TEXT", "session_id":"TEXT"},
+            "user_preferences": {"preference_key":"TEXT", "preference_value":"TEXT", "confidence":"REAL", "last_updated":"TEXT"},
+        }
+        for table, spec in compat.items():
+            columns = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+            for column, kind in spec.items():
+                if column not in columns:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_timestamp ON conversations(timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_session ON conversations(session_id, timestamp)")
+
 
 
 def connect_memory_db() -> Optional[sqlite3.Connection]:
-    """
-    Connect to the memory database (ai_learning.db).
-    Creates the database and tables if they don't exist.
-    
-    Returns:
-        sqlite3.Connection or None if connection fails
-    """
+    """Open memory database, initializing schema once per on-disk database identity."""
+    conn = None
     try:
-        # Ensure directory exists
         os.makedirs(os.path.dirname(MEMORY_DB_PATH), exist_ok=True)
-        
-        conn = sqlite3.connect(MEMORY_DB_PATH, timeout=10.0)
+        conn = sqlite3.connect(MEMORY_DB_PATH, timeout=5.0)
         conn.row_factory = sqlite3.Row
-        
-        # Enable WAL mode for better concurrency
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        
-        _ensure_memory_db_schema(conn)
-        
-        logger.debug(f"Connected to memory database: {MEMORY_DB_PATH}")
+        conn.execute("PRAGMA busy_timeout=5000")
+        with _SCHEMA_LOCK:
+            identity = _db_file_identity(MEMORY_DB_PATH)
+            if _SCHEMA_READY.get("memory:" + MEMORY_DB_PATH) != identity:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                _ensure_memory_db_schema(conn)
+                _SCHEMA_READY["memory:" + MEMORY_DB_PATH] = _db_file_identity(MEMORY_DB_PATH)
         return conn
-        
-    except Exception as e:
-        logger.error(f"Failed to connect to memory database: {e}")
+    except (OSError, sqlite3.Error) as exc:
+        logger.error("Memory database unavailable: %s", type(exc).__name__)
+        if conn is not None:
+            conn.close()
         return None
+
 
 
 def log_interaction_to_db(
@@ -545,96 +653,92 @@ def log_interaction_to_db(
     emotional_state: Dict = None,
     session_id: str = None
 ) -> bool:
-    """
-    Log an interaction to the memory database.
-    
-    Args:
-        user_input: The user's input text
-        ai_response: The AI's response text
-        intent: Classified intent of the interaction
-        sentiment_score: Sentiment analysis score (-1.0 to 1.0)
-        emotional_state: Current emotional state dictionary
-        session_id: Optional session identifier
-    
-    Returns:
-        True if logged successfully, False otherwise
-    """
-    try:
-        conn = connect_memory_db()
-        if not conn:
-            return False
-        
-        timestamp = _get_timestamp()
-        emotional_json = json.dumps(emotional_state) if emotional_state else None
-        
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO conversations 
-            (timestamp, user_input, ai_response, intent, sentiment_score, emotional_state, session_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (timestamp, user_input, ai_response, intent, sentiment_score, emotional_json, session_id))
-        
-        conn.commit()
-        conn.close()
-        
-        logger.debug(f"Logged interaction at {timestamp}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error logging interaction to database: {e}")
+    """Record bounded, optionally redacted interaction data in one transaction."""
+    if not bool(getattr(config, "ADAPTIVE_ENABLE_INTERACTION_LOGGING", True)) or not _scope_allowed():
         return False
+    conn = connect_memory_db()
+    if conn is None:
+        return False
+    try:
+        scoped = _scope_key()
+        # A trusted active scope always overrides untrusted supplied session IDs.
+        effective_session = scoped or (str(session_id)[:128] if session_id else None)
+        raw = _adaptive_can_store_raw()
+        timestamp = _get_timestamp()
+        emotional_json = json.dumps(_validated_state(emotional_state), allow_nan=False) if emotional_state else None
+        with closing(conn), conn:
+            conn.execute("""INSERT INTO conversations
+                (timestamp, user_input, ai_response, intent, sentiment_score, emotional_state, session_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (timestamp,
+                 _adaptive_storage_text(user_input) if raw else None,
+                 _adaptive_storage_text(ai_response) if raw else None,
+                 str(intent or "unknown")[:80],
+                 _safe_float(sentiment_score), emotional_json, effective_session))
+        return True
+    except (TypeError, ValueError, sqlite3.Error) as exc:
+        logger.warning("Adaptive interaction log failed: %s", type(exc).__name__)
+        return False
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+
 
 
 def get_recent_interactions(limit: int = 20) -> List[Dict]:
-    """
-    Retrieve recent interactions from the database.
-    
-    Args:
-        limit: Maximum number of interactions to retrieve
-    
-    Returns:
-        List of interaction dictionaries
-    """
-    try:
-        conn = connect_memory_db()
-        if not conn:
-            return []
-        
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT timestamp, user_input, ai_response, intent, sentiment_score
-            FROM conversations
-            ORDER BY timestamp DESC
-            LIMIT ?
-        """, (limit,))
-        
-        rows = cursor.fetchall()
-        conn.close()
-        
-        return [dict(row) for row in rows]
-        
-    except Exception as e:
-        logger.error(f"Error retrieving interactions: {e}")
+    """Return bounded history, scoped when an authenticated adaptive scope exists."""
+    if not _scope_allowed():
         return []
+    conn = connect_memory_db()
+    if conn is None:
+        return []
+    try:
+        bounded_limit = max(0, min(100, int(limit)))
+        scope = _scope_key()
+        with closing(conn):
+            if scope:
+                rows = conn.execute("""SELECT timestamp, user_input, ai_response, intent, sentiment_score
+                    FROM conversations WHERE session_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?""",
+                    (scope, bounded_limit)).fetchall()
+            else:
+                rows = conn.execute("""SELECT timestamp, user_input, ai_response, intent, sentiment_score
+                    FROM conversations WHERE session_id IS NULL ORDER BY timestamp DESC, rowid DESC LIMIT ?""",
+                    (bounded_limit,)).fetchall()
+        return [dict(row) for row in rows]
+    except (ValueError, TypeError, sqlite3.Error) as exc:
+        logger.warning("Adaptive interaction lookup failed: %s", type(exc).__name__)
+        return []
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+
 
 
 def get_interaction_count() -> int:
-    """Get the total number of logged interactions."""
-    try:
-        conn = connect_memory_db()
-        if not conn:
-            return 0
-        
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM conversations")
-        count = cursor.fetchone()[0]
-        conn.close()
-        
-        return count
-        
-    except Exception as e:
-        logger.error(f"Error getting interaction count: {e}")
+    """Count only the current session's records (legacy unscoped otherwise)."""
+    if not _scope_allowed():
         return 0
+    conn = connect_memory_db()
+    if conn is None:
+        return 0
+    try:
+        with closing(conn):
+            if _scope_key():
+                return int(conn.execute("SELECT COUNT(*) FROM conversations WHERE session_id = ?", (_scope_key(),)).fetchone()[0])
+            return int(conn.execute("SELECT COUNT(*) FROM conversations WHERE session_id IS NULL").fetchone()[0])
+    except sqlite3.Error as exc:
+        logger.warning("Adaptive interaction count failed: %s", type(exc).__name__)
+        return 0
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+
 
 
 # ============================================================================
@@ -642,262 +746,178 @@ def get_interaction_count() -> int:
 # ============================================================================
 
 def _ensure_emotion_db_schema(conn: sqlite3.Connection) -> None:
-    """Ensure the emotion database has all required tables."""
-    cursor = conn.cursor()
+    """Additive legacy-safe schema repair. Unique constraints are never presumed."""
+    with conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS traits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, trait_name TEXT UNIQUE,
+            description TEXT, last_updated TEXT, ts TEXT, trait TEXT, value REAL, source TEXT)""")
+        compat = {"trait_name":"TEXT", "description":"TEXT", "last_updated":"TEXT", "ts":"TEXT",
+                  "trait":"TEXT", "value":"REAL", "source":"TEXT"}
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(traits)")}
+        for name, kind in compat.items():
+            if name not in cols:
+                conn.execute(f"ALTER TABLE traits ADD COLUMN {name} {kind}")
+        conn.execute("""CREATE TABLE IF NOT EXISTS emotional_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL,
+            emotion_snapshot TEXT, dominant_emotion TEXT, emotional_balance REAL,
+            trigger_text TEXT, session_id TEXT)""")
+        history_columns = {r[1] for r in conn.execute("PRAGMA table_info(emotional_history)")}
+        if "session_id" not in history_columns:
+            conn.execute("ALTER TABLE emotional_history ADD COLUMN session_id TEXT")
+        conn.execute("""CREATE TABLE IF NOT EXISTS adaptive_scoped_state (
+            scope_id TEXT PRIMARY KEY, state_json TEXT NOT NULL, last_updated TEXT)""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_emotional_history_scope ON emotional_history(session_id, timestamp)")
+        # Existing view or table is left untouched, never replaced.
+        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name='emotion_states'").fetchone()
+        if not exists:
+            conn.execute("""CREATE VIEW emotion_states AS
+                SELECT trait_name AS name, description AS value FROM traits""")
 
-    # Traits table (emotional state persistence)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS traits (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            trait_name TEXT UNIQUE,
-            description TEXT,
-            last_updated TEXT,
-            ts TEXT,
-            trait TEXT,
-            value REAL,
-            source TEXT
-        )
-    """)
-
-    # Legacy install fix: if traits table already existed without last_updated,
-    # CREATE TABLE IF NOT EXISTS will NOT add the missing column.
-    try:
-        cursor.execute("PRAGMA table_info(traits);")
-        cols = [r[1] for r in cursor.fetchall()]
-        compat_columns = {
-            "trait_name": "TEXT",
-            "description": "TEXT",
-            "last_updated": "TEXT",
-            "ts": "TEXT",
-            "trait": "TEXT",
-            "value": "REAL",
-            "source": "TEXT",
-        }
-        for _col, _def in compat_columns.items():
-            if _col not in cols:
-                cursor.execute(f"ALTER TABLE traits ADD COLUMN {_col} {_def};")
-    except Exception:
-        # Non-fatal: schema enforcement should never break boot
-        pass
-
-    # Emotional history (time series)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS emotional_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
-            emotion_snapshot TEXT,
-            dominant_emotion TEXT,
-            emotional_balance REAL,
-            trigger_text TEXT
-        )
-    """)
-
-    # Create legacy view for backward compatibility
-    cursor.execute("""
-        CREATE VIEW IF NOT EXISTS emotion_states AS
-        SELECT trait_name AS name, description AS value
-        FROM traits
-    """)
-
-    conn.commit()
 
 
 
 def connect_emotion_db() -> Optional[sqlite3.Connection]:
-    """
-    Connect to the emotion database (personality1.db).
-    Creates the database and tables if they don't exist.
-    
-    Returns:
-        sqlite3.Connection or None if connection fails
-    """
+    """Open emotional persistence and initialize schema only as needed."""
+    conn = None
     try:
-        # Ensure directory exists
         os.makedirs(os.path.dirname(EMOTION_DB_PATH), exist_ok=True)
-        
-        conn = sqlite3.connect(EMOTION_DB_PATH, timeout=10.0)
+        conn = sqlite3.connect(EMOTION_DB_PATH, timeout=5.0)
         conn.row_factory = sqlite3.Row
-        
-        # Enable WAL mode
-        conn.execute("PRAGMA journal_mode=WAL")
-        
-        _ensure_emotion_db_schema(conn)
-        
-        logger.debug(f"Connected to emotion database: {EMOTION_DB_PATH}")
+        conn.execute("PRAGMA busy_timeout=5000")
+        with _SCHEMA_LOCK:
+            identity = _db_file_identity(EMOTION_DB_PATH)
+            if _SCHEMA_READY.get("emotion:" + EMOTION_DB_PATH) != identity:
+                conn.execute("PRAGMA journal_mode=WAL")
+                _ensure_emotion_db_schema(conn)
+                _SCHEMA_READY["emotion:" + EMOTION_DB_PATH] = _db_file_identity(EMOTION_DB_PATH)
         return conn
-        
-    except Exception as e:
-        logger.error(f"Failed to connect to emotion database: {e}")
+    except (OSError, sqlite3.Error) as exc:
+        logger.error("Emotion database unavailable: %s", type(exc).__name__)
+        if conn is not None:
+            conn.close()
         return None
 
 
+
 def load_emotional_state() -> Dict[str, Any]:
-    """
-    Load the emotional state from the database.
-    Falls back to defaults if loading fails.
-    
-    Returns:
-        Dictionary containing the emotional state
-    """
-    global STATE
-    
-    emotions = DEFAULT_EMOTIONS.copy()
-    
-    try:
-        conn = connect_emotion_db()
-        if not conn:
-            STATE = emotions.copy()
-            return emotions
-        
-        cursor = conn.cursor()
-        cursor.execute("SELECT trait_name, description FROM traits")
-        
-        for row in cursor.fetchall():
-            trait_name = row["trait_name"]
-            description = row["description"]
-            
-            # Parse numeric values
-            if trait_name in ("cpu", "memory", "joy", "trust", "fear", "surprise",
-                             "sadness", "disgust", "anger", "anticipation",
-                             "emotional_balance", "openness", "engagement"):
-                try:
-                    emotions[trait_name] = float(description)
-                except (ValueError, TypeError):
-                    pass
-            
-            # Parse list values (JSON)
-            elif trait_name == "adjustments":
-                try:
-                    emotions[trait_name] = json.loads(description) if description else []
-                except (json.JSONDecodeError, TypeError):
-                    emotions[trait_name] = [str(description)] if description else []
-            
-            # String values
-            elif trait_name in ("mode", "last_updated"):
-                emotions[trait_name] = str(description) if description else ""
-            
-            else:
-                # Unknown trait, store as-is
-                emotions[trait_name] = description
-        
-        conn.close()
-        
-        with _state_lock:
-            STATE = emotions.copy()
-        
-        logger.debug(f"Loaded emotional state: {emotions}")
-        return emotions
-        
-    except Exception as e:
-        logger.error(f"Error loading emotional state: {e}")
-        STATE = emotions.copy()
-        return emotions
+    """Load only the current trusted scope's state; legacy default remains local."""
+    if not _scope_allowed():
+        return copy.deepcopy(DEFAULT_EMOTIONS)
+    conn = connect_emotion_db()
+    with _state_lock:
+        if conn is None:
+            return copy.deepcopy(_current_state())
+        try:
+            with closing(conn):
+                if _scope_key():
+                    row = conn.execute("SELECT state_json FROM adaptive_scoped_state WHERE scope_id=?", (_scope_key(),)).fetchone()
+                    if row is None:
+                        state = copy.deepcopy(DEFAULT_EMOTIONS)
+                    else:
+                        try:
+                            state = _validated_state(json.loads(row[0]))
+                        except (ValueError, TypeError):
+                            logger.warning("Corrupt scoped emotional state; using defaults")
+                            state = copy.deepcopy(DEFAULT_EMOTIONS)
+                else:
+                    state = copy.deepcopy(DEFAULT_EMOTIONS)
+                    for row in conn.execute("SELECT trait_name, description FROM traits ORDER BY rowid ASC"):
+                        name, value = row[0], row[1]
+                        if name in _STATE_FIELDS:
+                            if name == "adjustments":
+                                try:
+                                    state[name] = json.loads(value or "[]")
+                                except (ValueError, TypeError):
+                                    state[name] = []
+                            else:
+                                state[name] = value
+                    state = _validated_state(state)
+            _replace_current_state(state)
+            return copy.deepcopy(state)
+        except sqlite3.Error as exc:
+            logger.warning("Loading emotional state failed: %s", type(exc).__name__)
+            return copy.deepcopy(_current_state())
+        finally:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+
 
 
 def save_emotional_state(state: Dict[str, Any] = None) -> bool:
-    """
-    Persist the emotional state to the database.
-    
-    Args:
-        state: State dictionary to save (uses global STATE if None)
-    
-    Returns:
-        True if saved successfully, False otherwise
-    """
+    """Atomic, validated save of only known adaptive traits in active scope."""
+    if not _scope_allowed():
+        return False
+    with _state_lock:
+        state_to_save = _validated_state(_current_state() if state is None else state)
+    conn = connect_emotion_db()
+    if conn is None:
+        return False
     try:
-        state_to_save = state or STATE
-        if not state_to_save:
-            return False
-        
-        conn = connect_emotion_db()
-        if not conn:
-            return False
-        
-        cursor = conn.cursor()
         timestamp = _get_timestamp()
-        
-        for trait_name, value in state_to_save.items():
-            # Skip transient nested objects
-            if trait_name == "emotion":
-                continue
-            
-            # Format value for storage
-            if isinstance(value, (int, float)):
-                if _HAS_NUMPY and hasattr(value, 'item'):
-                    store_value = f"{float(value.item()):.4f}"
-                else:
-                    store_value = f"{float(value):.4f}"
-            elif isinstance(value, (list, dict)):
-                try:
-                    store_value = json.dumps(value)
-                except (TypeError, ValueError):
-                    store_value = str(value)
+        with closing(conn), conn:
+            if _scope_key():
+                conn.execute("""INSERT INTO adaptive_scoped_state(scope_id,state_json,last_updated)
+                    VALUES(?,?,?) ON CONFLICT(scope_id) DO UPDATE SET
+                    state_json=excluded.state_json,last_updated=excluded.last_updated""",
+                    (_scope_key(), json.dumps(state_to_save, allow_nan=False), timestamp))
             else:
-                store_value = str(value) if value is not None else ""
-            
-            # Upsert the trait
-            cursor.execute("""
-                INSERT INTO traits (trait_name, description, last_updated)
-                VALUES (?, ?, ?)
-                ON CONFLICT(trait_name) 
-                DO UPDATE SET description = excluded.description, 
-                              last_updated = excluded.last_updated
-            """, (trait_name, store_value, timestamp))
-        
-        conn.commit()
-        conn.close()
-        
-        logger.debug(f"Saved emotional state at {timestamp}")
+                # UPDATE/INSERT works even on legacy tables without UNIQUE(trait_name).
+                for trait_name, value in state_to_save.items():
+                    serialized = json.dumps(value) if isinstance(value, list) else str(value)
+                    numeric = _safe_float(value, 0.0, -1e6, 1e6) if isinstance(value, (float, int)) else 0.0
+                    result = conn.execute("""UPDATE traits SET description=?, last_updated=?,
+                        ts=?, trait=?, value=?, source=? WHERE trait_name=?""",
+                        (serialized, timestamp, timestamp, trait_name, numeric,
+                         "SarahMemoryAdaptive", trait_name))
+                    if result.rowcount == 0:
+                        # Legacy traits may require non-null ts/trait/value/source.
+                        conn.execute("""INSERT INTO traits
+                            (trait_name,description,last_updated,ts,trait,value,source)
+                            VALUES(?,?,?,?,?,?,?)""",
+                            (trait_name, serialized, timestamp, timestamp,
+                             trait_name, numeric, "SarahMemoryAdaptive"))
         return True
-        
-    except Exception as e:
-        logger.error(f"Error saving emotional state: {e}")
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        logger.error("Saving emotional state failed: %s", type(exc).__name__)
         return False
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
 
 
-def log_emotional_history(
-    emotion_snapshot: Dict,
-    trigger_text: str = None
-) -> bool:
-    """
-    Log the current emotional state to history for analysis.
-    
-    Args:
-        emotion_snapshot: Current emotional state snapshot
-        trigger_text: Optional text that triggered the emotional change
-    
-    Returns:
-        True if logged successfully
-    """
+
+def log_emotional_history(emotion_snapshot: Dict, trigger_text: str = None) -> bool:
+    """Write bounded emotional history; raw triggers are owner-configurable."""
+    if not _scope_allowed() or not bool(getattr(config, "ADAPTIVE_ENABLE_INTERACTION_LOGGING", True)) or not bool(getattr(config, "ADAPTIVE_ENABLE_EMOTIONAL_HISTORY", True)):
+        return False
+    conn = connect_emotion_db()
+    if conn is None:
+        return False
     try:
-        conn = connect_emotion_db()
-        if not conn:
-            return False
-        
-        timestamp = _get_timestamp()
-        
-        # Get dominant emotion
-        emotions = {k: v for k, v in emotion_snapshot.items() 
-                   if k in ("joy", "trust", "fear", "surprise", "sadness", 
-                           "disgust", "anger", "anticipation")}
-        dominant = max(emotions.items(), key=lambda x: x[1])[0] if emotions else "neutral"
-        balance = emotion_snapshot.get("emotional_balance", 0.0)
-        
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO emotional_history 
-            (timestamp, emotion_snapshot, dominant_emotion, emotional_balance, trigger_text)
-            VALUES (?, ?, ?, ?, ?)
-        """, (timestamp, json.dumps(emotion_snapshot), dominant, balance, trigger_text))
-        
-        conn.commit()
-        conn.close()
-        
+        state = _validated_state(emotion_snapshot)
+        dominant = max(_EMOTION_FIELDS, key=lambda x: state[x])
+        with closing(conn), conn:
+            conn.execute("""INSERT INTO emotional_history
+                (timestamp,emotion_snapshot,dominant_emotion,emotional_balance,trigger_text,session_id)
+                VALUES (?,?,?,?,?,?)""",
+                (_get_timestamp(), json.dumps(state, allow_nan=False), dominant,
+                 state["emotional_balance"],
+                 _adaptive_storage_text(trigger_text)[:256] if _adaptive_can_store_raw() and trigger_text else None,
+                 _scope_key() or None))
         return True
-        
-    except Exception as e:
-        logger.error(f"Error logging emotional history: {e}")
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        logger.error("Emotional history unavailable: %s", type(exc).__name__)
         return False
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+
 
 
 # ============================================================================
@@ -905,75 +925,44 @@ def log_emotional_history(
 # ============================================================================
 
 def analyze_sentiment(text: str) -> InteractionMetrics:
+    """Deterministic bounded lexicon estimate, not a psychological diagnosis.
+
+    Negation is applied locally to nearby sentiment tokens rather than reversing
+    the polarity of an entire message. A standalone `no` is not negative affect.
     """
-    Perform sentiment analysis on input text.
-    
-    Uses lexicon-based analysis with multiple factors:
-    - Positive/negative keyword counting
-    - Surprise detection
-    - Question detection
-    - Intensity modifiers (very, extremely, etc.)
-    
-    Args:
-        text: Input text to analyze
-    
-    Returns:
-        InteractionMetrics with analysis results
-    """
-    if not text:
-        return InteractionMetrics(timestamp=_get_timestamp())
-    
     words = _tokenize(text)
-    word_count = len(words)
-    
-    if word_count == 0:
+    if not words:
         return InteractionMetrics(timestamp=_get_timestamp())
-    
-    # Count positive and negative words
-    positive_count = sum(1 for w in words if w in POSITIVE_KEYWORDS)
-    negative_count = sum(1 for w in words if w in NEGATIVE_KEYWORDS)
-    surprise_count = sum(1 for w in words if w in SURPRISE_INDICATORS)
-    
-    # Check for questions
-    question_detected = (
-        text.strip().endswith("?") or
-        any(w in QUESTION_INDICATORS for w in words[:3])
-    )
-    
-    # Check for surprise
-    surprise_detected = surprise_count > 0
-    
-    # Intensity modifiers
+    negation_words = {"not", "no", "never", "don't", "doesn't", "didn't", "won't", "can't", "couldn't",
+                      "isn't", "aren't", "wasn't", "weren't", "cannot", "without", "hardly"}
+    positive = 0.0
+    negative = 0.0
     intensifiers = {"very", "extremely", "really", "so", "absolutely", "totally", "completely"}
-    intensity_multiplier = 1.0 + 0.2 * sum(1 for w in words if w in intensifiers)
-    
-    # Negation handling (simple)
-    negations = {"not", "no", "never", "don't", "doesn't", "didn't", "won't", "can't", "couldn't"}
-    negation_count = sum(1 for w in words if w in negations)
-    
-    # Calculate raw sentiment score
-    raw_score = (positive_count - negative_count) * intensity_multiplier
-    
-    # Apply negation (flips sentiment partially)
-    if negation_count > 0:
-        raw_score *= -0.5
-    
-    # Normalize to [-1, 1] using sigmoid-like function
-    sentiment_score = _clamp(raw_score / max(word_count, 1) * 2, -1.0, 1.0)
-    
-    # Calculate emotional intensity (how emotionally charged the text is)
-    emotional_words = positive_count + negative_count + surprise_count
-    emotional_intensity = _clamp(emotional_words / max(word_count, 1) * 3, 0.0, 1.0)
-    
-    return InteractionMetrics(
-        sentiment_score=round(sentiment_score, 4),
-        word_count=word_count,
-        question_detected=question_detected,
-        surprise_detected=surprise_detected,
-        emotional_intensity=round(emotional_intensity, 4),
-        response_quality=0.5,  # Default, updated by feedback
-        timestamp=_get_timestamp()
-    )
+    for i, word in enumerate(words):
+        if word in negation_words or word in {"okay", "fine"}:
+            continue
+        pos = word in POSITIVE_KEYWORDS
+        neg = word in NEGATIVE_KEYWORDS or any(word.startswith(root) for root in ("frustrat", "irritat", "outrag"))
+        if not (pos or neg):
+            continue
+        window = words[max(0, i - 3):i]
+        # Double negation resolves to ordinary polarity.
+        flipped = sum(w in negation_words for w in window) % 2 == 1
+        weight = 1.25 if any(w in intensifiers for w in window) else 1.0
+        if (pos and not flipped) or (neg and flipped):
+            positive += weight
+        else:
+            negative += weight
+    raw = positive - negative
+    score = _clamp(raw * 2.0 / max(1, len(words)), -1.0, 1.0)
+    surprise = any(w in SURPRISE_INDICATORS for w in words)
+    question = (isinstance(text, str) and text.rstrip().endswith("?")) or any(w in QUESTION_INDICATORS for w in words[:3])
+    intensity = _clamp((positive + negative + sum(w in SURPRISE_INDICATORS for w in words)) * 3.0 / len(words))
+    return InteractionMetrics(sentiment_score=round(score, 4), word_count=len(words),
+                              question_detected=question, surprise_detected=surprise,
+                              emotional_intensity=round(intensity, 4), response_quality=0.5,
+                              timestamp=_get_timestamp())
+
 
 
 
@@ -1000,41 +989,21 @@ def _get_hardware_tier_snapshot() -> Dict[str, Any]:
         pass
     return {}
 def determine_system_mode(cpu: float, memory: float) -> SystemMode:
-    """
-    Determine the appropriate system mode based on resource usage.
-
-    v8.0 policy:
-      - SAFE_MODE always forces SAFE
-      - POOR hardware tier (from Globals.hardware_score) biases to LIGHTWEIGHT even if idle,
-        to protect responsiveness on low-end systems.
-      - Otherwise: CPU/MEM thresholds drive Lightweight/Balanced/Enhanced.
-    """
-    # Check for safe mode flag in config
-    if getattr(config, 'SAFE_MODE', False):
+    """Safe deterministic resource mode; missing/invalid metrics fail conservative."""
+    if getattr(config, "SAFE_MODE", False):
         return SystemMode.SAFE
-
-    # Hardware tier gating (best-effort; does not require any model loads)
+    if not all(isinstance(x, (float, int)) and math.isfinite(x) and 0 <= x <= 100 for x in (cpu, memory)):
+        return SystemMode.LIGHTWEIGHT
     snap = _get_hardware_tier_snapshot()
     tier_rating = str(snap.get("tier_rating") or "").strip().lower()
-
-    # Hard policy: POOR tier defaults to lightweight to preserve stability/latency.
-    # User can still override models elsewhere; this only controls adaptive compute intensity.
     if tier_rating == "poor":
-        # If the machine is *very* idle, allow balanced (keeps UX less "flat")
-        if cpu < 20 and memory < 40:
-            return SystemMode.BALANCED
-        return SystemMode.LIGHTWEIGHT
-
-    # High resource usage - lightweight mode
+        return SystemMode.BALANCED if cpu < 20 and memory < 40 else SystemMode.LIGHTWEIGHT
     if cpu > 80 or memory > 85:
         return SystemMode.LIGHTWEIGHT
-
-    # Low resource usage - enhanced mode
     if cpu < 50 and memory < 60:
         return SystemMode.ENHANCED
-
-    # Normal operation
     return SystemMode.BALANCED
+
 
 
 
@@ -1044,260 +1013,125 @@ def determine_system_mode(cpu: float, memory: float) -> SystemMode:
 # ============================================================================
 
 def advanced_emotional_learning(user_input: str) -> Dict[str, Any]:
-    """
-    Perform advanced emotional learning from user input.
-    
-    This function:
-    1. Analyzes sentiment of the input
-    2. Adjusts emotional state based on analysis
-    3. Considers system resources for mode switching
-    4. Applies emotional momentum and decay
-    5. Returns computed emotional metrics
-    
-    Args:
-        user_input: The user's input text
-    
-    Returns:
-        Dictionary containing emotional metrics:
-        - emotional_balance: float (-1.0 to 1.0)
-        - openness: float (0.0 to 1.0)
-        - engagement: float (0.0 to 1.0)
-    """
-    global STATE, _emotion_momentum
-    
-    with _state_lock:
-        # Get system resources
-        cpu, memory = _get_system_resources()
-        STATE["cpu"] = cpu
-        STATE["memory"] = memory
+    """Bounded deterministic tone observation and resource-adaptive presentation.
 
-        # Capture hardware tier snapshot (no model loads)
-        try:
-            _hs = _get_hardware_tier_snapshot()
-            if _hs:
-                STATE["hw_score"] = _hs.get("score", None)
-                STATE["hw_tier_rating"] = _hs.get("tier_rating", None)
-                STATE["hw_tier"] = _hs.get("tier", None)
-        except Exception:
-            pass
-        
-        # Determine system mode
+    Outputs influence presentation and cadence only. Not permission, identity,
+    trust level, or a claim of true sentient emotions.
+    """
+    if not _scope_allowed():
+        raise PermissionError("adaptive request scope required")
+    with _state_lock:
+        state = _current_state()
+        cpu, memory = _get_system_resources()
+        state["cpu"], state["memory"] = cpu, memory
         mode = determine_system_mode(cpu, memory)
-        old_mode = STATE.get("mode", "balanced")
-        STATE["mode"] = mode.value
-        
-        # Log mode changes
+        old_mode = state.get("mode", "balanced")
+        now_monotonic = time.monotonic()
+        # Hysteresis prevents rapid UI mode oscillation and per-request log storms.
+        # Safety escalation and pressure recovery are never delayed.
+        last_change = _safe_float(state.get("_mode_change_monotonic", 0.0), 0.0, 0.0, 1e15)
+        if (mode.value != old_mode and mode in (SystemMode.BALANCED, SystemMode.ENHANCED)
+                and old_mode in (SystemMode.BALANCED.value, SystemMode.ENHANCED.value,
+                                 SystemMode.LIGHTWEIGHT.value)
+                and now_monotonic - last_change < 10.0):
+            mode = SystemMode(old_mode)
+        state["mode"] = mode.value
         if old_mode != mode.value:
-            adjustment = f"Mode changed: {old_mode} -> {mode.value} at {time.ctime()}"
-            if "adjustments" not in STATE:
-                STATE["adjustments"] = []
-            STATE["adjustments"].append(adjustment)
-            STATE["adjustments"] = STATE["adjustments"][-10:]  # Keep last 10
-            logger.info(f"[MODE] {adjustment}")
-        
-        # Analyze sentiment
+            state["_mode_change_monotonic"] = now_monotonic
+            changes = state.setdefault("adjustments", [])
+            changes.append(f"Mode changed: {old_mode} -> {mode.value} at {_get_timestamp()}")
+            del changes[:-10]
+            logger.info("[MODE] %s -> %s", old_mode, mode.value)
         metrics = analyze_sentiment(user_input)
-        
-        # Calculate emotional balance based on mode
-        if mode == SystemMode.LIGHTWEIGHT:
-            # Simplified calculation for high-load situations
-            balance = metrics.sentiment_score
-        elif mode == SystemMode.ENHANCED:
-            # Full calculation with memory consideration
-            balance = metrics.sentiment_score * (1.1 - memory / 100.0)
-        else:
-            # Balanced mode
-            word_factor = min(1.0, len(_tokenize(user_input)) / 20.0)
-            balance = metrics.sentiment_score * (1.0 - memory / 200.0) + word_factor * 0.1
-        
-        # Apply sigmoid normalization and scale to [-1, 1]
-        emotional_balance = (_sigmoid(balance) - 0.5) * 2
-        
-        # Add to momentum buffer
-        _emotion_momentum.append(emotional_balance)
-        
-        # Apply momentum smoothing (weighted average with recent history)
-        if len(_emotion_momentum) > 1:
-            weights = [0.5 ** i for i in range(len(_emotion_momentum))]
-            weights.reverse()
-            momentum_values = list(_emotion_momentum)
-            weighted_sum = sum(w * v for w, v in zip(weights, momentum_values))
-            emotional_balance = weighted_sum / sum(weights)
-        
-        # Calculate openness (willingness to engage)
-        base_openness = 0.6
-        sentiment_factor = (1 + metrics.sentiment_score) / 2  # 0 to 1
-        openness = base_openness + (sentiment_factor - 0.5) * 0.2
-        openness += (random.random() - 0.5) * 0.05  # Small random variation
-        openness = _clamp(openness, 0.3, 0.95)
-        
-        # Calculate engagement (depth of interaction)
-        word_factor = min(1.0, metrics.word_count / 30.0)
-        intensity_factor = metrics.emotional_intensity
-        resource_factor = 1.0 - (cpu / 200.0)  # Reduce engagement under load
-        
-        engagement = 0.4 + (word_factor * 0.3) + (intensity_factor * 0.2)
-        engagement *= resource_factor
-        engagement = _clamp(engagement, 0.2, 1.0)
-        
-        # Update state
-        STATE["emotional_balance"] = round(emotional_balance, 4)
-        STATE["openness"] = round(openness, 4)
-        STATE["engagement"] = round(engagement, 4)
-        STATE["last_updated"] = _get_timestamp()
-        
-        # Update primary emotions based on sentiment
+        balance = metrics.sentiment_score
+        # Resource pressure must NOT change meaning/sentiment.
+        momentum = _momentum_buffer()
+        momentum.append(balance)
+        weighted_sum, weight_sum = 0.0, 0.0
+        for i, value in enumerate(reversed(momentum)):
+            weight = 0.5 ** i
+            weighted_sum += value * weight
+            weight_sum += weight
+        emotional_balance = _clamp(weighted_sum / max(weight_sum, 1e-12), -1.0, 1.0)
+        openness = _clamp(0.6 + metrics.sentiment_score * 0.08, 0.3, 0.95)
+        engagement = _clamp(0.4 + 0.3 * min(metrics.word_count / 30.0, 1.0)
+                            + 0.2 * metrics.emotional_intensity, 0.2, 1.0)
+        # Conserve compute, do not pretend the user's engagement changed.
+        if mode in (SystemMode.LIGHTWEIGHT, SystemMode.SAFE):
+            engagement = min(engagement, 0.7)
+        state.update({"emotional_balance": round(emotional_balance, 4),
+                      "openness": round(openness, 4), "engagement": round(engagement, 4),
+                      "last_updated": _get_timestamp()})
         _update_emotions_from_sentiment(metrics)
-        
-        # Build return metrics
-        emotion_metrics = {
-            "emotional_balance": round(emotional_balance, 4),
-            "openness": round(openness, 4),
-            "engagement": round(engagement, 4),
-            "mode": mode.value,
-            "sentiment_score": metrics.sentiment_score,
-            "word_count": metrics.word_count
-        }
-        
-        # Store in STATE for other modules
-        STATE["emotion"] = emotion_metrics
-        
-        logger.debug(f"[EMOTION] Balance: {emotional_balance:.2f}, "
-                    f"Openness: {openness:.2f}, Engagement: {engagement:.2f}")
-        
-        return emotion_metrics
+        packet = {"emotional_balance": state["emotional_balance"], "openness": state["openness"],
+                  "engagement": state["engagement"], "mode": mode.value,
+                  "sentiment_score": metrics.sentiment_score, "word_count": metrics.word_count}
+        # The ephemeral nested packet is not persisted as user traits.
+        state["emotion"] = copy.deepcopy(packet)
+        return packet
+
 
 
 def _update_emotions_from_sentiment(metrics: InteractionMetrics) -> None:
-    """
-    Update the primary emotions based on interaction metrics.
-    
-    Args:
-        metrics: InteractionMetrics from sentiment analysis
-    """
-    global STATE
-    
-    sentiment = metrics.sentiment_score
-    intensity = metrics.emotional_intensity
-    
-    # Decay factor (emotions naturally decay toward baseline)
-    decay = 0.05
-    
-    # Positive sentiment increases joy, trust, anticipation
+    """Smooth display affect toward baseline; never increase authorization/trust."""
+    state = _current_state()
+    sentiment = _safe_float(metrics.sentiment_score)
+    intensity = _safe_float(metrics.emotional_intensity, 0.0, 0.0, 1.0)
+    base = DEFAULT_EMOTIONS
     if sentiment > 0.1:
-        STATE["joy"] = _clamp(STATE.get("joy", 0.5) + sentiment * intensity * 0.15, 0.0, 1.0)
-        STATE["trust"] = _clamp(STATE.get("trust", 0.3) + sentiment * intensity * 0.10, 0.0, 1.0)
-        STATE["anticipation"] = _clamp(STATE.get("anticipation", 0.3) + sentiment * 0.08, 0.0, 1.0)
-        
-        # Decrease negative emotions
-        STATE["anger"] = _clamp(STATE.get("anger", 0.1) - sentiment * 0.10, 0.0, 1.0)
-        STATE["sadness"] = _clamp(STATE.get("sadness", 0.1) - sentiment * 0.08, 0.0, 1.0)
-        STATE["fear"] = _clamp(STATE.get("fear", 0.2) - sentiment * 0.05, 0.0, 1.0)
-    
-    # Negative sentiment increases anger, sadness, fear
+        state["joy"] = _clamp(state.get("joy", 0.5) + sentiment * intensity * 0.15)
+        state["trust"] = _clamp(state.get("trust", 0.3) + sentiment * intensity * 0.10)
+        state["anticipation"] = _clamp(state.get("anticipation", 0.3) + sentiment * 0.08)
+        for field_name, amount in (("anger", 0.10), ("sadness", 0.08), ("fear", 0.05)):
+            state[field_name] = _clamp(state.get(field_name, base[field_name]) - sentiment * amount)
     elif sentiment < -0.1:
-        neg_strength = abs(sentiment)
-        STATE["anger"] = _clamp(STATE.get("anger", 0.1) + neg_strength * intensity * 0.20, 0.0, 1.0)
-        STATE["sadness"] = _clamp(STATE.get("sadness", 0.1) + neg_strength * intensity * 0.15, 0.0, 1.0)
-        STATE["fear"] = _clamp(STATE.get("fear", 0.2) + neg_strength * intensity * 0.10, 0.0, 1.0)
-        
-        # Decrease positive emotions
-        STATE["joy"] = _clamp(STATE.get("joy", 0.5) - neg_strength * 0.15, 0.0, 1.0)
-        STATE["trust"] = _clamp(STATE.get("trust", 0.3) - neg_strength * 0.10, 0.0, 1.0)
-    
-    # Surprise detection
+        strength = abs(sentiment)
+        for field_name, amount in (("anger", 0.20), ("sadness", 0.15), ("fear", 0.10)):
+            state[field_name] = _clamp(state.get(field_name, base[field_name]) + strength * intensity * amount)
+        state["joy"] = _clamp(state.get("joy", 0.5) - strength * 0.15)
+        state["trust"] = _clamp(state.get("trust", 0.3) - strength * 0.10)
     if metrics.surprise_detected:
-        STATE["surprise"] = _clamp(STATE.get("surprise", 0.1) + 0.25, 0.0, 1.0)
-    else:
-        # Surprise decays faster
-        STATE["surprise"] = _clamp(STATE.get("surprise", 0.1) - decay * 2, 0.0, 1.0)
-    
-    # Apply general decay toward baseline
-    baseline = {
-        "joy": 0.5, "trust": 0.3, "fear": 0.2, "surprise": 0.1,
-        "sadness": 0.1, "disgust": 0.05, "anger": 0.1, "anticipation": 0.3
-    }
-    
-    for emotion, base_value in baseline.items():
-        current = STATE.get(emotion, base_value)
-        # Move toward baseline
-        STATE[emotion] = current + (base_value - current) * decay
+        state["surprise"] = _clamp(state.get("surprise", 0.1) + 0.25)
+    # Stable, interaction-bounded decay: no autonomous loops or sleep delays.
+    for name in _EMOTION_FIELDS:
+        current = _safe_float(state.get(name), base[name], 0.0, 1.0)
+        state[name] = round(_clamp(current + (base[name] - current) * 0.05), 6)
+
 
 
 def simulate_emotion_response(input_type: str = "positive") -> Dict[str, Any]:
-    """
-    Simulate an emotional response based on input type.
-    
-    This function is used for testing and for situations where
-    we need to trigger a specific emotional change.
-    
-    Args:
-        input_type: One of "positive", "negative", or "neutral"
-    
-    Returns:
-        Updated emotional state dictionary
-    """
-    global STATE
-    
-    logger.info(f"[EMOTION SIMULATION] Triggered by input_type: {input_type}")
-    
-    # Load current state from DB
-    emotions = load_emotional_state()
-    
-    if input_type == "positive":
-        # Boost positive emotions
-        emotions["joy"] = _clamp(emotions["joy"] + (1 - emotions["joy"]) * 0.15, 0.0, 1.0)
-        emotions["trust"] = _clamp(emotions["trust"] + (1 - emotions["trust"]) * 0.10, 0.0, 1.0)
-        emotions["anticipation"] = _clamp(emotions["anticipation"] + (1 - emotions["anticipation"]) * 0.08, 0.0, 1.0)
-        
-        # Reduce negative emotions
-        emotions["anger"] = _clamp(emotions["anger"] * 0.90, 0.0, 1.0)
-        emotions["fear"] = _clamp(emotions["fear"] * 0.92, 0.0, 1.0)
-        emotions["sadness"] = _clamp(emotions["sadness"] * 0.90, 0.0, 1.0)
-        
-        emotions["emotional_balance"] = _clamp(emotions.get("emotional_balance", 0) + 0.1, -1.0, 1.0)
-    
-    elif input_type == "negative":
-        # Boost negative emotions
-        emotions["anger"] = _clamp(emotions["anger"] + (1 - emotions["anger"]) * 0.25, 0.0, 1.0)
-        emotions["fear"] = _clamp(emotions["fear"] + (1 - emotions["fear"]) * 0.20, 0.0, 1.0)
-        emotions["sadness"] = _clamp(emotions["sadness"] + (1 - emotions["sadness"]) * 0.18, 0.0, 1.0)
-        
-        # Reduce positive emotions
-        emotions["joy"] = _clamp(emotions["joy"] * 0.85, 0.0, 1.0)
-        emotions["trust"] = _clamp(emotions["trust"] * 0.90, 0.0, 1.0)
-        
-        emotions["emotional_balance"] = _clamp(emotions.get("emotional_balance", 0) - 0.15, -1.0, 1.0)
-    
-    elif input_type == "neutral":
-        # Small surprise boost for engagement
-        emotions["surprise"] = _clamp(emotions["surprise"] + (1 - emotions["surprise"]) * 0.05, 0.0, 1.0)
-        
-        # Slight decay toward baseline
-        for key in ["joy", "anger", "fear", "sadness", "trust"]:
-            baseline = 0.3 if key in ("joy", "trust") else 0.1
-            emotions[key] = emotions[key] + (baseline - emotions[key]) * 0.05
-    
-    else:
-        logger.warning(f"Unknown emotion input type: {input_type}")
-    
-    # Update timestamp
-    emotions["last_updated"] = _get_timestamp()
-    
-    # Save to database
-    save_emotional_state(emotions)
-    
-    # Log to history
-    log_emotional_history(emotions, f"simulation:{input_type}")
-    
-    # Update global state
+    """Explicit simulation for presentation/tests; persists to active scope only."""
+    if not _scope_allowed():
+        raise PermissionError("adaptive request scope required")
+    if input_type not in {"positive", "negative", "neutral"}:
+        logger.warning("Unknown emotion simulation type")
+        return get_current_emotional_state()
     with _state_lock:
-        STATE = emotions.copy()
-    
-    logger.debug(f"[EMOTION] After {input_type} simulation: joy={emotions['joy']:.2f}, "
-                f"anger={emotions['anger']:.2f}, trust={emotions['trust']:.2f}")
-    
-    return emotions
+        state = _validated_state(load_emotional_state())
+        if input_type == "positive":
+            for name, strength in (("joy", 0.15), ("trust", 0.10), ("anticipation", 0.08)):
+                state[name] = _clamp(state[name] + (1 - state[name]) * strength)
+            for name, factor in (("anger", 0.90), ("fear", 0.92), ("sadness", 0.90)):
+                state[name] = _clamp(state[name] * factor)
+            state["emotional_balance"] = _clamp(state["emotional_balance"] + 0.1, -1, 1)
+        elif input_type == "negative":
+            for name, factor in (("anger", 0.25), ("fear", 0.20), ("sadness", 0.18)):
+                state[name] = _clamp(state[name] + (1 - state[name]) * factor)
+            for name, factor in (("joy", 0.85), ("trust", 0.90)):
+                state[name] = _clamp(state[name] * factor)
+            state["emotional_balance"] = _clamp(state["emotional_balance"] - 0.15, -1, 1)
+        else:
+            state["surprise"] = _clamp(state["surprise"] + (1 - state["surprise"]) * 0.05)
+            for name in ("joy", "anger", "fear", "sadness", "trust"):
+                state[name] = _clamp(state[name] + (DEFAULT_EMOTIONS[name] - state[name]) * 0.05)
+        state["last_updated"] = _get_timestamp()
+        _replace_current_state(state)
+        snapshot = copy.deepcopy(state)
+    if not save_emotional_state(snapshot):
+        logger.warning("Emotion simulation not persisted")
+    log_emotional_history(snapshot, "simulation:" + input_type)
+    return snapshot
+
 
 
 # ============================================================================
@@ -1305,123 +1139,50 @@ def simulate_emotion_response(input_type: str = "positive") -> Dict[str, Any]:
 # ============================================================================
 
 def update_personality(user_input: str, ai_response: str) -> Dict[str, Any]:
-    """
-    Update the adaptive personality based on an interaction.
-    
-    This is the main entry point for the adaptive system, called after
-    each user interaction. It:
-    1. Logs the interaction to the database
-    2. Performs emotional learning
-    3. Calculates reinforcement factor
-    4. Persists the emotional state
-    
-    Args:
-        user_input: The user's input text
-        ai_response: The AI's response text
-    
-    Returns:
-        Dictionary containing emotional metrics
-    """
-    global STATE
-    
-    # Perform emotional learning
+    """Observed adaptive signals only; feedback is learned explicitly elsewhere."""
     metrics = advanced_emotional_learning(user_input)
-    
-    # Calculate reinforcement factor (for future learning)
-    reinforcement_factor = 0.01 * (1 + abs(metrics.get("emotional_balance", 0)))
-    
-    # Log interaction to database
-    sentiment_metrics = analyze_sentiment(user_input)
-    success = log_interaction_to_db(
-        user_input=user_input,
-        ai_response=ai_response,
-        intent=metrics.get("intent", "unknown"),
-        sentiment_score=sentiment_metrics.sentiment_score,
-        emotional_state=STATE.copy()
-    )
-    
-    if success:
-        logger.info(f"[ADAPTIVE] Interaction logged. Reinforcement: {reinforcement_factor:.4f}")
-    else:
-        logger.warning("[ADAPTIVE] Failed to log interaction to database")
-    
-    # Add to in-memory buffer
-    _interaction_buffer.append({
-        "timestamp": _get_timestamp(),
-        "user_input": user_input[:200],  # Truncate for memory
-        "sentiment": sentiment_metrics.sentiment_score,
-        "metrics": metrics
-    })
-    
-    # Persist emotional state
-    try:
-        save_emotional_state(STATE)
-        log_emotional_history(STATE.copy(), user_input[:100])
-    except Exception as e:
-        logger.warning(f"Failed to persist emotional state: {e}")
-    
+    sentiment = _safe_float(metrics.get("sentiment_score"))
+    snapshot = get_current_emotional_state()
+    saved = log_interaction_to_db(user_input, ai_response, sentiment_score=sentiment,
+                                  emotional_state=snapshot, session_id=_scope_key() or None)
+    with _state_lock:
+        _interaction_history_buffer().append({
+            "timestamp": _get_timestamp(), "sentiment": sentiment,
+            "word_count": int(metrics.get("word_count", 0)),
+            "metrics": copy.deepcopy(metrics)})
+    if not save_emotional_state(snapshot):
+        logger.warning("Adaptive emotional snapshot not persisted")
+    log_emotional_history(snapshot, user_input)
+    if not saved and getattr(config, "ADAPTIVE_ENABLE_INTERACTION_LOGGING", True):
+        logger.warning("Adaptive interaction log not persisted")
     return metrics
 
 
+
 def self_update_personality() -> Dict[str, Any]:
-    """
-    Perform a self-assessment and update based on interaction history.
-    
-    This function analyzes recent interactions to:
-    1. Calculate engagement level based on interaction count
-    2. Adjust baseline emotional values
-    3. Learn patterns from history
-    
-    Returns:
-        Dictionary with update status and metrics
+    """Evaluate bounded historical signals without silently mutating personality.
+
+    User sentiment or total conversation count does not constitute feedback or
+    permission to change durable personality preferences.
     """
     try:
-        # Get interaction count
-        total_interactions = get_interaction_count()
-        
-        # Calculate engagement using tanh (saturates at high counts)
-        if _HAS_NUMPY:
-            engagement = min(1.0, float(np.tanh(total_interactions / 100.0)))
-        else:
-            engagement = min(1.0, math.tanh(total_interactions / 100.0))
-        
-        # Get recent interactions for pattern analysis
-        recent = get_recent_interactions(limit=20)
-        
-        # Calculate average sentiment from recent interactions
-        if recent:
-            avg_sentiment = sum(r.get("sentiment_score", 0) for r in recent) / len(recent)
-        else:
-            avg_sentiment = 0.0
-        
-        # Update state
+        total = get_interaction_count()
+        recent = get_recent_interactions(20)
+        sentiments = [_safe_float(row.get("sentiment_score")) for row in recent]
+        average = sum(sentiments) / len(sentiments) if sentiments else 0.0
         with _state_lock:
-            STATE["engagement"] = round(engagement, 4)
-            
-            # Adjust openness based on sentiment trend
-            if avg_sentiment > 0.1:
-                STATE["openness"] = _clamp(STATE.get("openness", 0.6) + 0.02, 0.3, 0.95)
-            elif avg_sentiment < -0.1:
-                STATE["openness"] = _clamp(STATE.get("openness", 0.6) - 0.02, 0.3, 0.95)
-        
-        logger.info(f"[SELF-UPDATE] Engagement: {engagement:.2f}, "
-                   f"Avg sentiment: {avg_sentiment:.2f}, "
-                   f"Total interactions: {total_interactions}")
-        
-        return {
-            "status": "ok",
-            "engagement": round(engagement, 4),
-            "total_interactions": total_interactions,
-            "avg_sentiment": round(avg_sentiment, 4)
-        }
-        
-    except Exception as e:
-        logger.error(f"Self-update failed: {e}")
-        return {
-            "status": "error",
-            "engagement": 0.0,
-            "error": str(e)
-        }
+            engagement = _safe_float(_current_state().get("engagement"), 0.4, 0.0, 1.0)
+        feedback = get_adaptive_feedback_summary()
+        return {"status": "ok", "engagement": round(engagement, 4),
+                "total_interactions": total, "avg_sentiment": round(average, 4),
+                "explicit_feedback_count": feedback.get("count", 0),
+                "average_response_quality": feedback.get("average_quality"),
+                "preferences_mutated": False, "execution_authority": False}
+    except Exception as exc:
+        logger.warning("Adaptive assessment failed: %s", type(exc).__name__)
+        return {"status": "error", "engagement": 0.0, "error": type(exc).__name__,
+                "execution_authority": False}
+
 
 
 # ============================================================================
@@ -1438,7 +1199,7 @@ def emotion_label_from_state(state: Dict = None) -> str:
     Returns:
         String label: "angry", "happy", "sad", "surprised", "trusting", "neutral"
     """
-    s = state or STATE or {}
+    s = state if isinstance(state, dict) else get_current_emotional_state()
     
     try:
         if s.get("anger", 0) >= 0.60:
@@ -1467,148 +1228,90 @@ def emotion_label_from_state(state: Dict = None) -> str:
 
 
 def get_current_emotional_state() -> Dict[str, Any]:
-    """
-    Get a copy of the current emotional state.
-    Thread-safe accessor for external modules.
-    
-    Returns:
-        Copy of the current STATE dictionary
-    """
+    """Deep defensive copy of the active scope's adaptive runtime state."""
+    if not _scope_allowed():
+        return copy.deepcopy(DEFAULT_EMOTIONS)
     with _state_lock:
-        return STATE.copy()
+        return copy.deepcopy(_current_state())
 
 
-def get_emotional_metrics() -> Dict[str, float]:
-    """
-    Get simplified emotional metrics for display/API.
-    
-    Returns:
-        Dictionary with key metrics:
-        - emotional_balance
-        - openness
-        - engagement
-        - dominant_emotion
-        - intensity
-    """
-    with _state_lock:
-        state = STATE.copy()
-    
-    # Find dominant emotion
-    emotions = {k: state.get(k, 0) for k in 
-                ["joy", "trust", "fear", "surprise", "sadness", "disgust", "anger", "anticipation"]}
-    dominant_name, dominant_value = max(emotions.items(), key=lambda x: x[1])
-    
-    return {
-        "emotional_balance": state.get("emotional_balance", 0.0),
-        "openness": state.get("openness", 0.6),
-        "engagement": state.get("engagement", 0.4),
-        "dominant_emotion": dominant_name,
-        "intensity": dominant_value,
-        "mode": state.get("mode", "balanced"),
-        "label": emotion_label_from_state(state)
-    }
+
+def get_emotional_metrics() -> Dict[str, Any]:
+    """Compatibility display metrics with state-bound safe finite values."""
+    state = get_current_emotional_state()
+    emotions = {name: _safe_float(state.get(name), DEFAULT_EMOTIONS[name], 0.0, 1.0)
+                for name in _EMOTION_FIELDS}
+    dominant_name = max(emotions, key=emotions.get)
+    return {"emotional_balance": _safe_float(state.get("emotional_balance")),
+            "openness": _safe_float(state.get("openness"), 0.6, 0, 1),
+            "engagement": _safe_float(state.get("engagement"), 0.4, 0, 1),
+            "dominant_emotion": dominant_name, "intensity": emotions[dominant_name],
+            "mode": state.get("mode", "balanced"), "label": emotion_label_from_state(state)}
+
 
 
 # ---------------------------------------------------------------------------
 # RHYTHM COGNITION BRIDGE - v9.0.0
 # ---------------------------------------------------------------------------
 def get_adaptive_rhythm_basis(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Read-only rhythm basis: tempo evidence, never urgency-based authority.
+
+    Caller-supplied trusted emergency flags are distinct from lexical urgency.
+    An authenticated request scope must be active for multi-user state.
     """
-    Export a compact emotional/resource basis for SarahMemoryRhythmCognition.
+    ctx = dict(context or {}) if isinstance(context, dict) else {}
+    metrics = get_emotional_metrics()
+    state = get_current_emotional_state()
+    dominant = str(metrics.get("dominant_emotion") or "neutral")
+    intensity = _safe_float(metrics.get("intensity"), 0.0, 0.0, 1.0)
+    text = str(ctx.get("text") or ctx.get("user_text") or ctx.get("command_text") or "")
+    words = set(_tokenize(text))
+    normalized = text.strip().lower()
+    educational = normalized.startswith(("what is ", "what are ", "explain ",
+                                          "define ", "describe ", "how does ",
+                                          "tell me about "))
+    explicit_urgency = {"urgent", "asap", "immediately", "emergency", "hurry"}
+    hazard_terms = {"danger", "fire", "collision"}
+    urgency = 0.68 if words.intersection(explicit_urgency) and not educational else 0.0
+    if not educational and words.intersection(hazard_terms):
+        urgency = max(urgency, 0.55)
+    # Do not infer a real emergency from emotional presentation labels.
+    if any(ctx.get(name) is True for name in ("emergency", "human_risk", "person_at_risk")):
+        urgency = max(urgency, 0.92)
+    cpu, memory = _get_system_resources()
+    pressure = max(cpu, memory) if min(cpu, memory) >= 0 else -1
+    pressure_tier = ("unknown" if pressure < 0 else "critical" if pressure >= 88 else
+                     "high" if pressure >= 75 else "moderate" if pressure >= 55 else "normal")
+    resource = {"cpu": cpu if cpu >= 0 else None, "memory": memory if memory >= 0 else None,
+                "pressure_tier": pressure_tier}
+    return {"source": "SarahMemoryAdaptive.get_adaptive_rhythm_basis",
+            "dominant_emotion": dominant, "label": metrics.get("label") or dominant,
+            "emotional_balance": metrics.get("emotional_balance", state.get("emotional_balance", 0.0)),
+            "openness": metrics.get("openness", state.get("openness", 0.6)),
+            "engagement": metrics.get("engagement", state.get("engagement", 0.4)),
+            "intensity": intensity, "adaptive_mode": metrics.get("mode", state.get("mode", "balanced")),
+            "urgency_score": round(urgency, 4), "resource": resource,
+            "execution_authority": False,
+            "notes": ["Adaptive presentation informs cadence only.",
+                      "OperatorCore, AssuranceGate and safety governance remain required for actions."]}
 
-    This is a read-only bridge. It does not authorize actions, does not change
-    emotional state, and does not directly control hardware. RhythmCognition uses
-    this packet to determine cadence, anti-thrash budgets, and urgency pacing.
-    """
-    ctx = dict(context or {})
-    try:
-        metrics = get_emotional_metrics()
-    except Exception:
-        metrics = {}
-    try:
-        state = get_current_emotional_state()
-    except Exception:
-        state = {}
-
-    dominant = str(metrics.get("dominant_emotion") or metrics.get("label") or "neutral")
-    intensity = 0.0
-    try:
-        intensity = float(metrics.get("intensity", 0.0) or 0.0)
-    except Exception:
-        intensity = 0.0
-
-    urgency = 0.0
-    try:
-        text = str(ctx.get("text") or ctx.get("user_text") or ctx.get("command_text") or "").lower()
-        urgent_terms = ("hurry", "urgent", "asap", "immediately", "emergency", "danger", "fire", "medical", "collision", "run", "faster", "help")
-        if any(term in text for term in urgent_terms):
-            urgency = max(urgency, 0.68)
-        if ctx.get("emergency") or ctx.get("human_risk") or ctx.get("person_at_risk"):
-            urgency = max(urgency, 0.92)
-        if dominant.lower() in ("fear", "anger", "surprise", "anticipation") and intensity >= 0.55:
-            urgency = max(urgency, min(1.0, 0.45 + intensity * 0.45))
-    except Exception:
-        urgency = 0.0
-
-    resource = {
-        "cpu": 0.0,
-        "memory": 0.0,
-        "pressure_tier": "unknown",
-    }
-    try:
-        if _HAS_PSUTIL and psutil is not None:
-            resource["cpu"] = round(float(psutil.cpu_percent(interval=None)), 2)
-            resource["memory"] = round(float(psutil.virtual_memory().percent), 2)
-            pressure = max(float(resource["cpu"]), float(resource["memory"]))
-            if pressure >= 88:
-                resource["pressure_tier"] = "critical"
-            elif pressure >= 75:
-                resource["pressure_tier"] = "high"
-            elif pressure >= 55:
-                resource["pressure_tier"] = "moderate"
-            else:
-                resource["pressure_tier"] = "normal"
-    except Exception:
-        pass
-
-    return {
-        "source": "SarahMemoryAdaptive.get_adaptive_rhythm_basis",
-        "dominant_emotion": dominant,
-        "label": metrics.get("label") or dominant,
-        "emotional_balance": metrics.get("emotional_balance", state.get("emotional_balance", 0.0)),
-        "openness": metrics.get("openness", state.get("openness", 0.6)),
-        "engagement": metrics.get("engagement", state.get("engagement", 0.4)),
-        "intensity": max(0.0, min(1.0, intensity)),
-        "adaptive_mode": metrics.get("mode", state.get("mode", "balanced")),
-        "urgency_score": round(max(0.0, min(1.0, urgency)), 4),
-        "resource": resource,
-        "execution_authority": False,
-        "notes": [
-            "Adaptive emotion informs cadence only.",
-            "SMGET/SafetyPolicies/OperatorCore remain required for action authority.",
-        ],
-    }
 
 
 def reset_emotional_state() -> Dict[str, Any]:
-    """
-    Reset emotional state to defaults.
-    Useful for testing or recovering from corrupted state.
-    
-    Returns:
-        The reset state dictionary
-    """
-    global STATE
-    
+    """Reset only the active scope's presentation state, with explicit persistence."""
+    if not _scope_allowed():
+        raise PermissionError("adaptive request scope required")
     with _state_lock:
-        STATE = DEFAULT_EMOTIONS.copy()
-        STATE["last_updated"] = _get_timestamp()
-        STATE["adjustments"] = ["Reset to defaults at " + time.ctime()]
-    
-    save_emotional_state(STATE)
-    logger.info("[ADAPTIVE] Emotional state reset to defaults")
-    
-    return STATE.copy()
+        state = copy.deepcopy(DEFAULT_EMOTIONS)
+        state["last_updated"] = _get_timestamp()
+        state["adjustments"] = ["Reset to defaults at " + state["last_updated"]]
+        _replace_current_state(state)
+        _momentum_buffer().clear()
+        _interaction_history_buffer().clear()
+    if not save_emotional_state(state):
+        logger.warning("Adaptive reset persisted only in memory")
+    return copy.deepcopy(state)
+
 
 
 # ============================================================================
@@ -1616,115 +1319,206 @@ def reset_emotional_state() -> Dict[str, Any]:
 # ============================================================================
 
 def learn_user_preference(key: str, value: str, confidence: float = 0.5) -> bool:
-    """
-    Learn or update a user preference.
-    
-    Args:
-        key: Preference identifier (e.g., "verbosity", "humor_level")
-        value: Preference value
-        confidence: Confidence level for this preference (0.0 to 1.0)
-    
-    Returns:
-        True if saved successfully
-    """
-    try:
-        conn = connect_memory_db()
-        if not conn:
-            return False
-        
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO user_preferences (preference_key, preference_value, confidence, last_updated)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(preference_key)
-            DO UPDATE SET 
-                preference_value = excluded.preference_value,
-                confidence = MAX(confidence, excluded.confidence),
-                last_updated = excluded.last_updated
-        """, (key, value, confidence, _get_timestamp()))
-        
-        conn.commit()
-        conn.close()
-        
-        logger.debug(f"[PREF] Learned preference: {key}={value} (confidence: {confidence:.2f})")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error learning preference: {e}")
+    """Persist an EXPLICIT supplied preference; infer nothing from sentiment."""
+    if not _scope_allowed() or not isinstance(key, str) or not key.strip() or len(key) > 128 or not isinstance(value, str) or len(value) > 2048:
         return False
+    confidence = _safe_float(confidence, 0.5, 0.0, 1.0)
+    conn = connect_memory_db()
+    if conn is None:
+        return False
+    try:
+        with closing(conn), conn:
+            if _scope_key():
+                conn.execute("""INSERT INTO adaptive_scoped_preferences
+                    (scope_id,preference_key,preference_value,confidence,last_updated)
+                    VALUES(?,?,?,?,?) ON CONFLICT(scope_id,preference_key) DO UPDATE SET
+                    preference_value=excluded.preference_value,
+                    confidence=CASE WHEN preference_value=excluded.preference_value THEN
+                        MAX(confidence,excluded.confidence) ELSE excluded.confidence END,
+                    last_updated=excluded.last_updated""",
+                    (_scope_key(), key, value, confidence, _get_timestamp()))
+            else:
+                # Legacy schema may not enforce unique preference_key.
+                existing = conn.execute("SELECT preference_value,confidence FROM user_preferences WHERE preference_key=? LIMIT 1", (key,)).fetchone()
+                if existing is not None:
+                    certainty = max(_safe_float(existing[1], 0.0, 0, 1), confidence) if existing[0] == value else confidence
+                    conn.execute("""UPDATE user_preferences SET preference_value=?,confidence=?,last_updated=? WHERE preference_key=?""",
+                                 (value, certainty, _get_timestamp(), key))
+                else:
+                    conn.execute("""INSERT INTO user_preferences
+                        (preference_key,preference_value,confidence,last_updated) VALUES(?,?,?,?)""",
+                        (key, value, confidence, _get_timestamp()))
+        return True
+    except sqlite3.Error as exc:
+        logger.warning("Preference update failed: %s", type(exc).__name__)
+        return False
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+
 
 
 def get_user_preference(key: str, default: str = None) -> Optional[str]:
-    """
-    Retrieve a learned user preference.
-    
-    Args:
-        key: Preference identifier
-        default: Default value if not found
-    
-    Returns:
-        Preference value or default
-    """
+    """Look up a preference exclusively within the current trust scope."""
+    if not _scope_allowed():
+        return default
+    conn = connect_memory_db()
+    if conn is None:
+        return default
     try:
-        conn = connect_memory_db()
-        if not conn:
-            return default
-        
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT preference_value, confidence 
-            FROM user_preferences 
-            WHERE preference_key = ?
-        """, (key,))
-        
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return row["preference_value"]
+        with closing(conn):
+            if _scope_key():
+                row = conn.execute("""SELECT preference_value FROM adaptive_scoped_preferences
+                    WHERE scope_id=? AND preference_key=?""", (_scope_key(), key)).fetchone()
+            else:
+                row = conn.execute("SELECT preference_value FROM user_preferences WHERE preference_key=?", (key,)).fetchone()
+        return row[0] if row else default
+    except sqlite3.Error:
         return default
-        
-    except Exception as e:
-        logger.error(f"Error getting preference: {e}")
-        return default
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+
 
 
 def get_all_preferences() -> Dict[str, Any]:
-    """
-    Get all learned user preferences.
-    
-    Returns:
-        Dictionary of preference_key -> {value, confidence}
-    """
-    try:
-        conn = connect_memory_db()
-        if not conn:
-            return {}
-        
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT preference_key, preference_value, confidence 
-            FROM user_preferences
-        """)
-        
-        prefs = {}
-        for row in cursor.fetchall():
-            prefs[row["preference_key"]] = {
-                "value": row["preference_value"],
-                "confidence": row["confidence"]
-            }
-        
-        conn.close()
-        return prefs
-        
-    except Exception as e:
-        logger.error(f"Error getting preferences: {e}")
+    """Return bounded preferences of the current trust scope only."""
+    if not _scope_allowed():
         return {}
+    conn = connect_memory_db()
+    if conn is None:
+        return {}
+    try:
+        with closing(conn):
+            if _scope_key():
+                rows = conn.execute("""SELECT preference_key,preference_value,confidence FROM adaptive_scoped_preferences
+                    WHERE scope_id=? ORDER BY preference_key LIMIT 500""", (_scope_key(),)).fetchall()
+            else:
+                rows = conn.execute("SELECT preference_key,preference_value,confidence FROM user_preferences ORDER BY preference_key LIMIT 500").fetchall()
+        return {row[0]: {"value": row[1], "confidence": _safe_float(row[2], 0.5, 0, 1)} for row in rows}
+    except sqlite3.Error:
+        return {}
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+
+
+
+
+
+def record_adaptive_feedback(quality: float, *, source: str = "user", note: str = "") -> Dict[str, Any]:
+    """Record authenticated explicit feedback; no automatic identity mutation.
+
+    API callers are responsible for verifying that `source` represents an
+    authenticated owner/user. Returns only a receipt and bounded quality.
+    """
+    if not _scope_allowed() or source != "user":
+        return {"ok": False, "reason": "feedback_requires_verified_user", "execution_authority": False}
+    if not isinstance(quality, (float, int)) or not math.isfinite(quality) or not 0 <= quality <= 1:
+        return {"ok": False, "reason": "invalid_feedback_score", "execution_authority": False}
+    conn = connect_memory_db()
+    if conn is None:
+        return {"ok": False, "reason": "persistence_unavailable", "execution_authority": False}
+    try:
+        with closing(conn), conn:
+            cursor = conn.execute("""INSERT INTO interaction_metrics
+                (timestamp,word_count,sentiment_score,emotional_intensity,response_quality,mode,session_id)
+                VALUES(?,?,?,?,?,?,?)""",
+                (_get_timestamp(), 0, 0.0, 0.0, round(quality, 4), "explicit_user_feedback", _scope_key() or None))
+            receipt_id = int(cursor.lastrowid)
+        return {"ok": True, "quality": round(quality, 4), "feedback_id": receipt_id,
+                "scope_bound": bool(_scope_key()),
+                "preferences_mutated": False, "execution_authority": False}
+    except sqlite3.Error:
+        return {"ok": False, "reason": "persistence_error", "execution_authority": False}
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
 
 
 # ============================================================================
 # GCAIOS COMPUTE PASSPORT AND ADAPTIVE COMPUTE FABRIC
 # ============================================================================
+
+def get_adaptive_response_profile(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Explainable advisory style selection, from explicit persisted preferences.
+
+    No inferred sentiment is ever promoted into durable user identity. Time-of-
+    day suggestions require an explicit system setting and never affect safety.
+    """
+    if not _scope_allowed():
+        return {"ok": False, "reason": "scope_required", "execution_authority": False}
+    ctx = dict(context or {}) if isinstance(context, dict) else {}
+    prefs = get_all_preferences()
+    defaults = {"verbosity": "balanced", "formality": "neutral", "humor_level": "moderate"}
+    approved = {
+        "verbosity": {"brief", "balanced", "detailed"},
+        "formality": {"casual", "neutral", "formal"},
+        "humor_level": {"none", "low", "moderate", "high"},
+    }
+    style = {}
+    confidence = {}
+    for key, fallback in defaults.items():
+        entry = prefs.get(key, {})
+        value = str(entry.get("value", fallback)).strip().lower()
+        style[key] = value if value in approved[key] else fallback
+        confidence[key] = _safe_float(entry.get("confidence", 0.0), 0.0, 0.0, 1.0) if value in approved[key] else 0.0
+    hr = datetime.datetime.now().hour
+    daypart = "morning" if 5 <= hr < 12 else "afternoon" if 12 <= hr < 17 else "evening" if 17 <= hr < 22 else "night"
+    if getattr(config, "ADAPTIVE_TIME_OF_DAY_ENABLED", False):
+        # Changes only *suggested* presentation energy, not scope or authority.
+        energy = "soft" if daypart == "night" else "normal"
+        time_adjustment = True
+    else:
+        energy = "normal"
+        time_adjustment = False
+    state = get_current_emotional_state()
+    return {"ok": True, "style": style, "confidence": confidence,
+            "daypart": daypart, "time_adjustment_enabled": time_adjustment,
+            "presentation_energy": energy, "adaptive_mode": state.get("mode", "balanced"),
+            "source": "explicit_preferences_or_defaults",
+            "scope_bound": bool(_scope_key()), "execution_authority": False}
+
+
+def get_adaptive_feedback_summary(limit: int = 20) -> Dict[str, Any]:
+    """Aggregate explicit quality feedback; never confuse sentiment with reward."""
+    if not _scope_allowed():
+        return {"ok": False, "reason": "scope_required", "execution_authority": False}
+    conn = connect_memory_db()
+    if conn is None:
+        return {"ok": False, "reason": "database_unavailable", "execution_authority": False}
+    try:
+        cap = max(1, min(100, int(limit)))
+        with closing(conn):
+            if _scope_key():
+                rows = conn.execute("""SELECT response_quality FROM interaction_metrics
+                    WHERE mode='explicit_user_feedback' AND session_id=? ORDER BY rowid DESC LIMIT ?""",
+                    (_scope_key(), cap)).fetchall()
+            else:
+                rows = conn.execute("""SELECT response_quality FROM interaction_metrics
+                    WHERE mode='explicit_user_feedback' AND session_id IS NULL ORDER BY rowid DESC LIMIT ?""",
+                    (cap,)).fetchall()
+        qualities = [_safe_float(row[0], 0.0, 0.0, 1.0) for row in rows]
+        return {"ok": True, "count": len(qualities),
+                "average_quality": round(sum(qualities)/len(qualities), 4) if qualities else None,
+                "last_quality": qualities[0] if qualities else None,
+                "explicit_user_feedback_only": True, "execution_authority": False}
+    except (ValueError, sqlite3.Error) as exc:
+        return {"ok": False, "reason": type(exc).__name__, "execution_authority": False}
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+
 
 def _compute_number(value: Any, default: float = 0.0) -> float:
     try:
@@ -1736,9 +1530,11 @@ def _compute_number(value: Any, default: float = 0.0) -> float:
 
 def _compute_int(value: Any, default: int = 0) -> int:
     try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
+        number = float(value)
+        return max(0, min(4096, int(number))) if math.isfinite(number) else default
+    except (TypeError, ValueError, OverflowError):
         return default
+
 
 
 def _local_compute_metrics(context: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, Any], List[str]]:
@@ -1800,14 +1596,21 @@ def build_compute_passport(context: Optional[Dict[str, Any]] = None) -> Dict[str
     identify the owner, arm hardware, select an executor, or mutate clocks.
     """
     ctx = dict(context or {}) if isinstance(context, dict) else {}
-    metrics, sources = _local_compute_metrics(ctx)
+    # Only locally measured evidence enters a real machine-capacity passport.
+    # Caller-supplied hardware metrics remain unverified and are not applied.
+    metrics, sources = _local_compute_metrics({})
+    verified_metrics = metrics
+    supplied = ctx.get("hardware_metrics") if isinstance(ctx.get("hardware_metrics"), dict) else {}
+    unverified_keys = [k for k in _COMPUTE_METRIC_KEYS if metrics.get(k) is None and supplied.get(k) is not None]
+    if unverified_keys:
+        sources.append("unverified_runtime_context_excluded")
     score: Optional[float] = None
     tier = "unknown"
     tier_rating = "Unknown"
     try:
         score_fn = getattr(config, "hardware_score", None)
         if callable(score_fn):
-            scored = score_fn(metrics) or {}
+            scored = score_fn(verified_metrics) or {}
             if isinstance(scored, dict):
                 score = _compute_number(scored.get("score"), 0.0)
                 tier = str(scored.get("tier") or "unknown").strip().lower()
@@ -1826,25 +1629,29 @@ def build_compute_passport(context: Optional[Dict[str, Any]] = None) -> Dict[str
     operating_system = str(platform.system() or "unknown").strip()
 
     evidence = {
-        "cpu_topology": logical_cpu > 0,
-        "memory_capacity": ram_total_mb > 0,
-        "storage_capacity": disk_free_gb >= 0,
+        "cpu_topology": _compute_int(verified_metrics.get("cpu_count")) > 0,
+        "memory_capacity": _compute_number(verified_metrics.get("ram_total_mb")) > 0,
+        "storage_capacity": verified_metrics.get("disk_free_gb") is not None,
         "architecture": architecture not in {"", "unknown"},
-        "accelerator_capacity": vram_total_mb > 0,
-        "live_pressure": metrics.get("cpu_pct") is not None and metrics.get("ram_avail_mb") is not None,
+        "accelerator_capacity": _compute_number(verified_metrics.get("gpu_vram_total_mb")) > 0,
+        "live_pressure": verified_metrics.get("cpu_pct") is not None and verified_metrics.get("ram_avail_mb") is not None,
     }
     essential = ("cpu_topology", "memory_capacity", "storage_capacity", "architecture")
     missing = [name for name, present in evidence.items() if not present]
     confidence = round(sum(1.0 for present in evidence.values() if present) / len(evidence), 4)
     unknown_machine = any(not evidence[name] for name in essential)
 
-    if unknown_machine or ram_total_mb < 4096 or logical_cpu < 2:
+    # Eligibility is decided from locally observed telemetry, not caller context.
+    trusted_ram = _compute_number(verified_metrics.get("ram_total_mb"))
+    trusted_cpu = _compute_int(verified_metrics.get("cpu_count"))
+    trusted_vram = _compute_number(verified_metrics.get("gpu_vram_total_mb"))
+    if unknown_machine or trusted_ram < 4096 or trusted_cpu < 2:
         machine_class = "survival"
-    elif ram_total_mb < 8192 or logical_cpu < 4:
+    elif trusted_ram < 8192 or trusted_cpu < 4:
         machine_class = "constrained"
-    elif vram_total_mb >= 8192 and ram_total_mb >= 16384 and logical_cpu >= 6:
+    elif trusted_vram >= 8192 and trusted_ram >= 16384 and trusted_cpu >= 6:
         machine_class = "accelerated"
-    elif ram_total_mb >= 16384 and logical_cpu >= 4:
+    elif trusted_ram >= 16384 and trusted_cpu >= 4:
         machine_class = "balanced"
     else:
         machine_class = "standard"
@@ -1852,9 +1659,9 @@ def build_compute_passport(context: Optional[Dict[str, Any]] = None) -> Dict[str
     fingerprint_basis = {
         "os": operating_system.lower(),
         "arch": architecture,
-        "cpu_bucket": min(64, logical_cpu),
-        "ram_bucket_gb": int(max(0.0, ram_total_mb) // 4096) * 4,
-        "vram_bucket_gb": int(max(0.0, vram_total_mb) // 1024),
+        "cpu_bucket": min(64, trusted_cpu),
+        "ram_bucket_gb": int(max(0.0, trusted_ram) // 4096) * 4,
+        "vram_bucket_gb": int(max(0.0, trusted_vram) // 1024),
     }
     passport_id = "compute_" + hashlib.sha256(
         json.dumps(fingerprint_basis, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1894,6 +1701,7 @@ def build_compute_passport(context: Optional[Dict[str, Any]] = None) -> Dict[str
         },
         "evidence": evidence,
         "missing_evidence": missing,
+        "unverified_context_metrics": unverified_keys,
         "sources": sorted(set(sources)),
         "privacy": {
             "hostname_included": False,
@@ -1925,8 +1733,8 @@ def select_adaptive_compute_plan(
     machine_class = str(pp.get("machine_class") or "survival").lower()
     unknown = bool(pp.get("unknown_machine", True))
     pressure = pp.get("pressure") if isinstance(pp.get("pressure"), dict) else {}
-    cpu_pressure = _compute_number(pressure.get("cpu_percent"))
-    memory_pressure = _compute_number(pressure.get("memory_percent"))
+    cpu_pressure = _safe_float(pressure.get("cpu_percent"), -1.0, 0.0, 100.0) if pressure.get("cpu_percent") is not None else -1.0
+    memory_pressure = _safe_float(pressure.get("memory_percent"), -1.0, 0.0, 100.0) if pressure.get("memory_percent") is not None else -1.0
 
     profiles: Dict[str, Dict[str, Any]] = {
         "survival": {"workers": 1, "model_budget_gb": 1.0, "avatar_fps": 12, "avatar_scale": 0.50, "xr_hz": 10, "batch": 1},
@@ -1939,6 +1747,10 @@ def select_adaptive_compute_plan(
     reasons: List[str] = [f"Machine classified as {machine_class} from bounded local capability evidence."]
     mode = "SAFE_DISCOVERY" if unknown else machine_class.upper()
 
+    if bool(getattr(config, "SAFE_MODE", False)):
+        budget.update(profiles["survival"])
+        mode = "SAFE_DISCOVERY"
+        reasons.append("Global SAFE_MODE is active; conservative budgets only.")
     if max(cpu_pressure, memory_pressure) >= 90.0:
         budget.update(profiles["survival"])
         mode = "PRESSURE_RECOVERY"
@@ -1955,6 +1767,10 @@ def select_adaptive_compute_plan(
     if unknown:
         budget.update(profiles["survival"])
         reasons.append("Essential machine evidence is missing; safe discovery profile is mandatory.")
+
+    external_passport_unverified = passport is not None
+    if external_passport_unverified:
+        reasons.append("Externally supplied passport is unverified evidence; governance preflight remains mandatory.")
 
     heavy_workload = workload_key in {"training", "fine_tuning", "rendering", "xr", "world_simulation", "evolution"}
     if workload_key in {"background", "indexing", "sync", "diagnostics"}:
@@ -1974,6 +1790,7 @@ def select_adaptive_compute_plan(
         "machine_class": machine_class,
         "passport_id": pp.get("passport_id"),
         "decision": "ALLOW_WITH_CONSTRAINTS",
+        "recommendation_only": True,
         "budgets": {
             "max_concurrent_workers": int(budget["workers"]),
             "max_batch_size": int(budget["batch"]),
@@ -1994,7 +1811,8 @@ def select_adaptive_compute_plan(
                 "ledger_per_frame": False,
             },
         },
-        "requires_energetics_preflight": bool(heavy_workload or unknown),
+        "requires_energetics_preflight": bool(heavy_workload or unknown or external_passport_unverified),
+        "external_passport_unverified": external_passport_unverified,
         "requires_operator_core_for_execution": True,
         "clock_mutation_allowed": False,
         "reasons": reasons,
@@ -2025,86 +1843,48 @@ def adaptive_compute_self_test() -> Dict[str, Any]:
 # ============================================================================
 
 def run_diagnostics() -> Dict[str, Any]:
-    """
-    Run diagnostic checks on the adaptive system.
-    
-    Returns:
-        Dictionary with diagnostic results
-    """
-    results = {
-        "status": "ok",
-        "checks": {},
-        "errors": []
-    }
-    
-    # Check memory database
-    try:
-        conn = connect_memory_db()
-        if conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM conversations")
-            count = cursor.fetchone()[0]
-            conn.close()
-            results["checks"]["memory_db"] = {"status": "ok", "interaction_count": count}
-        else:
-            results["checks"]["memory_db"] = {"status": "error", "message": "Connection failed"}
-            results["errors"].append("Memory database connection failed")
-    except Exception as e:
-        results["checks"]["memory_db"] = {"status": "error", "message": str(e)}
-        results["errors"].append(f"Memory DB: {e}")
-    
-    # Check emotion database
-    try:
-        conn = connect_emotion_db()
-        if conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM traits")
-            count = cursor.fetchone()[0]
-            conn.close()
-            results["checks"]["emotion_db"] = {"status": "ok", "trait_count": count}
-        else:
-            results["checks"]["emotion_db"] = {"status": "error", "message": "Connection failed"}
-            results["errors"].append("Emotion database connection failed")
-    except Exception as e:
-        results["checks"]["emotion_db"] = {"status": "error", "message": str(e)}
-        results["errors"].append(f"Emotion DB: {e}")
-    
-    # Check state
-    results["checks"]["state"] = {
-        "status": "ok" if STATE else "warning",
-        "has_emotions": bool(STATE.get("joy")),
-        "mode": STATE.get("mode", "unknown")
-    }
-    
-    # Check dependencies
-    results["checks"]["dependencies"] = {
-        "numpy": _HAS_NUMPY,
-        "psutil": _HAS_PSUTIL
-    }
-
+    """Observe available resources without creating databases or changing state."""
+    report: Dict[str, Any] = {"status": "ok", "checks": {}, "errors": [],
+                              "execution_authority": False, "read_only": True}
+    for name, path, table, count_name in (
+        ("memory_db", MEMORY_DB_PATH, "conversations", "interaction_count"),
+        ("emotion_db", EMOTION_DB_PATH, "traits", "trait_count"),
+    ):
+        if not os.path.isfile(path):
+            report["checks"][name] = {"status": "warning", "reason": "database_not_initialized"}
+            continue
+        try:
+            db_uri = pathlib.Path(path).absolute().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(db_uri, uri=True, timeout=1.0)) as conn:
+                conn.execute("PRAGMA query_only=ON")
+                value = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            report["checks"][name] = {"status": "ok", count_name: value}
+        except (sqlite3.Error, OSError) as exc:
+            report["checks"][name] = {"status": "error", "error_type": type(exc).__name__}
+            report["errors"].append(f"{name} inaccessible")
+    with _state_lock:
+        state = _current_state()
+        report["checks"]["state"] = {"status": "ok" if isinstance(state, dict) and state else "warning",
+                                      "mode": str(state.get("mode", "unknown")) if isinstance(state, dict) else "unknown",
+                                      "scoped": bool(_scope_key())}
+    report["checks"]["dependencies"] = {"numpy": _HAS_NUMPY, "psutil": _HAS_PSUTIL}
     try:
         passport = build_compute_passport()
         plan = select_adaptive_compute_plan("diagnostics", passport=passport)
-        contract_test = adaptive_compute_self_test()
-        results["checks"]["adaptive_compute"] = {
-            "status": "ok" if contract_test.get("ok") else "error",
-            "passport_schema": passport.get("schema"),
-            "machine_class": passport.get("machine_class"),
-            "unknown_machine": passport.get("unknown_machine"),
-            "plan_mode": plan.get("mode"),
-            "contract_test": contract_test,
-        }
-        if not contract_test.get("ok"):
-            results["errors"].append("Adaptive compute contract self-test failed")
-    except Exception as e:
-        results["checks"]["adaptive_compute"] = {"status": "error", "message": str(e)}
-        results["errors"].append(f"Adaptive compute: {e}")
-    
-    # Overall status
-    if results["errors"]:
-        results["status"] = "degraded"
-    
-    return results
+        checked = adaptive_compute_self_test()
+        report["checks"]["adaptive_compute"] = {
+            "status": "ok" if checked["ok"] else "error", "contract_test": checked,
+            "passport_schema": passport["schema"], "unknown_machine": passport["unknown_machine"],
+            "machine_class": passport["machine_class"], "plan_mode": plan["mode"]}
+        if not checked["ok"]:
+            report["errors"].append("adaptive_compute_contract_failed")
+    except (ValueError, TypeError, RuntimeError) as exc:
+        report["checks"]["adaptive_compute"] = {"status": "error", "error_type": type(exc).__name__}
+        report["errors"].append("adaptive_compute_unavailable")
+    if report["errors"] or any(x.get("status") == "warning" for x in report["checks"].values()):
+        report["status"] = "degraded"
+    return report
+
 
 
 # ============================================================================
@@ -2238,17 +2018,22 @@ def build_emotion_affect_packet(user_input: str, context_packet: Optional[Dict[s
             "confidence": 0.25,
             "input_role": "meaning_signal",
             "execution_authority": False,
-            "error": str(e),
+            "error": type(e).__name__,
         }
 # ====================================================================
-# END OF SarahMemoryAdaptive.py v9.0.0
+# END OF SarahMemoryAdaptive.py v9.1.0a
 # ====================================================================
 
+# Enterprise compatibility contract: Existing public names and packet structures
+# remain intact. For multi-user hosts, API/Bridge MUST wrap each authenticated
+# request in `with adaptive_scope(trusted_identity):` before touching adaptive
+# state, history, preferences or metrics. A missing scope retains original
+# single-user behavior and MUST NOT be used for multi-user public services.
 # --- SML ORGAN ADAPTER START ---
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryAdaptive',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-candidate-sml-0.2",
     "category": 'Reasoning',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -2266,23 +2051,26 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
-    return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
-    }
+    """Measured/observable local health; never manufacture perfect reliability."""
+    files_exist = {"memory": os.path.isfile(MEMORY_DB_PATH),
+                   "emotion": os.path.isfile(EMOTION_DB_PATH)}
+    state_ok = bool(get_current_emotional_state())
+    initialized = all(files_exist.values())
+    status = "Healthy" if initialized and state_ok else "Degraded"
+    return {"status": status,
+            "availability": 1.0 if state_ok else 0.0,
+            "integrity": None, "performance": None, "reliability": None,
+            "confidence": 0.7 if initialized and state_ok else 0.35,
+            "latency_ms": None, "stability": None, "compatibility": None,
+            "notes": ["Local state accessible" if state_ok else "Local state unavailable",
+                      "Persistence files present" if initialized else "Persistence not fully initialized",
+                      "Runtime metrics not measured by this adapter"],
+            "execution_authority": False}
+
 
 
 def sml_diagnostics():
@@ -2291,7 +2079,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryAdaptive',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": copy.deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 
@@ -2302,7 +2090,8 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
         from SarahMemorySMLProtocol import register_sml_organ, sml_touch_packet
         register_sml_organ(SML_ORGAN_METADATA)
         return sml_touch_packet(packet, organ='SarahMemoryAdaptive', action=action, note=note or "organ observed packet", updates=updates)
-    except Exception:
+    except Exception as exc:
+        logger.warning("Adaptive SML packet update unavailable: %s", type(exc).__name__)
         return packet
 # --- SML ORGAN ADAPTER END ---
 

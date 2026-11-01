@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryRhythmCognition.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v9.0.0
-Date: 2026-06-08
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -227,7 +227,10 @@ def _safe_int(value: Any, default: int = 0, lo: Optional[int] = None, hi: Option
 
 def _flag(name: str, default: bool = False) -> bool:
     try:
-        return bool(getattr(config, name, default))
+        value = getattr(config, name, default)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
     except Exception:
         return default
 
@@ -265,10 +268,12 @@ def _system_pressure() -> Dict[str, Any]:
     memory = 0.0
     disk = 0.0
     tier = "unknown"
+    measured = False
     try:
         if _HAS_PSUTIL and psutil is not None:
             cpu = float(psutil.cpu_percent(interval=None))
             memory = float(psutil.virtual_memory().percent)
+            measured = math.isfinite(cpu) and math.isfinite(memory)
             try:
                 disk = float(psutil.disk_usage(_base_dir()).percent)
             except Exception:
@@ -277,7 +282,9 @@ def _system_pressure() -> Dict[str, Any]:
         pass
 
     load = max(cpu, memory)
-    if load >= 88.0:
+    if not measured:
+        tier = "unknown"
+    elif load >= 88.0:
         tier = "critical"
     elif load >= 75.0:
         tier = "high"
@@ -602,12 +609,8 @@ def build_rhythm_cadence_packet(context: Optional[Dict[str, Any]] = None, *, for
     global _LAST_PACKET_TS, _LAST_PACKET
     ctx = dict(context or {})
     now = time.time()
-    with _LOCK:
-        if not force_refresh and _LAST_PACKET and (now - _LAST_PACKET_TS) <= _PACKET_CACHE_TTL:
-            # Return a copy so consumers cannot mutate shared state.
-            out = dict(_LAST_PACKET)
-            out["cache_hit"] = True
-            return out
+    # Always recompute: a global cached cadence can leak context/urgency
+    # across users or suppress a newly reported emergency. Recalculation is bounded.
 
     text = str(ctx.get("text") or ctx.get("user_text") or ctx.get("command_text") or ctx.get("goal") or "")
     adaptive = _adaptive_basis(ctx)
@@ -1149,22 +1152,22 @@ def avatar_rhythm_self_test() -> Dict[str, Any]:
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
+    """Expose adapter presence without fabricating operational measurements."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "UNKNOWN",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter registered; live operational measurements not verified"],
     }
 
 
@@ -1174,7 +1177,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryRhythmCognition',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryDesktop.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,6 +13,7 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+===============================================================================
 
 ─────────────────────────────────────────────────────────────────────────────
 
@@ -55,7 +56,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -250,7 +251,8 @@ class DesktopMirrorService:
         self.default_monitor = _int_env("SARAH_DESKTOP_MONITOR_INDEX", 1, minimum=0, maximum=16)
         self.max_width = _int_env("SARAH_DESKTOP_MAX_WIDTH", 1280, minimum=320, maximum=7680)
         self.jpeg_quality = _int_env("SARAH_DESKTOP_JPEG_QUALITY", 70, minimum=20, maximum=95)
-        self.enabled = _flag_env("SARAH_DESKTOP_MIRROR_ENABLED", True)
+        self.enabled = _flag_env('SARAH_DESKTOP_MIRROR_ENABLED', True)
+        self._capture_grant = False  # no authenticated OperatorCore bridge in this module
 
     def dependencies(self) -> Dict[str, Any]:
         deps = {"mss": False, "PIL": False}
@@ -324,6 +326,8 @@ class DesktopMirrorService:
                 raise RuntimeError(f"desktop frame encode failed: PIL={pil_exc}; PNG={png_exc}") from png_exc
 
     def capture_once(self, monitor_index: Optional[int] = None, source: str = "desktop_capture_once") -> Dict[str, Any]:
+        if not self._capture_grant:
+            return {'ok': False, 'error': 'desktop_capture_requires_verified_operator_grant', 'available': False}
         if not self.enabled:
             self._last_error = "desktop mirror disabled by SARAH_DESKTOP_MIRROR_ENABLED"
             return {"ok": False, "error": self._last_error, "available": False}
@@ -355,6 +359,8 @@ class DesktopMirrorService:
             return {"ok": False, "error": str(exc), "available": False, "source": source}
 
     def start(self, fps: Optional[int] = None, monitor_index: Optional[int] = None, reason: str = "api_start") -> Dict[str, Any]:
+        if not self._capture_grant:
+            return {'ok': False, 'error': 'desktop_capture_requires_verified_operator_grant', 'status': self.status()}
         if not self.available():
             return {"ok": False, "error": "desktop_mirror_unavailable", "status": self.status()}
         with self._lock:
@@ -387,6 +393,8 @@ class DesktopMirrorService:
         with self._lock:
             self._running = False
             self._thread = None
+            self._latest = None  # erase retained screenshot on stop
+            self._capture_grant = False
         return {"ok": True, "stopped": True, "reason": reason, "status": self.status()}
 
     def _capture_loop(self, fps: int, monitor_index: int) -> None:
@@ -400,9 +408,13 @@ class DesktopMirrorService:
         finally:
             with self._lock:
                 self._running = False
-            logger.info("Desktop mirror capture loop stopped")
+                self._latest = None
+                self._capture_grant = False
+            logger.info('Desktop mirror capture loop stopped')
 
     def latest(self, include_image: bool = True, auto_capture: bool = False) -> Dict[str, Any]:
+        if not self._capture_grant:
+            return {'ok': False, 'has_frame': False, 'error': 'desktop_capture_requires_verified_operator_grant'}
         if auto_capture:
             self.capture_once(source="desktop_latest_auto_capture")
         with self._lock:
@@ -414,6 +426,9 @@ class DesktopMirrorService:
     def mjpeg_stream(self, fps: Optional[int] = None) -> Generator[bytes, None, None]:
         fps_value = max(1, min(15, int(fps or self.default_fps)))
         interval = 1.0 / fps_value
+        if not self._capture_grant:
+            yield b'--frame\r\nContent-Type: application/json\r\n\r\n{"ok":false,"error":"capture_authorization_required"}\r\n'
+            return
         if not self.available():
             message = json.dumps({"ok": False, "error": "desktop_mirror_unavailable", "dependencies": self.dependencies()}).encode("utf-8")
             yield b"--frame\r\nContent-Type: application/json\r\n\r\n" + message + b"\r\n"
@@ -588,7 +603,7 @@ if __name__ == "__main__":
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryDesktop',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Input',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -606,22 +621,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter present; runtime health not independently measured"],
     }
 
 
@@ -631,7 +646,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryDesktop',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

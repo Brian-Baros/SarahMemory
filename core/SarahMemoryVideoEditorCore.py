@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryVideoEditorCore.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 SarahMemory Video Editor Core - Media & Content Creation Suite
@@ -177,12 +176,13 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Professional video editing and multimedia creation engine with timeline editing, effects, audio integration, AI-assisted features, and rendering/export workflows."
 # --- SARAHMETA END ---
+# v9.1.0a enterprise source hardening: original interfaces preserved; state-changing legacy paths require governed authorization.
 
 import os
 import sys
@@ -198,6 +198,8 @@ from typing import Dict, List, Tuple, Optional, Any, Union
 from pathlib import Path
 from enum import Enum
 import hashlib
+import uuid
+import tempfile
 import base64
 from io import BytesIO
 from collections import defaultdict
@@ -396,6 +398,15 @@ class EffectType(Enum):
 # ============================================================================
 # DATA CLASSES
 # ============================================================================
+
+def _sm_video_workspace_path(path: str, root: str, suffix: str) -> str:
+    base = os.path.realpath(root)
+    target = os.path.realpath(path)
+    if (os.path.commonpath([base, target]) != base or target == base or
+            os.path.islink(path) or not target.lower().endswith(suffix)):
+        raise ValueError("media_workspace_boundary")
+    return target
+
 
 class VideoClip:
     """Represents a video clip in the timeline"""
@@ -851,7 +862,7 @@ class VideoEditorCore:
         Returns:
             VideoProject instance
         """
-        project_id = f"proj_{int(time.time())}_{hashlib.md5(name.encode()).hexdigest()[:8]}"
+        project_id = f"proj_{uuid.uuid4().hex}"
         project = VideoProject(project_id, name, resolution, fps, duration)
         self.projects[project_id] = project
         
@@ -869,7 +880,8 @@ class VideoEditorCore:
             VideoProject instance or None if failed
         """
         try:
-            with open(filepath, 'r') as f:
+            filepath = _sm_video_workspace_path(filepath, VIDEO_PROJECTS_DIR, ".svp")
+            with open(filepath, 'r', encoding="utf-8") as f:
                 data = json.load(f)
             
             project = VideoProject.from_dict(data)
@@ -899,8 +911,18 @@ class VideoEditorCore:
                 filename = f"{project.name.replace(' ', '_')}_{project.project_id}.svp"
                 filepath = os.path.join(VIDEO_PROJECTS_DIR, filename)
             
-            with open(filepath, 'w') as f:
-                json.dump(project.to_dict(), f, indent=2)
+            filepath = _sm_video_workspace_path(filepath, VIDEO_PROJECTS_DIR, ".svp")
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            fd, tmp = tempfile.mkstemp(prefix=".smvideo-", dir=os.path.dirname(filepath))
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(project.to_dict(), f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, filepath)
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
             
             logging.info(f"[VideoEditor] Saved project '{project.name}' to {filepath}")
             return True
@@ -1328,6 +1350,16 @@ class VideoEditorCore:
                 filename = f"{project.name.replace(' ', '_')}_{timestamp}.{project.render_format}"
                 output_path = os.path.join(EXPORTS_DIR, filename)
             
+            # Validate before any resource-intensive encoding.
+            fmt = str(project.render_format).lower()
+            if fmt not in VIDEO_CODECS:
+                return False
+            output_path = _sm_video_workspace_path(output_path, EXPORTS_DIR, "."+fmt)
+            # This encoder does not mux project audio; never silently discard it.
+            if getattr(project, "audio_tracks", None):
+                return False
+            if quality not in QUALITY_PRESETS:
+                return False
             # Get resolution
             if resolution and resolution in RESOLUTION_PRESETS:
                 output_width, output_height = RESOLUTION_PRESETS[resolution]
@@ -1337,8 +1369,16 @@ class VideoEditorCore:
             # Get quality settings
             quality_settings = QUALITY_PRESETS.get(quality, QUALITY_PRESETS["high"])
             
+            total_duration = project.get_total_duration()
+            if (not math.isfinite(float(total_duration)) or float(total_duration) <= 0 or
+                    not math.isfinite(float(project.fps)) or project.fps < 1 or project.fps > 60 or
+                    output_width < 16 or output_height < 16 or
+                    output_width > 3840 or output_height > 2160 or
+                    total_duration * project.fps > 9000):
+                return False
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
             # Setup video writer
-            fourcc = cv2.VideoWriter_fourcc(*VIDEO_CODECS.get(project.render_format, 'mp4v'))
+            fourcc = cv2.VideoWriter_fourcc(*VIDEO_CODECS[fmt])
             out = cv2.VideoWriter(output_path, fourcc, project.fps, (output_width, output_height))
             
             if not out.isOpened():
@@ -1417,9 +1457,19 @@ class VideoEditorCore:
             
             logging.info(f"[VideoEditor] Render complete: {output_path}")
             
-            # Generate thumbnail
+            # A writer opening does not prove valid output.
+            if not os.path.isfile(output_path) or os.path.getsize(output_path) < 128:
+                return False
+            cap_check = cv2.VideoCapture(output_path)
+            try:
+                if not cap_check.isOpened():
+                    return False
+                ok_frame, frame_check = cap_check.read()
+                if not ok_frame or frame_check is None:
+                    return False
+            finally:
+                cap_check.release()
             self.generate_thumbnail(output_path)
-            
             return True
             
         except Exception as e:
@@ -1710,6 +1760,7 @@ if __name__ == "__main__":
 # ====================================================================
 
 # --- SML ORGAN ADAPTER START ---
+import copy as _sml_copy
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryVideoEditorCore',
@@ -1731,22 +1782,22 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return _sml_copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["SML adapter registered; runtime quality not measured"],
     }
 
 
@@ -1756,7 +1807,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryVideoEditorCore',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": _sml_copy.deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

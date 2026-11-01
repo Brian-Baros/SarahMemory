@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryLedger.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 Governed immutable receipt, SarahNet wallet, and accountability ledger.
@@ -51,7 +50,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -59,6 +58,8 @@ from __future__ import annotations
 # --- SARAHMETA END ---
 
 import hashlib
+import copy
+import secrets
 import hmac
 import json
 import math
@@ -196,9 +197,18 @@ def _ensure_storage_dirs() -> None:
         os.makedirs(directory, exist_ok=True)
 
 
+class _LedgerConnection(sqlite3.Connection):
+    """Close SQLite connections at the end of their transaction contexts."""
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
 def _connect(path: str) -> sqlite3.Connection:
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    conn = sqlite3.connect(path, timeout=15.0, detect_types=sqlite3.PARSE_DECLTYPES, check_same_thread=False)
+    conn = sqlite3.connect(path, timeout=15.0, detect_types=sqlite3.PARSE_DECLTYPES, check_same_thread=False, factory=_LedgerConnection)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
@@ -607,7 +617,12 @@ def verify_governance_chain(domain: str = "", limit: int = 5000) -> Dict[str, An
             })
         previous_by_domain[d] = str(item.get("receipt_hash"))
         checked += 1
-    return {"ok": not failures, "checked": checked, "failures": failures[:100], "truncated": checked >= limit, "domain": domain or "*"}
+    return {"ok": bool(not failures and checked < limit), "checked": checked,
+            "failures": failures[:100], "truncated": checked >= limit,
+            "coverage": "partial" if checked >= limit else "complete_within_scan",
+            "authenticated": bool(any(os.getenv(n) for n in
+                ("SARAH_LEDGER_SECRET", "SARAH_AGENT_PASSPORT_SECRET", "MESH_SHARED_SECRET"))),
+            "execution_authority": False, "domain": domain or "*"}
 
 
 _RETENTION_HALF_LIFE_SECONDS = {
@@ -755,10 +770,11 @@ def _rotate_block_if_needed() -> int:
 
 
 def _wallet_path(node_name: str) -> str:
-    safe = "".join(ch for ch in str(node_name or "") if ch.isalnum() or ch in ("-", "_"))[:128]
-    if not safe:
-        raise ValueError("invalid node name")
-    return os.path.join(WALLETS_DIR, f"{safe}.wallet.db")
+    # Reject, never normalize distinct names into a shared wallet filename.
+    value = str(node_name or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) or value in (".", ".."):
+        raise ValueError("invalid or noncanonical wallet name")
+    return os.path.join(WALLETS_DIR, f"{value}.wallet.db")
 
 
 def _init_wallet(node_id: str, node_name: str) -> str:
@@ -827,51 +843,71 @@ def _append_wallet_tx(record: Dict[str, Any], wallet_paths: Iterable[str]) -> Di
 
 
 def _issue_tokens(to_node: str, amount: Decimal, reason: str) -> Dict[str, Any]:
+    """Legacy local mint: compensate failures. Not a crash-atomic multi-DB settlement."""
     _ensure_initialized()
     amount = _quantize(amount)
-    if amount <= 0:
-        raise ValueError("amount must be positive")
-    path, wallet = _get_wallet(to_node)
-    with _LOCK, _connect(MASTER_DB) as master:
-        issued = Decimal(master.execute("SELECT issued FROM supply WHERE id=1").fetchone()[0])
-        if issued + amount > MAX_SUPPLY:
-            raise RuntimeError("maximum token supply exceeded")
-        master.execute("UPDATE supply SET issued=? WHERE id=1", (str(issued + amount),))
-        master.commit()
-        new_balance = Decimal(wallet["balance"]) + amount
-        _update_balance(path, new_balance)
-        record = _append_wallet_tx({
-            "type": "issue", "to": to_node, "amount": str(amount), "reason": str(reason or ""),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }, [path])
-    return {"ok": True, "tx": record, "balance": str(new_balance)}
+    if not amount.is_finite() or amount <= 0:
+        raise ValueError("amount must be finite and positive")
+    with _LOCK:
+        path, wallet = _get_wallet(to_node)
+        old_balance = Decimal(wallet["balance"])
+        with _connect(MASTER_DB) as master:
+            old_issued = Decimal(master.execute("SELECT issued FROM supply WHERE id=1").fetchone()[0])
+            if old_issued + amount > MAX_SUPPLY:
+                raise RuntimeError("maximum token supply exceeded")
+            # Commit original accounting state only after the append operation succeeds.
+            try:
+                record = _append_wallet_tx({
+                    "type": "issue", "to": to_node, "amount": str(amount),
+                    "reason": str(reason or "")[:256], "timestamp": datetime.now(timezone.utc).isoformat(),
+                }, [path])
+                _update_balance(path, old_balance + amount)
+                master.execute("UPDATE supply SET issued=? WHERE id=1", (str(old_issued + amount),))
+                master.commit()
+            except Exception as exc:
+                try:
+                    master.rollback()
+                    _update_balance(path, old_balance)
+                except Exception as recovery_exc:
+                    raise RuntimeError("issuance_recovery_failed; manual reconciliation required") from recovery_exc
+                raise
+    return {"ok": True, "tx": record, "balance": str(old_balance + amount),
+            "settlement_guarantee": "single_process_compensated_not_crash_atomic"}
 
 
 def _transfer(from_node: str, to_node: str, amount: Decimal, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Legacy internal transfer. Public routes remain denied absent real authorization."""
     amount = _quantize(amount)
-    if amount <= 0:
-        raise ValueError("amount must be positive")
+    if not amount.is_finite() or amount <= 0:
+        raise ValueError("amount must be finite and positive")
     if from_node == to_node:
         raise ValueError("from and to must differ")
-    from_path, from_wallet = _get_wallet(from_node)
-    to_path, to_wallet = _get_wallet(to_node)
     with _LOCK:
+        from_path, from_wallet = _get_wallet(from_node)
+        to_path, to_wallet = _get_wallet(to_node)
         from_balance = Decimal(from_wallet["balance"])
+        to_balance = Decimal(to_wallet["balance"])
         if from_balance < amount:
             raise RuntimeError("insufficient balance")
-        to_balance = Decimal(to_wallet["balance"])
-        _update_balance(from_path, from_balance - amount)
+        # Do not mutate any balance if the immutable transaction append fails.
+        record = _append_wallet_tx({
+            "type": "transfer", "from": from_node, "to": to_node, "amount": str(amount),
+            "meta": _bounded_metadata(meta or {}, 8000),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }, [from_path, to_path])
         try:
+            _update_balance(from_path, from_balance - amount)
             _update_balance(to_path, to_balance + amount)
-            record = _append_wallet_tx({
-                "type": "transfer", "from": from_node, "to": to_node, "amount": str(amount),
-                "meta": _bounded_metadata(meta or {}, 8000), "timestamp": datetime.now(timezone.utc).isoformat(),
-            }, [from_path, to_path])
         except Exception:
-            _update_balance(from_path, from_balance)
-            _update_balance(to_path, to_balance)
+            try:
+                _update_balance(from_path, from_balance)
+                _update_balance(to_path, to_balance)
+            except Exception as exc:
+                raise RuntimeError("transfer_recovery_failed; manual reconciliation required") from exc
             raise
-    return {"ok": True, "tx": record, "from_balance": str(from_balance - amount), "to_balance": str(to_balance + amount)}
+    return {"ok": True, "tx": record, "from_balance": str(from_balance - amount),
+            "to_balance": str(to_balance + amount),
+            "settlement_guarantee": "single_process_compensated_not_crash_atomic"}
 
 
 def _reward_reputation(node_name: str, delta: int) -> None:
@@ -894,39 +930,18 @@ def _bonus_micro_tokens(node_name: str, amount: Decimal) -> Optional[Dict[str, A
 # ---------------------------------------------------------------------------
 @app.post("/api/register-node")
 def register_node():
-    data = request.get_json(silent=True) or {}
-    node_name = str(data.get("node_name") or data.get("name") or "").strip()
-    if not node_name:
-        return jsonify({"error": "node_name required"}), 400
-    node_id = str(data.get("node_id") or uuid.uuid4().hex)
-    version = str(data.get("version") or "")
-    capabilities = data.get("capabilities") or []
-    try:
-        _init_wallet(node_id, node_name)
-        _, wallet = _get_wallet(node_name)
-        issuance = None
-        if Decimal(wallet["balance"]) == 0:
-            issuance = _issue_tokens(node_name, GENESIS_REWARD, "genesis_registration")
-        with _connect(MASTER_DB) as con:
-            con.execute(
-                "INSERT OR REPLACE INTO nodes(node_id,node_name,version,capabilities,registered_at) VALUES(?,?,?,?,?)",
-                (node_id, node_name, version, _canonical_json(capabilities), datetime.now(timezone.utc).isoformat()),
-            )
-            con.commit()
-        return jsonify({"node_id": node_id, "wallet": _get_wallet(node_name)[1], "issuance": issuance}), 201
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 400
+    """Legacy wallet endpoint retained but disabled until authenticated authority is wired."""
+    return jsonify({"ok": False, "error": "governed_wallet_action_unavailable",
+                    "reason": "Authenticated operator/passport approval not verifiable in this route",
+                    "action": "registration", "execution_authority": False}), 403
 
 
 @app.post("/api/send-token")
 def send_token():
-    data = request.get_json(silent=True) or {}
-    try:
-        result = _transfer(str(data.get("from") or "").strip(), str(data.get("to") or "").strip(), Decimal(str(data.get("amount"))), data.get("meta") or {})
-        _reward_reputation(str(data.get("to") or ""), 1)
-        return jsonify(result), 200
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 400
+    """Legacy wallet endpoint retained but disabled until authenticated authority is wired."""
+    return jsonify({"ok": False, "error": "governed_wallet_action_unavailable",
+                    "reason": "Authenticated operator/passport approval not verifiable in this route",
+                    "action": "transfer", "execution_authority": False}), 403
 
 
 @app.get("/api/wallet/<node_name>")
@@ -986,42 +1001,10 @@ def top_nodes():
 
 @app.post("/api/request-knowledge")
 def request_knowledge():
-    data = request.get_json(silent=True) or {}
-    requester = str(data.get("requester") or "").strip()
-    provider = str(data.get("provider") or "").strip()
-    try:
-        amount = _quantize(Decimal(str(data.get("amount"))))
-    except Exception:
-        return jsonify({"error": "invalid amount"}), 400
-    if not requester or not provider or requester == provider or amount <= 0:
-        return jsonify({"error": "valid requester/provider/positive amount required"}), 400
-    _ensure_initialized()
-    proof = str(data.get("response_proof") or "").strip()
-    with _LOCK, _connect(MASTER_DB) as con:
-        if proof:
-            row = con.execute(
-                "SELECT id FROM knowledge_requests WHERE requester=? AND provider=? AND amount=? AND status='pending' ORDER BY created_at DESC LIMIT 1",
-                (requester, provider, str(amount)),
-            ).fetchone()
-            if not row:
-                return jsonify({"error": "no pending request to fulfill"}), 404
-            request_id = row[0]
-            try:
-                transfer = _transfer(requester, provider, amount, {"contribution_ref": request_id, "notes": str(data.get("notes") or "")})
-            except Exception as exc:
-                return jsonify({"error": str(exc)}), 400
-            con.execute("UPDATE knowledge_requests SET status='fulfilled',response_proof=?,fulfilled_at=? WHERE id=?", (proof, datetime.now(timezone.utc).isoformat(), request_id))
-            con.commit()
-            _reward_reputation(provider, 3)
-            _reward_reputation(requester, 1)
-            return jsonify({"request_id": request_id, "transfer": transfer}), 200
-        request_id = uuid.uuid4().hex
-        con.execute(
-            "INSERT INTO knowledge_requests(id,requester,provider,amount,created_at,status,response_proof,fulfilled_at) VALUES(?,?,?,?,?,'pending',NULL,NULL)",
-            (request_id, requester, provider, str(amount), datetime.now(timezone.utc).isoformat()),
-        )
-        con.commit()
-    return jsonify({"request_id": request_id, "status": "pending"}), 201
+    """Legacy wallet endpoint retained but disabled until authenticated authority is wired."""
+    return jsonify({"ok": False, "error": "governed_wallet_action_unavailable",
+                    "reason": "Authenticated operator/passport approval not verifiable in this route",
+                    "action": "knowledge settlement", "execution_authority": False}), 403
 
 
 @app.post("/api/_sample-flow")
@@ -1042,43 +1025,27 @@ def _local_request() -> bool:
 
 @_RECEIPT_BP.get("/api/ledger/status")
 def ledger_status_api():
-    status = initialize_ledger()
-    if not status.get("ok"):
-        return jsonify(status), 500
-    with _connect(MASTER_DB) as con:
-        receipt_count = int(con.execute("SELECT COUNT(*) FROM governance_receipts").fetchone()[0])
-        projection_count = int(con.execute("SELECT COUNT(*) FROM receipt_retention_projection").fetchone()[0])
-    return jsonify({**status, "receipt_count": receipt_count, "retention_projection_count": projection_count, "execution_authority": False}), 200
+    """Provide no private database details to unauthenticated request handlers."""
+    return jsonify({"ok": False, "error": "authenticated_ledger_status_required", "execution_authority": False}), 403
 
 
 @_RECEIPT_BP.get("/api/ledger/receipts")
 def ledger_receipts_api():
-    try:
-        receipts = get_governance_receipts(
-            domain=str(request.args.get("domain") or ""), event_type=str(request.args.get("event_type") or ""),
-            subject_id=str(request.args.get("subject_id") or ""), task_id=str(request.args.get("task_id") or ""),
-            limit=int(request.args.get("limit") or 100),
-        )
-        return jsonify({"ok": True, "receipts": receipts, "count": len(receipts)}), 200
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
+    """Do not publish receipt metadata through an unauthenticated endpoint."""
+    return jsonify({"ok": False, "error": "authenticated_receipt_read_required",
+                    "execution_authority": False}), 403
 
 
 @_RECEIPT_BP.get("/api/ledger/verify")
 def ledger_verify_api():
-    result = verify_governance_chain(domain=str(request.args.get("domain") or ""), limit=int(request.args.get("limit") or 5000))
-    return jsonify(result), 200 if result.get("ok") else 409
+    return jsonify({"ok": False, "error": "authenticated_ledger_verification_required", "execution_authority": False}), 403
 
 
 @_RECEIPT_BP.post("/api/ledger/retention/apply")
 def ledger_retention_apply_api():
-    if not _local_request():
-        return jsonify({"ok": False, "error": "local_request_required"}), 403
-    body = request.get_json(silent=True) or {}
-    if not bool(body.get("confirmed") or body.get("user_confirmed")):
-        return jsonify({"ok": False, "error": "explicit_confirmation_required"}), 409
-    result = apply_retention_decay(limit=body.get("limit"))
-    return jsonify(result), 200
+    """A loopback address and user-submitted confirmed flag are not authorization."""
+    return jsonify({"ok": False, "error": "verified_retention_authorization_required",
+                    "execution_authority": False}), 403
 
 
 def init_app(flask_app: Flask, *args: Any, **kwargs: Any) -> Dict[str, Any]:
@@ -1116,7 +1083,7 @@ def _ensure_response_table(db_path: Optional[str] = None) -> None:
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryLedger',
-    "version": "v9.0.0-alpha-sml-0.2",
+    "version": "v9.1.0a-alpha-sml-0.2",
     "category": 'Memory',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
@@ -1134,23 +1101,15 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    return __import__("copy").deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
-    return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
-    }
+    """Non-executing adapter presence probe. No fabricated live quality measurements."""
+    return {"status":"Unverified", "availability":None, "integrity":None,
+            "performance":None, "reliability":None, "confidence":0.0,
+            "latency_ms":None, "stability":None, "compatibility":None,
+            "notes":["SarahMemoryLedger.py: module adapter present; live health not measured"]}
 
 
 def sml_diagnostics():
@@ -1159,7 +1118,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryLedger',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": __import__("copy").deepcopy(SML_ORGAN_METADATA),
         "health": sml_health(),
     }
 

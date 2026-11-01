@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemorySafetyPolicies.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 - Constitutional safety-policy source for SarahMemory AiOS / SMGET.
@@ -67,7 +66,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -116,7 +115,7 @@ logger.propagate = False
 # Constants
 # ---------------------------------------------------------------------------
 MODULE_NAME = "SarahMemorySafetyPolicies"
-MODULE_VERSION = "9.0.0"
+MODULE_VERSION = "9.1.0a"
 _DB_NAME = "safety_policies.db"
 _JSON_NAME = "safety_policy_snapshot.json"
 
@@ -506,7 +505,8 @@ def _device_mode() -> str:
 def _read_override(name: str, default: bool) -> bool:
     env_name = f"SM_POLICY_{name.upper()}"
     if env_name in os.environ:
-        return _env_flag(env_name, "true" if default else "false")
+        # An environment variable is configuration, not an authenticated safety override.
+        return default
     return default
 
 
@@ -614,7 +614,7 @@ def _contains_any(haystack: str, needles: tuple[str, ...]) -> bool:
 def _normalize_risk_level(value: Any) -> str:
     v = _safe_lower(value)
     if not v:
-        return RISK_TIER_1
+        return RISK_TIER_4
     aliases = {
         "tier_0": RISK_TIER_0,
         "tier_0_info": RISK_TIER_0,
@@ -637,7 +637,7 @@ def _normalize_risk_level(value: Any) -> str:
         "tier_robot_emergency_intervention": ROBOT_TIER_EMERGENCY,
         "tier_robot_emergency_stop": ROBOT_TIER_ESTOP,
     }
-    return aliases.get(v, str(value))
+    return aliases.get(v, RISK_TIER_4)  # Unrecognized risk never becomes low risk
 
 
 def _robotic_action_profile(contract: Dict[str, Any]) -> Dict[str, Any]:
@@ -664,14 +664,11 @@ def _robotic_action_profile(contract: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _has_confirmation(action_contract: Dict[str, Any], governance: Optional[Dict[str, Any]] = None) -> bool:
-    contract = dict(action_contract or {})
-    gov = dict(governance or {})
-    for source in (contract, gov, contract.get("meta") if isinstance(contract.get("meta"), dict) else {}):
-        try:
-            if bool(source.get("confirmed")) or bool(source.get("user_confirmed")) or bool(source.get("explicit_confirmation")):
-                return True
-        except Exception:
-            pass
+    """Fail closed: neither an action field nor a caller-supplied receipt is identity proof.
+
+    The authentication owner must establish approvals before evaluating an apply
+    contract. This legacy function cannot independently verify user presence.
+    """
     return False
 
 
@@ -992,6 +989,15 @@ def evaluate_action_policy(action_contract: Dict[str, Any], governance: Optional
         review.constraints["audit_required"] = True
         review.reasons.append("High-risk action may proceed only with strict verification and audit discipline.")
 
+    # Denial is monotonic: later REQUIRE_USER/SIMULATE transitions cannot erase
+    # a constitutional lockout or earlier explicit denial.
+    if any(f in review.risk_factors for f in (
+        "hazardous_energy_constitution_lockout", "hazardous_energy_constitution_exception",
+        "missing_rollback_plan", "model_authority_escalation", "neosky_not_armed",
+        "governance_denied", "local_only_network_exposure", "energetics_deny",
+        "energetics_exception_fail_closed", "energetics_exception_unknown_fail_closed")):
+        review.decision = POLICY_DECISION_DENY
+        review.allow = False
     review.required_confirmations = list(dict.fromkeys(review.required_confirmations))
     if not review.reasons:
         review.reasons.append("SafetyPolicies found no additional policy blockers.")
@@ -1345,22 +1351,23 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    import copy
+    return copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter present; runtime health and integration not independently measured"],
     }
 
 
@@ -1370,7 +1377,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemorySafetyPolicies',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": sml_get_metadata(),
         "health": sml_health(),
     }
 

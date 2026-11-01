@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryReminder.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-07-11
+Version: v9.1.0a (Enterprise)
+Date: 2026-11-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 CALENDAR, DATE/TIME PLANNER & SCHEDULER MODULE
@@ -58,7 +57,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_DATE = "2026-11-01"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -115,8 +114,10 @@ try:
     ENCRYPTION_AVAILABLE = True
 except ImportError:
     ENCRYPTION_AVAILABLE = False
-    def encrypt_data(data): return data
-    def decrypt_data(data): return data
+    def encrypt_data(data):
+        raise RuntimeError("encryption_unavailable: plaintext secret persistence forbidden")
+    def decrypt_data(data):
+        raise RuntimeError("encryption_unavailable: secret access forbidden")
 
 # Optional dateutil for advanced date parsing
 try:
@@ -156,7 +157,7 @@ REMINDER_DB = os.path.join(DATASETS_DIR, 'reminders.db')
 CALENDAR_DB = os.path.join(DATASETS_DIR, 'calendar.db')
 
 # Default timezone (America/Phoenix for Brian's location)
-DEFAULT_TIMEZONE = os.getenv("SARAH_TIMEZONE", "America/Phoenix")
+DEFAULT_TIMEZONE = os.getenv("SARAH_TIMEZONE") or str(getattr(config, "TIMEZONE", "UTC") if "config" in globals() else "UTC")
 
 
 class EventType(Enum):
@@ -765,6 +766,10 @@ class CalendarManager:
     
     def delete_event(self, event_id: str, delete_recurring: bool = False) -> bool:
         """Delete an event"""
+        # Legacy ID-only deletion has no authenticated operator/session context.
+        # Existing API Bridge must be extended before destructive use can resume.
+        return False
+
         conn = self.db._get_connection()
         cursor = conn.cursor()
         
@@ -799,7 +804,9 @@ class CalendarManager:
                   start_date.isoformat(), end_date.isoformat()]
         
         if include_all_day:
-            query += " OR all_day = 1"
+            # All-day status does not bypass the requested time range.
+            query += " OR (all_day = 1 AND start_time >= ? AND start_time <= ?)"
+            params.extend([start_date.date().isoformat(), end_date.date().isoformat() + "T23:59:59.999999"])
         
         query += ") ORDER BY start_time ASC"
         
@@ -951,6 +958,10 @@ class CalendarManager:
     
     def delete_task(self, task_id: str) -> bool:
         """Delete a task"""
+        # Legacy ID-only deletion has no authenticated operator/session context.
+        # Existing API Bridge must be extended before destructive use can resume.
+        return False
+
         conn = self.db._get_connection()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
@@ -1188,6 +1199,10 @@ class CalendarManager:
     
     def delete_contact(self, contact_id: str) -> bool:
         """Delete a contact"""
+        # Legacy ID-only deletion has no authenticated operator/session context.
+        # Existing API Bridge must be extended before destructive use can resume.
+        return False
+
         conn = self.db._get_connection()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM contacts WHERE id = ?", (contact_id,))
@@ -1206,7 +1221,13 @@ class CalendarManager:
         password_id = str(uuid.uuid4())
         now = datetime.datetime.now().isoformat()
         
+        if not ENCRYPTION_AVAILABLE or not isinstance(plaintext_password, str) or not plaintext_password:
+            raise RuntimeError("authenticated encryption is required for password storage")
         encrypted = encrypt_data(plaintext_password)
+        if encrypted in (None, "", plaintext_password) or str(encrypted) == plaintext_password:
+            raise RuntimeError("encryption failed closed: secret not protected")
+        if decrypt_data(encrypted) != plaintext_password:
+            raise RuntimeError("encryption integrity round-trip failed")
         
         conn = self.db._get_connection()
         cursor = conn.cursor()
@@ -1238,6 +1259,10 @@ class CalendarManager:
     
     def delete_password(self, label: str, user_id: str = "default") -> bool:
         """Delete a password entry"""
+        # Legacy ID-only deletion has no authenticated operator/session context.
+        # Existing API Bridge must be extended before destructive use can resume.
+        return False
+
         conn = self.db._get_connection()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM passwords WHERE label = ? AND user_id = ?", (label, user_id))
@@ -2290,22 +2315,23 @@ SML_ORGAN_METADATA = {
 
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
-    return dict(SML_ORGAN_METADATA)
+    import copy
+    return copy.deepcopy(SML_ORGAN_METADATA)
 
 
 def sml_health():
     """Return a local SML health vector without side effects."""
     return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "status": "Unknown",
+        "availability": None,
+        "integrity": None,
+        "performance": None,
+        "reliability": None,
+        "confidence": 0.0,
+        "latency_ms": None,
+        "stability": None,
+        "compatibility": None,
+        "notes": ["Adapter present; runtime health and integration not independently measured"],
     }
 
 
@@ -2315,7 +2341,7 @@ def sml_diagnostics():
         "status": "OK",
         "component": 'SarahMemoryReminder',
         "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
+        "metadata": sml_get_metadata(),
         "health": sml_health(),
     }
 
