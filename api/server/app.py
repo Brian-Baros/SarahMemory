@@ -1003,7 +1003,7 @@ def _sm_try_appself_identity_route(text: str, *, source: str = "api_chat") -> di
         return bundle
 
 
-def _sm_try_sml_source_authority_route(text: str, *, local_only: bool = True, intent: str = "question") -> dict | None:
+def _sm_try_sml_source_authority_route(text: str, *, local_only: bool = True, intent: str = "question", answer_mode: str = "any") -> dict | None:
     """Prevent live/current-source claims from falling to model memory.
 
     This is a read-only Source Authority Court bridge. It does not hardcode
@@ -1037,21 +1037,28 @@ def _sm_try_sml_source_authority_route(text: str, *, local_only: bool = True, in
             "model_memory_authority": False,
             "execution_allowed": False,
             "preferred_sources": vector.get("preferred_sources"),
+            "requested_answer_mode": answer_mode,
             "version": PROJECT_VERSION,
         }
         if local_only:
             reply = "This question requires current-source evidence. I will not answer it from model memory or static demo facts while current research/API access is unavailable in this route."
+            meta["reason"] = "local_only_policy_or_requested_lane"
             bundle = _sm_make_outward_bundle(_sm_present_text(reply, intent="source_authority", meta=meta), meta=meta, raw_answer=reply)
-            bundle["ok"] = True
+            bundle["ok"] = False
             bundle["source_authority_court"] = court
             return bundle
         try:
             import SarahMemoryResearch as _SMResearch  # type: ignore
             research_fn = getattr(_SMResearch, "get_research_data", None)
             if callable(research_fn):
-                bounded = _sm_bounded_call(research_fn, text, timeout_seconds=12.0, call_name="source_authority_research")
+                bounded = _sm_bounded_call(research_fn, text, mode=answer_mode, timeout_seconds=24.0, call_name="source_authority_research")
                 if bounded.get("ok") and isinstance(bounded.get("value"), dict):
                     research = bounded.get("value")
+                    research_meta = research.get("metadata") if isinstance(research.get("metadata"), dict) else {}
+                    meta["research_policy"] = {key: research_meta.get(key) for key in (
+                        "requested_mode", "web_allowed", "external_api_allowed",
+                        "local_only_policy", "safe_mode_policy", "force_offline_policy",
+                    )}
                     raw = str(research.get("data") or research.get("content") or research.get("snippet") or research.get("answer") or "").strip()
                     conf = float(research.get("confidence") or 0.0)
                     if raw and conf > 0.0 and "unable to find" not in raw.lower() and "research failed" not in raw.lower():
@@ -1088,9 +1095,15 @@ def _sm_try_sml_source_authority_route(text: str, *, local_only: bool = True, in
                             meta["evidence_verdict"] = ((evidence_packet.get("court_2") or {}) if isinstance(evidence_packet.get("court_2"), dict) else {}).get("verdict")
         except Exception as exc:
             meta["research_error"] = str(exc)
-        reply = "This question requires current-source evidence, but Research/API did not return a verified artifact. I will not substitute model memory as the final answer."
+        policy = meta.get("research_policy") if isinstance(meta.get("research_policy"), dict) else {}
+        blocked_lane = (answer_mode == "web" and policy.get("web_allowed") is False) or (answer_mode == "api" and policy.get("external_api_allowed") is False)
+        if blocked_lane:
+            reply = f"{answer_mode.upper()} research is unavailable under the current server policy. No current-source answer was verified."
+        else:
+            reply = "This question requires current-source evidence, but Research/API did not return a verified artifact. I will not substitute model memory as the final answer."
+        meta["reason"] = "no_accepted_current_source_artifact"
         bundle = _sm_make_outward_bundle(_sm_present_text(reply, intent="source_authority", meta=meta), meta=meta, raw_answer=reply)
-        bundle["ok"] = True
+        bundle["ok"] = False
         bundle["source_authority_court"] = court
         try:
             if isinstance(locals().get("evidence_packet"), dict):
@@ -2835,17 +2848,13 @@ def _sm_cmd_find_capability(name: str) -> dict:
 def _sm_cmd_extract_web_target(text: str) -> str:
     raw = str(text or "").strip()
     url = _extract_url_candidate(raw)
-    if url:
-        return _normalize_panel_url(url)
-    match = re.search(r"\b(?:open|connect\s+to|go\s+to|browse\s+to|load)\s+([a-z0-9][a-z0-9.-]{1,80})(?:\s|$)", raw, flags=re.I)
-    if not match:
+    if not url:
+        # A bare name may be a local application. Do not invent a .com target.
         return ""
-    host = match.group(1).strip(" .,:;\"'")
-    if not host or host.lower() in {"nailde", "terminal", "studio", "settings", "files", "device", "devices", "sarahnet"}:
+    if not re.search(r"https?://", raw, re.I) and re.search(r"\.(?:exe|bat|cmd|ps1|lnk)(?:$|[/?#])", url, re.I):
+        # A bare executable filename is not an explicit web address.
         return ""
-    if "." not in host:
-        host = f"www.{host}.com"
-    return _normalize_panel_url(host)
+    return _normalize_panel_url(url)
 
 
 def _sm_cmd_is_web_open_request(text: str) -> bool:
@@ -2871,9 +2880,9 @@ def _sm_cmd_web_open_bundle(url: str, original: str, *, pending_action_id: str =
     safe_url = _normalize_panel_url(url)
     cap = _sm_cmd_find_capability("research.open_url")
     actions = _sm_cmd_web_open_actions(safe_url)
-    task = _sm_cmd_create_task(source="chat_ui", capability="research.open_url", target=safe_url, status="completed", current_step="research_open_action_returned", payload={"url": safe_url, "user_request": original}, result={"actions": actions})
-    _sm_cmd_record_audit("research_open_url", capability="research.open_url", target=safe_url, task_id=task.get("task_id", ""), pending_action_id=pending_action_id, payload={"url": safe_url})
-    reply = f"Opening the Research Browser to {safe_url}."
+    task = _sm_cmd_create_task(source="chat_ui", capability="research.open_url", target=safe_url, status="queued", current_step="awaiting_browser_confirmation", payload={"url": safe_url, "user_request": original}, result={"actions": actions, "execution_verified": False})
+    _sm_cmd_record_audit("research_open_url_requested", capability="research.open_url", target=safe_url, task_id=task.get("task_id", ""), pending_action_id=pending_action_id, payload={"url": safe_url, "execution_verified": False})
+    reply = f"I sent the Research Browser an open request for {safe_url}. Browser completion has not been verified."
     chips = [_sm_cmd_chip("Show Task", "show_task", task_id=task.get("task_id"))]
     bundle = _sm_make_outward_bundle(reply, meta={"source": "command_spine", "engine": "research_browser_launcher", "intent": "open_url", "schema": _SM_COMMAND_SPINE_SCHEMA, "version": PROJECT_VERSION}, raw_answer=reply, actions=actions)
     bundle["ok"] = True
@@ -3022,8 +3031,8 @@ def _sm_cmd_pending_list_bundle(thread_id: str = "") -> dict:
             lines.append(f"- {item.get('pending_action_id')} | {item.get('capability')} | {item.get('target')} | expires {item.get('expires_at')}")
     chips = []
     if pending:
-        chips.append(_sm_cmd_chip("Approve Latest", "approve_pending_action", pending_action_id=pending[0].get("pending_action_id")))
-        chips.append(_sm_cmd_chip("Deny Latest", "deny_pending_action", pending_action_id=pending[0].get("pending_action_id")))
+        chips.append(_sm_cmd_chip("Approve This Action", "approve_pending_action", pending_action_id=pending[0].get("pending_action_id")))
+        chips.append(_sm_cmd_chip("Deny This Action", "deny_pending_action", pending_action_id=pending[0].get("pending_action_id")))
     bundle = _sm_make_outward_bundle("\n".join(lines), meta={"source": "command_spine", "engine": "pending_action_store", "intent": "pending_actions", "schema": _SM_COMMAND_SPINE_SCHEMA, "pending_count": len(pending), "version": PROJECT_VERSION}, raw_answer="\n".join(lines))
     bundle["ok"] = True
     bundle["pending_actions"] = pending
@@ -3137,7 +3146,7 @@ def _sm_cmd_resume_pending_action(pending_action_id: str, *, approved: bool = Tr
         url = str(p.get("url") or pending.get("target") or _sm_cmd_extract_web_target(original)).strip()
         if url:
             result = _sm_cmd_web_open_bundle(url, original, pending_action_id=pending_action_id)
-            _sm_cmd_set_pending_status(pending_action_id, "completed")
+            _sm_cmd_set_pending_status(pending_action_id, "action_sent")
             return result
         _sm_cmd_set_pending_status(pending_action_id, "error")
         bundle = _sm_make_outward_bundle("Approval was accepted, but the original web target could not be resolved.", meta={"source": "command_spine", "engine": "research_open_resume", "intent": "open_url", "pending_action": pending, "version": PROJECT_VERSION})
@@ -3160,14 +3169,8 @@ def _sm_try_command_execution_spine_route(text: str, *, payload: dict | None = N
         return _sm_cmd_resume_pending_action(pending_id, approved=True)
     if pending_id and _sm_cmd_is_denial_text(raw):
         return _sm_cmd_resume_pending_action(pending_id, approved=False)
-    if _sm_cmd_is_approval_text(raw):
-        pending = _sm_cmd_latest_waiting_pending(thread_id)
-        if pending:
-            return _sm_cmd_resume_pending_action(str(pending.get("pending_action_id") or ""), approved=True)
-    if _sm_cmd_is_denial_text(raw):
-        pending = _sm_cmd_latest_waiting_pending(thread_id)
-        if pending:
-            return _sm_cmd_resume_pending_action(str(pending.get("pending_action_id") or ""), approved=False)
+    # Require an exact pending-action ID; this does not establish operator
+    # authentication, which remains a separate approval contract.
     if re.search(r"\b(show|list|what|view)\b.*\b(pending|approval|approvals)\b", low):
         return _sm_cmd_pending_list_bundle(thread_id=thread_id)
     if re.search(r"\b(what|show|list|view)\b.*\b(running|task|tasks|agents|jobs|missions)\b", low) or low in {"task status", "show tasks", "show running tasks"}:
@@ -6529,10 +6532,16 @@ def _sm_b10_location_conflict_bundle(text: str, *, local_only: bool = True) -> d
     t = _sm_fast_normalize_question(text)
     if not t:
         return None
-    if not (
-        ("satellite" in t or "ip" in t or "internet" in t or "network" in t)
-        and ("location" in t or "texas" in t or "kansas" in t or "oklahoma" in t or "trust" in t)
-    ):
+    # This diagnostic owns *conflicting geolocation evidence*, not every
+    # Texas/internet question. The old substring test hijacked normal weather
+    # requests before SML/Research could run (observed October 18, 2026).
+    if re.search(r"\b(weather|forecast|temperature|humidity|precipitation|rainfall)\b", t):
+        return None
+    if not re.search(r"\b(location|geolocation|geolocate|where am i|physical locality|network exit|ip address)\b", t):
+        return None
+    if not re.search(r"\b(satellite|ip|dns|vpn|carrier|network|internet|kansas|oklahoma|texas)\b", t):
+        return None
+    if not (re.search(r"\btexas\b", t) and re.search(r"\b(kansas|oklahoma)\b", t)):
         return None
     reply = (
         "For physical/local context, SarahMemory should trust the user-declared location and the configured OS timezone first. "
@@ -8957,10 +8966,37 @@ def _sm_v07_try_network_current_guard_bundle(text: str, *, local_only: bool = Fa
         return None
     if re.search(r"\bare\s+you\s+connected\s+to\s+the\s+internet\s+right\s+now\b", t):
         return _sm_v07_bundle("I cannot verify an active internet connection from this local chat route. In offline/local-only mode, web and current-data access are unavailable.", source="sml_network_status_guard", intent="network_status", meta={"local_only": bool(local_only)})
+
+    # This presentation guard must not preempt *permitted* read-only research.
+    # Only trusted CORE runtime switches can arm live-source lookup; the browser
+    # lane or a client-supplied flag is not permission. The Research organ
+    # independently rechecks these switches before any outbound request.
+    web_research_armed = False
+    if not local_only:
+        try:
+            import SarahMemoryGlobals as _G  # type: ignore
+            _enabled = lambda value: str(value).strip().lower() in {"true", "1", "yes", "on"}
+            web_research_armed = bool(
+                not _enabled(getattr(_G, "LOCAL_ONLY_MODE", True))
+                and not _enabled(getattr(_G, "SAFE_MODE", False))
+                and not _enabled(os.getenv("SARAH_FORCE_OFFLINE", ""))
+                and _enabled(getattr(_G, "WEB_RESEARCH_ENABLED", False))
+            )
+        except Exception:
+            web_research_armed = False
+
     if re.search(r"\b(search\s+the\s+web|current\s+weather|today.s\s+top\s+news|current\s+price|right\s+now\s+while\s+offline)\b", t):
-        return _sm_v07_bundle("That requires a current network/source route. I will not fabricate live data while offline or without approved network access.", source="sml_current_info_guard", intent="current_information", meta={"local_only": bool(local_only), "requires_current_source": True})
+        if web_research_armed:
+            return None  # Delegate to existing governed SML/Research path.
+        bundle = _sm_v07_bundle("That requires a current network/source route. I will not fabricate live data while offline or without approved network access.", source="sml_current_info_guard", intent="current_information", meta={"local_only": bool(local_only), "requires_current_source": True, "research_armed": False, "reason": "current_source_unavailable"})
+        bundle["ok"] = False
+        return bundle
     if re.search(r"\b(current\s+president|president\s+of\s+the\s+united\s+states|current\s+(?:ceo|prime\s+minister|governor|mayor)|who\s+is\s+the\s+current)\b", t):
-        return _sm_v07_bundle("That is a current/public-office or current-role question. I will not answer it from stale local model memory or demo/static facts. Use an approved research/web source route so SarahMemory can verify the current holder before answering.", source="sml_current_role_guard", intent="current_information", meta={"local_only": bool(local_only), "requires_current_source": True, "stale_model_answer_blocked": True})
+        if web_research_armed:
+            return None
+        bundle = _sm_v07_bundle("That is a current/public-office or current-role question. I will not answer it from stale local model memory or demo/static facts. Use an approved research/web source route so SarahMemory can verify the current holder before answering.", source="sml_current_role_guard", intent="current_information", meta={"local_only": bool(local_only), "requires_current_source": True, "stale_model_answer_blocked": True, "research_armed": False, "reason": "current_source_unavailable"})
+        bundle["ok"] = False
+        return bundle
     if re.search(r"\bcan\s+you\s+answer\s+using\s+only\s+local\s+sources\s+right\s+now\b", t):
         return _sm_v07_bundle("Yes. In local-only mode I can answer from local model generation, persistent SQLite/local memory, bounded local knowledge, internal self-state/diagnostics, and approved local organs. I should not claim web/current-data access while offline.", source="sml_local_only_status", intent="network_status", meta={"local_only": True})
     return None
@@ -9156,16 +9192,16 @@ def api_chat():
             import SarahMemoryGlobals as G  # type: ignore
             payload_lane = _sm_chat_requested_answer_mode(payload, text)
             explicit_local_lane = payload_lane in {"local", "local_only", "offline"}
-            explicit_external_lane = payload_lane in {"any", "auto", "web", "api", "cloud"} and bool(payload.get("external_api_allowed_by_ui_lane"))
             payload_local_only = bool(payload.get("local_only") or payload.get("offline") or payload.get("LOCAL_ONLY_MODE") or payload.get("force_local_only"))
-            global_local_only = bool(getattr(G, "LOCAL_ONLY_MODE", False))
-            local_only = bool(explicit_local_lane or payload_local_only or (global_local_only and not explicit_external_lane))
+            global_local_only = str(getattr(G, "LOCAL_ONLY_MODE", True)).strip().lower() not in {"false", "0", "no", "off"}
+            local_only = bool(explicit_local_lane or payload_local_only or global_local_only)
             payload_safe_mode = bool(payload.get("safe_mode") or payload.get("SAFE_MODE") or payload.get("force_safe_mode"))
             safe_mode = bool(getattr(G, "SAFE_MODE", False) or payload_safe_mode)
             neoskymatrix = bool(getattr(G, "NEOSKYMATRIX", False))
             developersmode = bool(getattr(G, "DEVELOPERSMODE", False))
         except Exception:
-            local_only = False
+            payload_lane = "any"
+            local_only = True
             safe_mode = False
             neoskymatrix = False
             developersmode = False
@@ -9405,6 +9441,7 @@ def api_chat():
             text,
             local_only=local_only,
             intent=(intent or "question"),
+            answer_mode=payload_lane,
         )
         if isinstance(source_authority_bundle, dict):
             return jsonify(_sm_attach_reality_meta(source_authority_bundle, locals().get("reality_flow"))), 200
@@ -9854,7 +9891,8 @@ def api_chat():
                     errors=[] if result.get("ok") else [str(result.get("reason") or "agent_assist_proposal_blocked")],
                     raw_answer="\n".join(lines),
                 )
-                bundle["ok"] = True
+                # An inspect/propose record is not a verified user answer.
+                bundle["ok"] = False
                 bundle["agent_status"] = agent_status
                 bundle["task_id"] = result.get("task_id") or agent_status.get("task_id")
                 bundle["blocked"] = bool(result.get("blocked"))
@@ -10095,10 +10133,6 @@ def api_actions_approve():
     payload = request.get_json(silent=True) or {}
     pending_action_id = str(payload.get("pending_action_id") or payload.get("id") or "").strip()
     if not pending_action_id:
-        thread_id = _sm_cmd_thread_id(payload)
-        pending = _sm_cmd_latest_waiting_pending(thread_id)
-        pending_action_id = str((pending or {}).get("pending_action_id") or "")
-    if not pending_action_id:
         return jsonify({"ok": False, "error": "missing_pending_action_id", "schema": _SM_COMMAND_SPINE_SCHEMA}), 400
     return jsonify(_sm_cmd_resume_pending_action(pending_action_id, approved=True)), 200
 
@@ -10107,10 +10141,6 @@ def api_actions_approve():
 def api_actions_deny():
     payload = request.get_json(silent=True) or {}
     pending_action_id = str(payload.get("pending_action_id") or payload.get("id") or "").strip()
-    if not pending_action_id:
-        thread_id = _sm_cmd_thread_id(payload)
-        pending = _sm_cmd_latest_waiting_pending(thread_id)
-        pending_action_id = str((pending or {}).get("pending_action_id") or "")
     if not pending_action_id:
         return jsonify({"ok": False, "error": "missing_pending_action_id", "schema": _SM_COMMAND_SPINE_SCHEMA}), 400
     return jsonify(_sm_cmd_resume_pending_action(pending_action_id, approved=False)), 200
@@ -14394,7 +14424,7 @@ def api_research_search_phase1_contract():
         fn = getattr(_SMResearch, "get_research_data", None) or getattr(_SMResearch, "get_local_research_data", None)
         if not callable(fn):
             raise RuntimeError("SarahMemoryResearch has no callable research entrypoint.")
-        bounded = _sm_bounded_call(fn, query, timeout_seconds=12.0, call_name="api_research_search") if callable(globals().get("_sm_bounded_call")) else {"ok": True, "value": fn(query)}
+        bounded = _sm_bounded_call(fn, query, timeout_seconds=24.0, call_name="api_research_search") if callable(globals().get("_sm_bounded_call")) else {"ok": True, "value": fn(query)}
         if not bounded.get("ok"):
             raise RuntimeError(str(bounded.get("error") or "research timeout"))
         raw = bounded.get("value")
@@ -14408,8 +14438,31 @@ def api_research_search_phase1_contract():
             source = "SarahMemoryResearch"
         summary = _sm_phase1_compact_text(summary, max_chars=1600)
         snippet = _sm_phase1_compact_text(summary, max_chars=700)
-        result = {"title": "SarahMemory local research", "summary": summary, "snippet": snippet, "source": source, "confidence": confidence}
-        return jsonify({"ok": True, "success": True, "query": query, "summary": summary, "results": [result] if summary else [], "sources": [source], "schema": _SM_PHASE1_CONTRACT_SCHEMA, "ts": time.time()}), 200
+        # A completed lookup is not a successful research result unless it has
+        # actual content. Preserve the existing JSON contract and HTTP status
+        # convention while reporting an honest empty-result state.
+        # A non-empty failure message with zero confidence is NOT an answer.
+        # ResearchResult.NONE deliberately emits an explanatory message; do
+        # not expose that message as verified research/sources.
+        try:
+            meaningful_confidence = float(confidence or 0.0) > 0.0
+        except (TypeError, ValueError):
+            meaningful_confidence = False
+        has_answer = bool(summary) and meaningful_confidence and source.lower() not in {"none", "error", "local_none", "local_error"}
+        result = {"title": "SarahMemory research result", "summary": summary, "snippet": snippet, "source": source, "confidence": confidence}
+        response = {
+            "ok": has_answer,
+            "success": has_answer,
+            "query": query,
+            "summary": summary,
+            "results": [result] if has_answer else [],
+            "sources": [source] if has_answer else [],
+            "schema": _SM_PHASE1_CONTRACT_SCHEMA,
+            "ts": time.time(),
+        }
+        if not has_answer:
+            response["error"] = "Research returned no verified answer."
+        return jsonify(response), 200
     except Exception as exc:
         return jsonify({"ok": False, "success": False, "query": query, "summary": "", "results": [], "sources": [], "error": str(exc), "schema": _SM_PHASE1_CONTRACT_SCHEMA, "ts": time.time()}), 200
 
