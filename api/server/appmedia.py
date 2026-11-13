@@ -69,6 +69,7 @@ import hashlib
 import json
 import os
 import re
+import math
 import time
 import uuid
 import threading
@@ -1150,37 +1151,71 @@ def media_job_render():
                     style = (m.get("style") or payload.get("style") or "default").strip()
                     tempo = int(m.get("tempo") or payload.get("tempo") or 120)
 
-                    create_project = getattr(studio, "create_project", None)
-                    generate_song = getattr(studio, "generate_song", None) or getattr(MG, "generate_song", None)
-                    export_project = getattr(studio, "export_project", None) or getattr(studio, "export", None)
+                    # The CORE music engine owns composition and PCM export.  Its
+                    # legacy module-level generate_song(filename) is not a
+                    # duration/style/tempo API; calling it that way fails before
+                    # generating a single playable artifact.
+                    if payload.get("lyrics"):
+                        raise ValueError("lyrics_to_song_render_not_yet_integrated")
+                    if fmt != "wav":
+                        raise ValueError("music_engine_supports_wav_only")
+                    if not math.isfinite(duration) or not (0.25 <= duration <= 60.0):
+                        raise ValueError("music_duration_out_of_bounds")
+                    if not (40 <= tempo <= 240):
+                        raise ValueError("music_tempo_out_of_bounds")
 
-                    project = None
-                    if callable(create_project):
-                        project = create_project(f"Job {job_id}", tempo=tempo, key=(m.get("key") or "C"), time_signature=(4, 4))
+                    supported_styles = getattr(MG, "CHORD_PROGRESSIONS", {})
+                    if not isinstance(supported_styles, dict) or not supported_styles:
+                        raise RuntimeError("music_styles_unavailable")
+                    requested_style = str(m.get("style") or payload.get("style") or "").strip().lower()
+                    prompt = str(payload.get("prompt") or "")
+                    if not requested_style:
+                        for token in re.findall(r"[a-z]+", prompt.lower()):
+                            if token in supported_styles:
+                                requested_style = token
+                                break
+                    if requested_style not in supported_styles:
+                        # No claim that an unrelated fixed tune fulfills an
+                        # arbitrary natural-language composition request.
+                        raise ValueError("unsupported_freeform_music_prompt")
 
-                    if callable(generate_song):
-                        song = generate_song(duration=duration, style=style, tempo=tempo)  # type: ignore[misc]
-                    else:
-                        song = None
-
-                    if isinstance(song, (bytes, bytearray)):
-                        _write_bytes(out_path, bytes(song))
-                    elif callable(export_project):
-                        export_project(project, out_path, format=fmt.upper(), quality=(m.get("quality") or "high"))  # type: ignore[misc]
-                        if not os.path.isfile(out_path):
-                            guess = f"{out_path}.{fmt}"
-                            if os.path.isfile(guess):
-                                out_path = guess
-                    else:
-                        gen_tone = getattr(MG, "generate_tone", None)
-                        if callable(gen_tone):
-                            tone = gen_tone(440.0, duration=duration)  # type: ignore[misc]
-                            if isinstance(tone, (bytes, bytearray)):
-                                _write_bytes(out_path, bytes(tone))
-                            else:
-                                raise RuntimeError("tone_not_bytes")
-                        else:
-                            raise RuntimeError("music_generator_missing_entrypoints")
+                    key = str(m.get("key") or "C")
+                    get_scale = getattr(getattr(MG, "MusicTheory", None), "get_scale_notes", None)
+                    if not callable(get_scale) or not get_scale(key, "major"):
+                        raise ValueError("unsupported_music_key")
+                    project = studio.create_project(
+                        f"Job {job_id}", tempo=tempo, key=key,
+                        time_signature=(4, 4),
+                    )
+                    project.duration = duration
+                    chord_track = project.add_track("chords", instrument_type="synth")
+                    chord_track.add_midi_pattern(
+                        studio.generate_chord_progression(key, requested_style, bars=4), loop=True,
+                    )
+                    melody_track = project.add_track("melody", instrument_type="synth")
+                    melody_track.add_midi_pattern(
+                        studio.generate_melody(key, "major", length=16), loop=True,
+                    )
+                    drum_track = project.add_track("percussion", instrument_type="synth")
+                    drum_track.add_midi_pattern(
+                        studio.generate_drum_pattern(requested_style, bars=4), loop=True,
+                    )
+                    if not studio.export_project(project, out_path, format="WAV", quality="high"):
+                        raise RuntimeError("music_export_declined_by_core")
+                    if not os.path.isfile(out_path) or os.path.getsize(out_path) <= 44:
+                        raise RuntimeError("music_export_missing_or_empty")
+                    # Identify the limited, score-based composition honestly;
+                    # this is not full free-form text-to-music synthesis.
+                    manifest.setdefault("notes", []).append(
+                        "music_rendered_using_local_score_engine_style_only"
+                    )
+                    manifest["music_render"] = {
+                        "style": requested_style,
+                        "tempo": tempo,
+                        "duration_seconds": duration,
+                        "prompt_semantics": "genre_token_only",
+                        "vocals_synthesized": False,
+                    }
 
                     if _job_cancel_requested(job_id):
                         result = _cancelled_result(job_id, kind, payload, manifest)
