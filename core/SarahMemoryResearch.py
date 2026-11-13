@@ -2,7 +2,7 @@
 File: SarahMemoryResearch.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
 Version: v9.1.0a (Enterprise)
-Date: 2026-11-01
+Date: 2026-10-15
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -104,7 +104,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-11-01"
+# VALIDATION_DATE = "2026-07-11"
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
@@ -883,10 +883,29 @@ def discover_cloud_node(force: bool = False) -> Dict[str, Any]:
         out.update({"reason": "cloud_node_base_url_missing"})
         return out
 
+    # A forced refresh may bypass cached status, never offline/authority policy.
+    # Recheck between blocking calls so revocation stops subsequent dispatches.
+    def _discovery_policy_check(stage: str) -> bool:
+        allowed, policy_reason = _cloud_research_allowed()
+        if allowed:
+            return True
+        out.update({"reason": policy_reason, "policy_stage": stage})
+        return False
+
+    if not _discovery_policy_check("before_health"):
+        return out
     health = _cloud_json_request("/api/health")
+    if not _discovery_policy_check("after_health"):
+        return out
     version = _cloud_json_request("/api/version")
+    if not _discovery_policy_check("after_version"):
+        return out
     beacon = _cloud_json_request("/api/smugcc/beacon")
+    if not _discovery_policy_check("after_beacon"):
+        return out
     net2 = _cloud_json_request("/api/net2/health", timeout=min(_cloud_node_timeout(), 3.0))
+    if not _discovery_policy_check("after_net2"):
+        return out
     identity = _cloud_node_identity_from_beacon(beacon if isinstance(beacon, dict) else {})
     required_schema = str(getattr(config, "SARAHMEMORY_CLOUD_NODE_REQUIRED_BEACON_SCHEMA", "SarahMemory.SMUGCC.beacon.v1") or "")
     health_ok = bool(health.get("ok") or str(health.get("status") or "").lower() in ("ok", "healthy", "running"))
@@ -959,7 +978,25 @@ def get_cloud_research_data(query: str, *, force: bool = False) -> Dict[str, Any
         receipt = _record_cloud_node_receipt("CLOUD_RESEARCH_BLOCKED", q, "BLOCK", f"Cloud research blocked: {reason}", metadata)
         return {"ok": False, "source": "cloud_sarahmemory_node", "data": "", "confidence": 0.0, "reason": reason, "receipt": receipt, "execution_authority": False}
 
+    # Discovery can take time; authorization may have been revoked while
+    # contacting the node. Never dispatch research based on a stale grant.
+    def _blocked_after_revocation(stage: str) -> Optional[Dict[str, Any]]:
+        still_allowed, current_reason = _cloud_research_allowed()
+        if still_allowed:
+            return None
+        metadata = {"reason": current_reason, "stage": stage, "cloud_node": _cloud_node_base_url()}
+        receipt = _record_cloud_node_receipt(
+            "CLOUD_RESEARCH_BLOCKED", q, "BLOCK",
+            f"Cloud research blocked after {stage}: {current_reason}", metadata,
+        )
+        return {"ok": False, "source": "cloud_sarahmemory_node", "data": "",
+                "confidence": 0.0, "reason": current_reason, "receipt": receipt,
+                "execution_authority": False}
+
     discovery = discover_cloud_node(force=True)
+    revoked = _blocked_after_revocation("discovery")
+    if revoked is not None:
+        return revoked
     if not bool(discovery.get("verified")):
         metadata = {"discovery": discovery}
         receipt = _record_cloud_node_receipt("CLOUD_DISCOVERY_FAILED", q, "BLOCK", "Cloud node discovery or identity verification failed.", metadata)
@@ -977,6 +1014,11 @@ def get_cloud_research_data(query: str, *, force: bool = False) -> Dict[str, Any
         },
     }
     cloud = _cloud_json_request("/api/research/search", method="POST", payload=request_payload, timeout=max(_cloud_node_timeout(), 8.0))
+    # The request may already have been sent, but revoked evidence must not
+    # be recorded as accepted or returned to the caller.
+    revoked = _blocked_after_revocation("cloud_response")
+    if revoked is not None:
+        return revoked
     cloud_ok = bool(cloud.get("ok") or cloud.get("success") or cloud.get("data") or cloud.get("answer") or cloud.get("result"))
     data = str(cloud.get("data") or cloud.get("answer") or cloud.get("result") or cloud.get("snippet") or "")
     if not data and isinstance(cloud.get("response"), dict):
@@ -1897,6 +1939,9 @@ class WebResearch:
         if re.search(r"\b(weather|temperature|conditions|forecast|rain|precipitation)\b", query, re.I):
             try:
                 live_weather = await WebResearch._fetch_current_weather(query)
+                # Authorization may be revoked while the weather provider awaits.
+                if not _external_research_allowed("web"):
+                    return None
                 if live_weather is not None:
                     live_weather.latency_ms = int((time.time() - start_time) * 1000)
                     return live_weather
@@ -1911,7 +1956,7 @@ class WebResearch:
             cached_source = (cached_result.source.value
                              if isinstance(cached_result.source, ResearchSource)
                              else str(cached_result.source))
-            if cached_source.startswith("web_"):
+            if cached_source.startswith("web_") and _external_research_allowed("web"):
                 return cached_result
         
         clean_query = WebResearch.preprocess_query(query)
@@ -1960,7 +2005,10 @@ class WebResearch:
         # Execute all tasks concurrently
         if tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            
+            # Do not process, synthesize, cache, or release revoked WEB evidence.
+            if not _external_research_allowed("web"):
+                return None
+
             # Process results
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
@@ -2002,9 +2050,11 @@ class WebResearch:
                     metadata={"sources": list(raw.keys()), "raw_count": len(raw), "raw_source_artifacts": raw_source_artifacts, "source_family": "web_research"}
                 )
                 
-                # Cache the result
+                # Provider permission may change while evidence is assembled.
+                if not _external_research_allowed("web"):
+                    return None
                 cache_result(query, result)
-                
+
                 return result
             
             # If synthesis failed, return first valid raw result
@@ -2012,6 +2062,8 @@ class WebResearch:
                 if val and isinstance(val, str):
                     latency_ms = int((time.time() - start_time) * 1000)
                     
+                    if not _external_research_allowed("web"):
+                        return None
                     result = ResearchResult(
                         source=ResearchSource.WEB_DUCKDUCKGO,
                         content=val,
@@ -2022,8 +2074,10 @@ class WebResearch:
                         metadata={"sources": list(raw.keys()), "source_family": "web_research"}
                     )
                     
+                    if not _external_research_allowed("web"):
+                        return None
                     return result
-        
+
         logger.warning("[WEB] No web results found")
         return None
     
@@ -2497,6 +2551,18 @@ async def parallel_research(query: str, mode: str = "any") -> ResearchResult:
                     or (source.startswith("local_") and mode in {"any", "local"}
                         and bool(getattr(config, "LOCAL_DATA_ENABLED", False)))):
                 return cached
+        # The original request still owns the single-flight slot. A cache
+        # miss must not dispatch another external provider request. Return a
+        # bounded, non-cacheable pending result; the caller may retry.
+        return ResearchResult(
+            source=ResearchSource.NONE,
+            content="An identical research request is in progress; retry shortly.",
+            confidence=0.0,
+            query=query,
+            intent="pending",
+            latency_ms=int((time.time() - start_time) * 1000),
+            metadata={"method": "duplicate_query_in_progress"},
+        )
     
     try:
         # Classify intent
@@ -2514,7 +2580,9 @@ async def parallel_research(query: str, mode: str = "any") -> ResearchResult:
             """Web research task."""
             if mode in {"any", "web"} and _external_research_allowed("web"):
                 try:
-                    return await WebResearch.fetch_sources(query)
+                    result = await WebResearch.fetch_sources(query)
+                    # A request started while armed may finish after revocation.
+                    return result if _external_research_allowed("web") else None
                 except Exception as e:
                     logger.warning(f"[PARALLEL WEB ERROR] {e}")
             return None
@@ -2522,7 +2590,8 @@ async def parallel_research(query: str, mode: str = "any") -> ResearchResult:
         async def api_task():
             """API research task."""
             if mode in {"any", "api"} and _external_research_allowed("api"):
-                return await asyncio.to_thread(APIResearch.query, query, intent)
+                result = await asyncio.to_thread(APIResearch.query, query, intent)
+                return result if _external_research_allowed("api") else None
             return None
         
         # Governed fallback: local evidence first for timeless queries; for
@@ -2562,6 +2631,11 @@ async def parallel_research(query: str, mode: str = "any") -> ResearchResult:
                 source_name = ["local", "web", "api"][i]
                 logger.warning(f"[RESEARCH] {source_name} task failed: {result}")
             elif result and isinstance(result, ResearchResult):
+                # Filter revoked external lanes before Evidence Court selection.
+                if i == 1 and not _external_research_allowed("web"):
+                    continue
+                if i == 2 and not _external_research_allowed("api"):
+                    continue
                 valid_results.append(result)
         
         # Select best result through SML Evidence Court when available. This is
@@ -2602,6 +2676,23 @@ async def parallel_research(query: str, mode: str = "any") -> ResearchResult:
                 valid_results.sort(key=lambda r: r.confidence, reverse=True)
                 best_result = valid_results[0]
             best_result = _research_source_label(best_result, "parallel_research")
+            # Court selection is not an execution authorization. Revalidate
+            # the selected external lane before recording or caching evidence.
+            _selected_source = (best_result.source.value if hasattr(best_result.source, "value")
+                                else str(best_result.source))
+            _selected_lane = ("web" if _selected_source.startswith("web_") else
+                              "api" if _selected_source.startswith("api_") else None)
+            if _selected_lane and not _external_research_allowed(_selected_lane):
+                logger.info("[RESEARCH] Selected %s evidence withheld after authorization revocation", _selected_lane)
+                return ResearchResult(
+                    source=ResearchSource.NONE,
+                    content="External research authorization was revoked before evidence release.",
+                    confidence=0.0,
+                    query=query,
+                    intent=intent,
+                    latency_ms=int((time.time() - start_time) * 1000),
+                    metadata={"method": "external_research_authorization_revoked"},
+                )
             if isinstance(best_result.metadata, dict) and isinstance(evidence_court, dict):
                 best_result.metadata.setdefault("evidence_court", evidence_court)
             
@@ -2764,6 +2855,13 @@ def get_research_data(query: str, *, mode: str = "any") -> Dict[str, Any]:
             out["metadata"]["local_only_policy"] = str(getattr(config, "LOCAL_ONLY_MODE", True)).strip().lower() not in {"false", "0", "no", "off"}
             out["metadata"]["safe_mode_policy"] = str(getattr(config, "SAFE_MODE", False)).strip().lower() in {"true", "1", "yes", "on"}
             out["metadata"]["force_offline_policy"] = str(os.getenv("SARAH_FORCE_OFFLINE", "")).strip().lower() in {"true", "1", "yes", "on"}
+        # A duplicate is still owned by another in-flight local research call.
+        # Pending is not a failed lookup: do not create an independent cloud
+        # request that bypasses the single-flight provider dispatch boundary.
+        if (str(out.get("intent") or "").strip().lower() == "pending"
+                and isinstance(out.get("metadata"), dict)
+                and out["metadata"].get("method") == "duplicate_query_in_progress"):
+            return out
         online_policy = str(getattr(config, "LOCAL_ONLY_MODE", True)).strip().lower() in {"false", "0", "no", "off"}
         if str(mode or "any").strip().lower() == "any" and online_policy and _query_needs_cloud_research(query, out) and not _runtime_is_cloud():
             cloud = get_cloud_research_data(query)
@@ -2810,6 +2908,9 @@ def fetch_image_url(query: str) -> Optional[str]:
     Returns:
         Image URL if found, None otherwise
     """
+    if not _external_research_allowed("web"):
+        logger.info("[WEB POLICY] fetch_image_url denied by active WEB policy")
+        return None
     try:
         import urllib.request
         import urllib.parse
@@ -2820,6 +2921,10 @@ def fetch_image_url(query: str) -> Optional[str]:
         req = urllib.request.Request(url, headers={"User-Agent": "SarahMemoryBot/8.0"})
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SHORT) as response:
             page = response.read().decode("utf-8", errors="ignore")
+        # Revocation during a blocking response must prevent evidence release.
+        if not _external_research_allowed("web"):
+            logger.info("[WEB POLICY] fetch_image_url result discarded after WEB revocation")
+            return None
         
         # Check for CAPTCHA
         if WebResearch._is_ddg_blocked(page):
@@ -2851,6 +2956,9 @@ def fetch_web_snippets(query: str, max_len: int = 800) -> str:
     Returns:
         Concatenated snippets
     """
+    if not _external_research_allowed("web"):
+        logger.info("[WEB POLICY] fetch_web_snippets denied by active WEB policy")
+        return ""
     try:
         import urllib.request
         import urllib.parse
@@ -2861,6 +2969,10 @@ def fetch_web_snippets(query: str, max_len: int = 800) -> str:
         req = urllib.request.Request(url, headers={"User-Agent": "SarahMemoryBot/8.0"})
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SHORT) as response:
             page = response.read().decode("utf-8", errors="ignore")
+        # Revocation during a blocking response must prevent evidence release.
+        if not _external_research_allowed("web"):
+            logger.info("[WEB POLICY] fetch_web_snippets result discarded after WEB revocation")
+            return ""
         
         # Check for CAPTCHA
         if WebResearch._is_ddg_blocked(page):

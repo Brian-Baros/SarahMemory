@@ -53,7 +53,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # RELEASE_PHASE = "ALPHA"
 # RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-08-07"
+# VALIDATION_DATE = "2026-11-01"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "NAILDE visual governed SDK/sandbox runtime. No live file writes, no device mutation, no production weight/tensor edits, no self-approval."
@@ -3576,6 +3576,251 @@ def run_game(context=None):
             "sandbox_only": True,
         }
 
+    # Agent Forge V1: visual graph contract and bounded sandbox evaluations.
+    # Uses the existing NAILDE command bridge; no shell, outbound agent launch,
+    # production patching, or bypass of Terminal Bay passport authority.
+    _FORGE_KINDS = frozenset({
+        "agent", "harness", "mission", "research", "governance",
+        "capsule", "return", "compare", "output", "memory", "sensor",
+    })
+    _FORGE_REQUIRED_PATH = (
+        "agent", "harness", "mission", "research", "governance",
+        "capsule", "return", "compare", "output",
+    )
+
+    def _forge_normalize(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        graph = payload.get("graph")
+        if not isinstance(graph, dict):
+            raise ValueError("forge_graph_required")
+        raw_nodes, raw_edges = graph.get("nodes"), graph.get("edges")
+        if not isinstance(raw_nodes, list) or not isinstance(raw_edges, list):
+            raise ValueError("forge_nodes_and_edges_required")
+        if len(raw_nodes) > 32 or len(raw_edges) > 80:
+            raise ValueError("forge_graph_size_limit_exceeded")
+        nodes = []
+        seen = set()
+        for raw in raw_nodes:
+            if not isinstance(raw, dict):
+                raise ValueError("forge_invalid_node")
+            node_id = str(raw.get("id") or "").strip()
+            kind = str(raw.get("kind") or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,48}", node_id) or node_id in seen or kind not in self._FORGE_KINDS:
+                raise ValueError("forge_invalid_or_duplicate_node")
+            seen.add(node_id)
+            # Visual coordinates are presentation data only, never authority.
+            # Reject nonfinite values instead of persisting malformed positions.
+            try:
+                x = float(raw.get("x", 400))
+                y = float(raw.get("y", 180))
+                if not (0 <= x <= 920 and 0 <= y <= 400):
+                    raise ValueError("forge_node_position_out_of_bounds")
+            except (ValueError, TypeError):
+                raise ValueError("forge_node_position_invalid")
+            nodes.append({"id": node_id, "kind": kind, "label": str(raw.get("label") or kind)[:72], "x": x, "y": y})
+        edges = []
+        edge_set = set()
+        for raw in raw_edges:
+            if not isinstance(raw, dict):
+                raise ValueError("forge_invalid_edge")
+            source, target = str(raw.get("source") or ""), str(raw.get("target") or "")
+            if source not in seen or target not in seen or source == target or (source, target) in edge_set:
+                raise ValueError("forge_invalid_or_duplicate_edge")
+            edge_set.add((source, target))
+            edges.append({"source": source, "target": target})
+        mission = str(payload.get("objective") or "").strip()[:1200]
+        destination = str(payload.get("destination") or "local").strip()
+        if destination not in {"local", "approved_web_proposal"}:
+            raise ValueError("forge_destination_not_supported")
+        return {"schema": "SarahMemory.nailde.agent_forge.v1", "nodes": nodes,
+                "edges": edges, "objective": mission, "destination": destination,
+                "passport_required": True, "compare_required": True,
+                "sandbox_only": True, "execution_authority": False}
+
+    def _forge_inspect(self, graph: Dict[str, Any]) -> Dict[str, Any]:
+        by_kind = {}
+        for node in graph["nodes"]:
+            by_kind.setdefault(node["kind"], []).append(node["id"])
+        adj = {node["id"]: [] for node in graph["nodes"]}
+        for edge in graph["edges"]:
+            adj[edge["source"]].append(edge["target"])
+        colors = {}
+        def cycle_at(node_id: str) -> bool:
+            if colors.get(node_id) == 1:
+                return True
+            if colors.get(node_id) == 2:
+                return False
+            colors[node_id] = 1
+            if any(cycle_at(nxt) for nxt in adj[node_id]):
+                return True
+            colors[node_id] = 2
+            return False
+        cyclic = any(cycle_at(node_id) for node_id in adj if not colors.get(node_id))
+        path_ok = not cyclic
+        for a, b in zip(self._FORGE_REQUIRED_PATH, self._FORGE_REQUIRED_PATH[1:]):
+            if len(by_kind.get(a, [])) != 1 or len(by_kind.get(b, [])) != 1:
+                path_ok = False
+                continue
+            if by_kind[b][0] not in adj[by_kind[a][0]]:
+                path_ok = False
+        def bypasses_gate(gate_kind: str, target_kind: str) -> bool:
+            if len(by_kind.get("agent", [])) != 1 or len(by_kind.get(target_kind, [])) != 1:
+                return True
+            blocked_ids = set(by_kind.get(gate_kind, []))
+            frontier = [by_kind["agent"][0]]
+            visited = set()
+            target = by_kind[target_kind][0]
+            while frontier:
+                current = frontier.pop()
+                if current in visited or current in blocked_ids:
+                    continue
+                if current == target:
+                    return True
+                visited.add(current)
+                frontier.extend(adj.get(current, []))
+            return False
+        checks = {
+            "no_governance_bypass": not bypasses_gate("governance", "capsule"),
+            "no_compare_bypass": not bypasses_gate("compare", "output"),
+            "objective_present": bool(graph["objective"]),
+            "required_blocks_present": all(len(by_kind.get(k, [])) == 1 for k in self._FORGE_REQUIRED_PATH),
+            "required_flow_connected": path_ok,
+            "acyclic_flow": not cyclic,
+            "passport_declared": bool(graph["passport_required"]),
+            "compare_declared": bool(graph["compare_required"]),
+            "sandbox_only": bool(graph["sandbox_only"]) and graph["execution_authority"] is False,
+            "destination_is_proposal": graph["destination"] in {"local", "approved_web_proposal"},
+        }
+        return {"checks": checks, "passed": sum(checks.values()), "total": len(checks),
+                "structural_score_percent": round(100 * sum(checks.values()) / len(checks), 2),
+                "qualified": all(checks.values()), "runtime_success_probability": None,
+                "score_meaning": "structural contract checks only; NOT empirical mission success"}
+
+    def forge_command(self, command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        workspace_id = str(payload.get("workspace_id") or "").strip()
+        if not workspace_id or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,140}", workspace_id):
+            return {"ok": False, "blocked": True, "reason": "forge_workspace_required", "execution_authority": False}
+        # Do not create a workspace implicitly; operator must establish it in NAILDE.
+        root = self._workspace_root(workspace_id)
+        if not os.path.isfile(os.path.join(root, "nailde_workspace_manifest.json")):
+            return {"ok": False, "blocked": True, "reason": "forge_workspace_not_found", "execution_authority": False}
+        path = self._workspace_file_path(workspace_id, "sandbox/forge/mission.json")
+        if command == "forge.seal":
+            try:
+                graph = self._forge_normalize(payload)
+            except (ValueError, TypeError) as exc:
+                return {"ok": False, "blocked": True, "reason": str(exc), "execution_authority": False}
+            inspection = self._forge_inspect(graph)
+            if not inspection["qualified"]:
+                return {"ok": False, "blocked": True, "reason": "forge_contract_incomplete", "inspection": inspection, "execution_authority": False}
+            content_hash = _sha256_text(graph)
+            receipt = self._record_receipt("NAILDE_FORGE_SEALED", workspace_id,
+                "Validated agent mission graph sealed for sandbox planning; no launch",
+                {"workspace_id": workspace_id, "graph_hash": content_hash,
+                 "risk": "medium", "verdict": "SANDBOX_ONLY", "node_count": len(graph["nodes"])})
+            if not isinstance(receipt, dict) or not receipt.get("ok"):
+                return {"ok": False, "blocked": True, "reason": "forge_ledger_receipt_required", "receipt": receipt,
+                        "execution_authority": False}
+            capsule = {"graph": graph, "hash": content_hash, "sealed_at": _now_iso(),
+                       "inspection": inspection, "receipt": receipt, "trials": [],
+                       "launch_status": "prepared_not_launched", "passport_status": "required_not_issued",
+                       "execution_authority": False}
+            _ensure_dir(os.path.dirname(path))
+            # Preserve the previous valid sandbox capsule before replacement.
+            # This is a rollback artifact, never an automatic live restore.
+            if os.path.isfile(path) and os.path.getsize(path) <= 262144:
+                with open(path, "r", encoding="utf-8") as fh:
+                    previous = json.load(fh)
+                previous_graph = previous.get("graph")
+                if not isinstance(previous_graph, dict) or _sha256_text(previous_graph) != previous.get("hash"):
+                    return {"ok": False, "blocked": True, "reason": "forge_previous_capsule_integrity_failed", "execution_authority": False}
+                backup_dir = self._workspace_file_path(workspace_id, "sandbox/forge/revisions")
+                _ensure_dir(backup_dir)
+                snapshot_path = self._workspace_file_path(workspace_id, "sandbox/forge/revisions/" + str(previous["hash"]) + "_" + uuid.uuid4().hex[:8] + ".json")
+                with open(snapshot_path, "x", encoding="utf-8") as fh:
+                    json.dump(previous, fh, indent=2, sort_keys=True)
+            temp_path = path + "." + uuid.uuid4().hex + ".tmp"
+            try:
+                with open(temp_path, "w", encoding="utf-8") as fh:
+                    json.dump(capsule, fh, sort_keys=True, indent=2)
+                os.replace(temp_path, path)
+            finally:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+            return {"ok": True, "sealed": True, "capsule": capsule, "execution_authority": False}
+        if not os.path.isfile(path) or os.path.getsize(path) > 262144:
+            return {"ok": False, "blocked": True, "reason": "forge_sealed_capsule_unavailable", "execution_authority": False}
+        with open(path, "r", encoding="utf-8") as fh:
+            capsule = json.load(fh)
+        graph = capsule.get("graph")
+        if not isinstance(graph, dict) or _sha256_text(graph) != capsule.get("hash"):
+            return {"ok": False, "blocked": True, "reason": "forge_capsule_integrity_failed", "execution_authority": False}
+        if command == "forge.status":
+            return {"ok": True, "capsule": capsule, "execution_authority": False}
+        if command != "forge.evaluate":
+            return {"ok": False, "blocked": True, "reason": "forge_unknown_command", "execution_authority": False}
+        trials = capsule.get("trials")
+        if not isinstance(trials, list) or len(trials) >= 10:
+            return {"ok": False, "blocked": True, "reason": "forge_trial_limit_10", "execution_authority": False}
+        inspection = self._forge_inspect(graph)
+        if not inspection["qualified"]:
+            return {"ok": False, "blocked": True, "reason": "forge_revalidation_failed", "inspection": inspection, "execution_authority": False}
+        candidate = payload.get("candidate")
+        if not isinstance(candidate, dict):
+            return {"ok": False, "blocked": True, "reason": "forge_candidate_required", "execution_authority": False}
+        # Deterministic policy preflight — not a success prediction.  Each
+        # candidate is a new bounded parameter variant of the sealed graph.
+        try:
+            if isinstance(candidate.get("source_budget"), bool) or isinstance(candidate.get("review_depth"), bool):
+                raise ValueError("bool_is_not_number")
+            sources = int(candidate.get("source_budget"))
+            depth = int(candidate.get("review_depth"))
+            if not (1 <= sources <= 10 and 1 <= depth <= 5) or candidate.get("local_fallback") is not True:
+                raise ValueError("candidate_out_of_bounds_or_local_fallback_missing")
+        except (ValueError, TypeError):
+            return {"ok": False, "blocked": True, "reason": "forge_candidate_invalid", "execution_authority": False}
+        candidate_norm = {"source_budget": sources, "review_depth": depth, "local_fallback": True}
+        if any(t.get("candidate") == candidate_norm for t in trials):
+            return {"ok": False, "blocked": True, "reason": "forge_duplicate_candidate_variant", "execution_authority": False}
+        candidate_checks = {
+            "multiple_evidence_sources_budgeted": sources >= 2,
+            "deep_validation_budgeted": depth >= 3,
+            "source_budget_resource_constrained": sources <= 6,
+            "local_fallback_required": True,
+        }
+        all_checks = {**inspection["checks"], **candidate_checks}
+        qualified = all(all_checks.values())
+        inspection = {**inspection, "checks": all_checks,
+                      "passed": sum(all_checks.values()), "total": len(all_checks),
+                      "structural_score_percent": round(100 * sum(all_checks.values()) / len(all_checks), 2),
+                      "qualified": qualified,
+                      "score_meaning": "deterministic structural and declared-policy preflight ONLY; no external outcomes tested"}
+        trial = {"index": len(trials) + 1, "ts": _now_iso(),
+                 "graph_hash": capsule["hash"], "candidate": candidate_norm, "inspection": inspection,
+                 "actual_external_execution": False, "return_evidence_verified": False,
+                 "success_probability_percent": None}
+        receipt = self._record_receipt("NAILDE_FORGE_TRIAL_EVALUATED", workspace_id,
+            "Deterministic Forge structural evaluation, not a live agent trial",
+            {"workspace_id": workspace_id, "trial": trial["index"], "graph_hash": capsule["hash"],
+             "risk": "low", "verdict": "STRUCTURAL_EVALUATION_ONLY"})
+        if not isinstance(receipt, dict) or not receipt.get("ok"):
+            return {"ok": False, "blocked": True, "reason": "forge_trial_ledger_receipt_required", "execution_authority": False}
+        trial["receipt"] = receipt
+        trials.append(trial)
+        capsule["trials"] = trials
+        capsule["average_structural_score_percent"] = round(sum(t["inspection"]["structural_score_percent"] for t in trials) / len(trials), 2)
+        qualified_trials = [t for t in trials if t["inspection"].get("qualified")]
+        capsule["preferred_trial"] = (max(qualified_trials, key=lambda t: t["inspection"]["structural_score_percent"])["index"] if qualified_trials else None)
+        capsule["preferred_is_proposal_only"] = True
+        temp_path = path + "." + uuid.uuid4().hex + ".tmp"
+        try:
+            with open(temp_path, "w", encoding="utf-8") as fh:
+                json.dump(capsule, fh, indent=2, sort_keys=True)
+            os.replace(temp_path, path)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        return {"ok": True, "trial": trial, "capsule": capsule, "execution_authority": False}
+
     def command_dispatch(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Dispatch a NAILDE UI command through a safe command router.
 
@@ -3598,6 +3843,8 @@ def run_game(context=None):
         }
         blocked_apply_commands = {"stage_devbridge_proposal", "create_backup_zip", "prepare_rollback", "package_addon_pending_review", "assurance_review"}
         try:
+            if command in {"forge.seal", "forge.status", "forge.evaluate"}:
+                return self.forge_command(command, args)
             if command in {"create_workspace", "workspace.new"}:
                 return {"ok": True, "command": command, "result": self.create_workspace(args), "execution_authority": False}
             if command in {"natural_language_code_draft", "nl.draft"}:

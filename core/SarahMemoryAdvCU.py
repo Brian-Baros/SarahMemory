@@ -118,6 +118,8 @@ import io
 import sys
 import glob
 import hashlib
+import hmac
+import hmac
 import threading
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -2712,6 +2714,9 @@ __all__ = [
     "IntentResult",
     "INTENT_DESCRIPTIONS",
     "INTENT_PRIORITY_ORDER",
+    "get_advcu_weight_status",
+    "train_advcu_local_weights",
+    "score_advcu_local_weights",
 
     # Embeddings
     "embed_text",
@@ -2877,6 +2882,8 @@ def build_contextual_intent_packet(
         "route_guard": route_guard,
         "execution_authority": False,
     })
+    if get_advcu_weight_status()["ready"]:
+        out["local_weight_advice"] = score_advcu_local_weights(raw)
     return out
 
 
@@ -3307,6 +3314,669 @@ lookup_local_knowledge_answer = resolve_local_fast_answer
 # END OF SarahMemoryAdvCU.py v9.1.0a
 # ====================================================================
 
+# ==========================================================================
+# ADVCU LOCAL ADAPTIVE WEIGHTS (v1) — GOVERNED / IN-MEMORY / ADVISORY ONLY
+# ==========================================================================
+# This is SarahMemory-owned, dependency-free learned scoring rather than
+# third-party model weights or a canned answer pool.  No model downloads,
+# on-import training, external calls, automatic disk writes, or action grants.
+# Weights are deliberately volatile until an operator approves persistence.
+_ADVCU_WEIGHT_SCHEMA = "SarahMemory.AdvCU.local_linear_weights.v1"
+_ADVCU_WEIGHT_DIMENSION = 512
+_ADVCU_WEIGHT_MAX_SAMPLES_PER_CALL = 128
+_ADVCU_WEIGHT_MAX_TOTAL_SAMPLES = 100000
+_ADVCU_WEIGHT_MAX_TEXT_LENGTH = 2048
+_ADVCU_WEIGHT_LOCK = threading.RLock()
+_ADVCU_WEIGHT_ROWS: Dict[str, Dict[int, float]] = {}
+_ADVCU_WEIGHT_LABEL_COUNTS: Dict[str, int] = {}
+_ADVCU_WEIGHT_SAMPLES_SEEN = 0
+_ADVCU_WEIGHT_REVISION = 0
+
+
+def _advcu_weight_features(text: str) -> Dict[int, float]:
+    """Stable bounded sparse features; no raw input is retained in the model."""
+    tokens = tokenize(text[:_ADVCU_WEIGHT_MAX_TEXT_LENGTH])[:64]
+    if not tokens:
+        return {}
+    features = Counter("w:" + word for word in tokens)
+    features.update("b:" + a + "/" + b for a, b in zip(tokens, tokens[1:]))
+    result: Dict[int, float] = {0: 1.0}  # intercept, never hashed
+    for feature, count in features.items():
+        # A local stable hash, not Python hash() (which varies across processes).
+        digest = hashlib.blake2b(feature.encode("utf-8"), digest_size=8).digest()
+        index = 1 + (int.from_bytes(digest, "big") % (_ADVCU_WEIGHT_DIMENSION - 1))
+        result[index] = result.get(index, 0.0) + min(3.0, float(count))
+    norm = math.sqrt(sum(value * value for value in result.values()))
+    return {index: value / norm for index, value in result.items()}
+
+
+def get_advcu_weight_status() -> Dict[str, Any]:
+    """Read-only, non-identifying evidence of this module's learned weight state."""
+    with _ADVCU_WEIGHT_LOCK:
+        counts = dict(_ADVCU_WEIGHT_LABEL_COUNTS)
+        return {
+            "schema": _ADVCU_WEIGHT_SCHEMA,
+            "implementation": "local_supervised_sparse_linear",
+            "dimension": _ADVCU_WEIGHT_DIMENSION,
+            "revision": _ADVCU_WEIGHT_REVISION,
+            "samples_seen": _ADVCU_WEIGHT_SAMPLES_SEEN,
+            "trained_labels": sorted(counts),
+            "learned_parameters": sum(len(row) for row in _ADVCU_WEIGHT_ROWS.values()),
+            "ready": len(counts) >= 2 and _ADVCU_WEIGHT_SAMPLES_SEEN >= 4,
+            "persistent": False,
+            "autonomous_training": False,
+            "calibrated_probability": False,
+            "execution_authority": False,
+        }
+
+
+def train_advcu_local_weights(
+    samples: List[Dict[str, str]], *, approved_for_learning: bool = False,
+    learning_rate: float = 0.12, epochs: int = 3,
+    expected_weight_revision: Optional[int] = None,
+    include_training_receipt: bool = False,
+    dataset_commitment: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Learn only from explicitly approved labeled examples, transactionally.
+
+    Nothing about a user's ordinary input, a model answer, or an agent request
+    constitutes learning approval. Training never changes the rule classifier. Optional revision fencing rejects stale approved writes atomically.
+    """
+    if approved_for_learning is not True:
+        return {"ok": False, "reason": "explicit_learning_approval_required", "execution_authority": False}
+    if type(include_training_receipt) is not bool:
+        return {"ok": False, "reason": "invalid_receipt_request", "execution_authority": False}
+    if dataset_commitment is not None and (
+            not include_training_receipt or not isinstance(dataset_commitment, str) or
+            len(dataset_commitment) != 64 or
+            any(ch not in "0123456789abcdef" for ch in dataset_commitment)):
+        return {"ok": False, "reason": "invalid_dataset_commitment", "execution_authority": False}
+    if expected_weight_revision is not None and (
+            isinstance(expected_weight_revision, bool) or
+            not isinstance(expected_weight_revision, int) or
+            not 0 <= expected_weight_revision <= _ADVCU_WEIGHT_MAX_TOTAL_SAMPLES):
+        return {"ok": False, "reason": "invalid_expected_weight_revision", "execution_authority": False}
+    if not isinstance(samples, (list, tuple)) or not (1 <= len(samples) <= _ADVCU_WEIGHT_MAX_SAMPLES_PER_CALL):
+        return {"ok": False, "reason": "sample_count_out_of_bounds", "execution_authority": False}
+    if (isinstance(epochs, bool) or not isinstance(epochs, int) or not 1 <= epochs <= 4 or
+            isinstance(learning_rate, bool) or not isinstance(learning_rate, (float, int)) or
+            not math.isfinite(float(learning_rate)) or not 0.01 <= learning_rate <= 0.3):
+        return {"ok": False, "reason": "invalid_training_hyperparameters", "execution_authority": False}
+    allowed_labels = {item.value for item in IntentType} | {"model_governance"}
+    validated: List[Tuple[str, Dict[int, float]]] = []
+    for item in samples:
+        if not isinstance(item, dict):
+            return {"ok": False, "reason": "invalid_sample", "execution_authority": False}
+        text = item.get("text")
+        label = item.get("label")
+        if (not isinstance(text, str) or not text.strip() or len(text) > _ADVCU_WEIGHT_MAX_TEXT_LENGTH or
+                not isinstance(label, str) or label not in allowed_labels):
+            return {"ok": False, "reason": "invalid_sample_label_or_text", "execution_authority": False}
+        # Reject unpaired Unicode surrogates before feature hashing; malformed
+        # caller text must return a governed denial, never raise mid-batch.
+        try:
+            text.encode("utf-8")
+        except UnicodeError:
+            return {"ok": False, "reason": "invalid_sample_unicode", "execution_authority": False}
+        features = _advcu_weight_features(text)
+        if not features:
+            return {"ok": False, "reason": "empty_features", "execution_authority": False}
+        validated.append((label, features))
+
+    with _ADVCU_WEIGHT_LOCK:
+        global _ADVCU_WEIGHT_ROWS, _ADVCU_WEIGHT_LABEL_COUNTS
+        global _ADVCU_WEIGHT_SAMPLES_SEEN, _ADVCU_WEIGHT_REVISION
+        if expected_weight_revision is not None and _ADVCU_WEIGHT_REVISION != expected_weight_revision:
+            return {"ok": False, "reason": "weight_revision_mismatch",
+                    "revision": _ADVCU_WEIGHT_REVISION, "execution_authority": False}
+        if _ADVCU_WEIGHT_SAMPLES_SEEN + len(validated) > _ADVCU_WEIGHT_MAX_TOTAL_SAMPLES:
+            return {"ok": False, "reason": "lifetime_sample_limit", "execution_authority": False}
+        # Copy-on-write: rejection/interruption never leaves a partially trained model.
+        rows = {label: dict(values) for label, values in _ADVCU_WEIGHT_ROWS.items()}
+        counts = dict(_ADVCU_WEIGHT_LABEL_COUNTS)
+        for label, _ in validated:
+            rows.setdefault(label, {})
+            counts[label] = counts.get(label, 0) + 1
+        labels = sorted(rows)
+        for _ in range(epochs):
+            for truth, features in validated:
+                logits = {label: sum(rows[label].get(i, 0.0) * x for i, x in features.items())
+                          for label in labels}
+                maximum = max(logits.values())
+                exp_scores = {label: math.exp(value - maximum) for label, value in logits.items()}
+                denominator = sum(exp_scores.values())
+                for label in labels:
+                    delta = float(learning_rate) * ((1.0 if label == truth else 0.0) -
+                                                     exp_scores[label] / denominator)
+                    row = rows[label]
+                    for index, value in features.items():
+                        new_value = max(-4.0, min(4.0, row.get(index, 0.0) + delta * value))
+                        if abs(new_value) > 1e-12:
+                            row[index] = new_value
+                        else:
+                            row.pop(index, None)
+        _ADVCU_WEIGHT_ROWS = rows
+        _ADVCU_WEIGHT_LABEL_COUNTS = counts
+        _ADVCU_WEIGHT_SAMPLES_SEEN += len(validated)
+        _ADVCU_WEIGHT_REVISION += 1
+        result = {"ok": True, "revision": _ADVCU_WEIGHT_REVISION,
+                  "samples_accepted": len(validated), "samples_seen": _ADVCU_WEIGHT_SAMPLES_SEEN,
+                  "learned_parameters": sum(len(row) for row in rows.values()),
+                  "memory_only": True, "advisory_only": True, "execution_authority": False}
+        if include_training_receipt:
+            # Caller-owned, bounded metadata; no raw text or fingerprint retained.
+            # A supplied commitment is an assertion, not independently verified.
+            result["training_receipt"] = {
+                "schema": "SarahMemory.AdvCU.training_receipt.v1",
+                "revision_before": _ADVCU_WEIGHT_REVISION - 1,
+                "revision_after": _ADVCU_WEIGHT_REVISION,
+                "samples_accepted": len(validated),
+                "samples_seen_total": _ADVCU_WEIGHT_SAMPLES_SEEN,
+                "epochs": epochs,
+                "dataset_commitment": dataset_commitment,
+                "commitment_verified": False,
+                "audit_ledger_written": False,
+                "persisted": False,
+                "execution_authority": False,
+            }
+        return result
+
+
+def score_advcu_local_weights(text: Any, *, top_k: int = 3) -> Dict[str, Any]:
+    """Offer *uncalibrated* evidence for human/governed routing; never execute."""
+    status = get_advcu_weight_status()
+    response: Dict[str, Any] = {
+        "schema": _ADVCU_WEIGHT_SCHEMA,
+        "ready": False,
+        "advisory_only": True,
+        "execution_authority": False,
+        "calibrated_probability": False,
+        "revision": status["revision"],
+        "suggestions": [],
+    }
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 5:
+        response["reason"] = "invalid_top_k"
+        return response
+    if not isinstance(text, str) or not text.strip() or len(text) > _ADVCU_WEIGHT_MAX_TEXT_LENGTH:
+        response["reason"] = "invalid_text"
+        return response
+    # Malformed Unicode is not valid scoring evidence; fail closed.
+    try:
+        text.encode("utf-8")
+    except UnicodeError:
+        response["reason"] = "invalid_text_unicode"
+        return response
+    features = _advcu_weight_features(text)
+    with _ADVCU_WEIGHT_LOCK:
+        # Bind the reported revision and readiness to the exact scoring snapshot.
+        # An approved training/import can otherwise advance revision between
+        # the initial status read and acquisition of this lock.
+        response["revision"] = _ADVCU_WEIGHT_REVISION
+        if len(_ADVCU_WEIGHT_LABEL_COUNTS) < 2 or _ADVCU_WEIGHT_SAMPLES_SEEN < 4:
+            response["reason"] = "insufficient_approved_training"
+            return response
+        logits = {label: sum(row.get(i, 0.0) * val for i, val in features.items())
+                  for label, row in _ADVCU_WEIGHT_ROWS.items()}
+        # Conservative open-set check: unseen vocabulary should not be forced
+        # into an unrelated trained category. Hash collisions remain possible.
+        known_indices = {index for row in _ADVCU_WEIGHT_ROWS.values() for index in row}
+        feature_mass = sum(abs(value) for index, value in features.items() if index != 0)
+        covered_mass = sum(abs(value) for index, value in features.items()
+                           if index != 0 and index in known_indices)
+        coverage = (covered_mass / feature_mass) if feature_mass else 0.0
+        revision = _ADVCU_WEIGHT_REVISION
+    if not logits:
+        response["reason"] = "empty_model"
+        return response
+    highest = max(logits.values())
+    exponentials = {label: math.exp(score - highest) for label, score in logits.items()}
+    total = sum(exponentials.values())
+    ranked = sorted(exponentials, key=lambda label: (-exponentials[label], label))
+    top_score = exponentials[ranked[0]] / total
+    runner_up = exponentials[ranked[1]] / total if len(ranked) > 1 else 0.0
+    response.update({
+        "ready": True,
+        "revision": revision,
+        "feature_coverage": round(coverage, 6),
+        "method": "local_approved_supervised_sparse_linear",
+    })
+    if coverage < 0.25 or top_score < 0.55 or top_score - runner_up < 0.10:
+        response["abstained"] = True
+        response["reason"] = "weak_or_unfamiliar_evidence"
+        return response
+    response["abstained"] = False
+    response["suggestions"] = [
+        {"label": label, "relative_score": round(exponentials[label] / total, 6)}
+        for label in ranked[:top_k]
+    ]
+    return response
+
+
+# ==========================================================================
+# ADVCU EXPLICIT WEIGHT CHECKPOINT (v2) — NO FILE I/O OR AUTO-RESTORE
+# ==========================================================================
+def export_advcu_weight_checkpoint(*, approved_for_export: bool = False) -> Dict[str, Any]:
+    """Return a JSON-compatible integrity-protected snapshot only on approval.
+
+    The caller owns storage, access control, audit and rollback decisions.
+    This function never writes to disk or grants routing/execution authority.
+    """
+    if approved_for_export is not True:
+        return {"ok": False, "reason": "explicit_export_approval_required", "execution_authority": False}
+    with _ADVCU_WEIGHT_LOCK:
+        payload = {
+            "schema": _ADVCU_WEIGHT_SCHEMA,
+            "dimension": _ADVCU_WEIGHT_DIMENSION,
+            "revision": _ADVCU_WEIGHT_REVISION,
+            "samples_seen": _ADVCU_WEIGHT_SAMPLES_SEEN,
+            "label_counts": dict(sorted(_ADVCU_WEIGHT_LABEL_COUNTS.items())),
+            "rows": {label: {str(index): value for index, value in sorted(row.items())}
+                     for label, row in sorted(_ADVCU_WEIGHT_ROWS.items())},
+        }
+    # Never advertise a checkpoint that the bounded importer cannot accept.
+    # The model remains unchanged; the caller may retain its prior snapshot.
+    try:
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        encoded = canonical.encode("utf-8")
+    except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError):
+        return {"ok": False, "reason": "checkpoint_serialization_failed",
+                "execution_authority": False, "persistent": False}
+    if len(encoded) > 250000:
+        return {"ok": False, "reason": "checkpoint_size_limit",
+                "execution_authority": False, "persistent": False}
+    return {"ok": True, "payload": payload,
+            "sha256": hashlib.sha256(encoded).hexdigest(),
+            "execution_authority": False, "persistent": False}
+
+
+def sign_advcu_weight_checkpoint(checkpoint: Any, *, approved_for_signing: bool = False,
+                                 provenance_key: Optional[bytes] = None) -> Dict[str, Any]:
+    """Explicitly attach HMAC-SHA256 provenance to an existing valid snapshot.
+
+    Key management and authorization remain entirely with the caller. A shared
+    secret proves possession of that secret, not an independently audited identity.
+    The secret is never returned or persisted by AdvCU.
+    """
+    denied = {"ok": False, "execution_authority": False}
+    if approved_for_signing is not True:
+        return {**denied, "reason": "explicit_signing_approval_required"}
+    if not isinstance(provenance_key, bytes) or not 32 <= len(provenance_key) <= 65536:
+        return {**denied, "reason": "invalid_provenance_key"}
+    if not isinstance(checkpoint, dict) or checkpoint.get("ok") is not True:
+        return {**denied, "reason": "invalid_checkpoint"}
+    payload, digest = checkpoint.get("payload"), checkpoint.get("sha256")
+    if not isinstance(payload, dict) or not isinstance(digest, str) or len(digest) != 64:
+        return {**denied, "reason": "invalid_checkpoint"}
+    try:
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if len(canonical.encode("utf-8")) > 250000:
+            raise ValueError("oversized")
+        if not hmac.compare_digest(hashlib.sha256(canonical.encode("utf-8")).hexdigest(), digest):
+            raise ValueError("digest")
+    except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError):
+        return {**denied, "reason": "checkpoint_validation_failed"}
+    # Bind the signature to the canonical payload and its integrity digest.
+    signature = hmac.new(provenance_key, (digest + ":" + canonical).encode("utf-8"), hashlib.sha256).hexdigest()
+    signed = dict(checkpoint)
+    signed["provenance"] = {"algorithm": "HMAC-SHA256", "signature": signature}
+    return signed
+
+
+def import_advcu_weight_checkpoint(checkpoint: Any, *, approved_for_import: bool = False,
+                                   expected_revision: Optional[int] = None,
+                                   trusted_provenance_key: Optional[bytes] = None,
+                                   minimum_checkpoint_revision: Optional[int] = None) -> Dict[str, Any]:
+    """Validate and atomically restore approved local weights from a snapshot.
+
+    SHA-256 detects corruption, not authenticity. Supplying a trusted key
+    requires a matching HMAC signature before any state change. Without a key,
+    the original integrity-only import behavior is preserved for compatibility.
+    This does not train, persist, change the classifier or execute commands.
+    minimum_checkpoint_revision is a caller-owned rollback floor; AdvCU does
+    not persist a trusted floor, so callers must retain it in governed storage.
+    """
+    if approved_for_import is not True:
+        return {"ok": False, "reason": "explicit_import_approval_required", "execution_authority": False}
+    if not isinstance(checkpoint, dict) or checkpoint.get("ok") is not True:
+        return {"ok": False, "reason": "invalid_checkpoint", "execution_authority": False}
+    # Reject malformed caller revision fences before potentially expensive
+    # checkpoint serialization. The final comparison still occurs under the
+    # model lock, so this preflight cannot authorize a stale concurrent write.
+    if expected_revision is not None and (
+            type(expected_revision) is not int or
+            not 0 <= expected_revision <= _ADVCU_WEIGHT_MAX_TOTAL_SAMPLES):
+        return {"ok": False, "reason": "revision_conflict", "execution_authority": False}
+    # Reject oversized/unusable authentication keys before parsing attacker-
+    # controlled checkpoint payloads. Approval and revision preflight remain first.
+    if trusted_provenance_key is not None and (
+            not isinstance(trusted_provenance_key, bytes) or
+            not 32 <= len(trusted_provenance_key) <= 65536):
+        return {"ok": False, "reason": "invalid_provenance_key", "execution_authority": False}
+    # Validate caller-owned rollback floor before serializing untrusted data.
+    # The in-lock comparison below remains authoritative for state changes.
+    if minimum_checkpoint_revision is not None and (
+            type(minimum_checkpoint_revision) is not int or
+            not 0 <= minimum_checkpoint_revision <= _ADVCU_WEIGHT_MAX_TOTAL_SAMPLES):
+        return {"ok": False, "reason": "invalid_revision_floor", "execution_authority": False}
+    payload, digest = checkpoint.get("payload"), checkpoint.get("sha256")
+    if not isinstance(payload, dict) or not isinstance(digest, str) or len(digest) != 64:
+        return {"ok": False, "reason": "invalid_checkpoint", "execution_authority": False}
+    # Bound the checkpoint's nested weight structure before JSON serialization.
+    # An untrusted oversized mapping must not require a full canonical copy
+    # merely to discover that its shape exceeds the model's fixed limits.
+    preflight_counts = payload.get("label_counts")
+    preflight_rows = payload.get("rows")
+    if (not isinstance(preflight_counts, dict) or not isinstance(preflight_rows, dict) or
+            len(preflight_counts) > len(IntentType) + 1 or
+            len(preflight_rows) > len(IntentType) + 1 or
+            any(not isinstance(row, dict) or len(row) > _ADVCU_WEIGHT_DIMENSION or
+                any(not isinstance(index, str) or len(index) > 3 or
+                    not index.isascii() or not index.isdecimal()
+                    for index in row)
+                for row in preflight_rows.values())):
+        return {"ok": False, "reason": "checkpoint_validation_failed", "execution_authority": False}
+    try:
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if len(canonical.encode("utf-8")) > 250000:
+            raise ValueError("oversized")
+        actual = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        if not __import__("hmac").compare_digest(actual, digest):
+            raise ValueError("checksum")
+        if payload.get("schema") != _ADVCU_WEIGHT_SCHEMA or payload.get("dimension") != _ADVCU_WEIGHT_DIMENSION:
+            raise ValueError("schema")
+        revision, seen = payload.get("revision"), payload.get("samples_seen")
+        if any(isinstance(n, bool) or not isinstance(n, int) or n < 0 for n in (revision, seen)):
+            raise ValueError("counter")
+        # Imported revisions must remain within the same bounded domain as
+        # approved training and revision-fenced checkpoint consumers. An
+        # authenticated but out-of-range revision must not poison local state.
+        if seen > _ADVCU_WEIGHT_MAX_TOTAL_SAMPLES or revision > _ADVCU_WEIGHT_MAX_TOTAL_SAMPLES:
+            raise ValueError("limit")
+        # Each approved training revision consumes at least one sample.
+        # Reject internally inconsistent checkpoints before replacing state.
+        if revision > seen:
+            raise ValueError("revision_exceeds_samples")
+        counts, encoded_rows = payload.get("label_counts"), payload.get("rows")
+        if not isinstance(counts, dict) or not isinstance(encoded_rows, dict):
+            raise ValueError("shape")
+        allowed = {item.value for item in IntentType} | {"model_governance"}
+        if set(counts) != set(encoded_rows) or len(counts) > len(allowed):
+            raise ValueError("labels")
+        if any(label not in allowed or isinstance(n, bool) or not isinstance(n, int) or n < 1
+               for label, n in counts.items()) or sum(counts.values()) != seen:
+            raise ValueError("counts")
+        rows = {}
+        for label, encoded in encoded_rows.items():
+            if not isinstance(encoded, dict) or len(encoded) > _ADVCU_WEIGHT_DIMENSION:
+                raise ValueError("row")
+            row = {}
+            for key, value in encoded.items():
+                if not isinstance(key, str) or not key.isascii() or not key.isdecimal():
+                    raise ValueError("index")
+                index = int(key)
+                if str(index) != key or index >= _ADVCU_WEIGHT_DIMENSION:
+                    raise ValueError("index")
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or abs(value) > 4.0:
+                    raise ValueError("weight")
+                row[index] = float(value)
+            rows[label] = row
+    except (ValueError, TypeError, OverflowError, RecursionError, UnicodeError):
+        return {"ok": False, "reason": "checkpoint_validation_failed", "execution_authority": False}
+    if trusted_provenance_key is not None:
+        provenance = checkpoint.get("provenance")
+        if not isinstance(provenance, dict) or provenance.get("algorithm") != "HMAC-SHA256":
+            return {"ok": False, "reason": "provenance_required", "execution_authority": False}
+        signature = provenance.get("signature")
+        if not isinstance(signature, str) or len(signature) != 64:
+            return {"ok": False, "reason": "provenance_invalid", "execution_authority": False}
+        expected_signature = hmac.new(trusted_provenance_key,
+                                      (digest + ":" + canonical).encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected_signature):
+            return {"ok": False, "reason": "provenance_invalid", "execution_authority": False}
+    global _ADVCU_WEIGHT_ROWS, _ADVCU_WEIGHT_LABEL_COUNTS, _ADVCU_WEIGHT_SAMPLES_SEEN, _ADVCU_WEIGHT_REVISION
+    with _ADVCU_WEIGHT_LOCK:
+        if minimum_checkpoint_revision is not None and revision < minimum_checkpoint_revision:
+            return {"ok": False, "reason": "checkpoint_rollback_rejected", "execution_authority": False}
+        if expected_revision is not None and (isinstance(expected_revision, bool) or
+                not isinstance(expected_revision, int) or expected_revision != _ADVCU_WEIGHT_REVISION):
+            return {"ok": False, "reason": "revision_conflict", "execution_authority": False}
+        _ADVCU_WEIGHT_ROWS = rows
+        _ADVCU_WEIGHT_LABEL_COUNTS = dict(counts)
+        _ADVCU_WEIGHT_SAMPLES_SEEN = seen
+        _ADVCU_WEIGHT_REVISION = revision
+    return {"ok": True, "revision": revision, "samples_seen": seen,
+            "memory_only": True, "execution_authority": False}
+
+
+# ==========================================================================
+# ADVCU BOUNDED HOLDOUT EVALUATION (v3) — READ-ONLY / ADVISORY
+# ==========================================================================
+def fingerprint_advcu_holdout_texts(
+    texts: List[str], *, approved_for_fingerprinting: bool = False,
+    fingerprint_key: Optional[bytes] = None,
+) -> Dict[str, Any]:
+    """Create caller-owned keyed overlap tokens; never retain raw text or keys.
+
+    The operator must independently collect training fingerprints at training
+    time and safeguard the secret key. This does not prove dataset independence.
+    """
+    if approved_for_fingerprinting is not True:
+        return {"ok": False, "reason": "explicit_fingerprinting_approval_required", "execution_authority": False}
+    if not isinstance(fingerprint_key, bytes) or not 32 <= len(fingerprint_key) <= 65536:
+        return {"ok": False, "reason": "invalid_fingerprint_key", "execution_authority": False}
+    if not isinstance(texts, (list, tuple)) or not 1 <= len(texts) <= 128:
+        return {"ok": False, "reason": "sample_count_out_of_bounds", "execution_authority": False}
+    if any(not isinstance(t, str) or not t.strip() or len(t) > _ADVCU_WEIGHT_MAX_TEXT_LENGTH for t in texts):
+        return {"ok": False, "reason": "invalid_text", "execution_authority": False}
+    # Validate all normalized inputs before hashing any fingerprint. Unicode
+    # surrogates must fail closed rather than escape as encoding exceptions.
+    normalized = []
+    try:
+        for text in texts:
+            normalized.append(" ".join(text.split()).casefold().encode("utf-8"))
+    except UnicodeError:
+        return {"ok": False, "reason": "invalid_text_unicode", "execution_authority": False}
+    tokens = [hmac.new(fingerprint_key, item, hashlib.sha256).hexdigest()
+              for item in normalized]
+    return {"ok": True, "fingerprints": tokens, "count": len(tokens),
+            "retained_by_advcu": False, "execution_authority": False}
+
+
+def bind_advcu_training_fingerprints(
+    fingerprints: List[str], *, approved_for_binding: bool = False,
+    fingerprint_key: Optional[bytes] = None, weight_revision: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Caller-owned HMAC commitment to exact fingerprints and a weight revision.
+
+    The caller must independently establish that these fingerprints represent
+    the approved training set. No text, key, or commitment is retained.
+    """
+    denied = {"ok": False, "execution_authority": False}
+    if approved_for_binding is not True:
+        return {**denied, "reason": "explicit_binding_approval_required"}
+    # Match the bounded fingerprinting key contract; reject excessive keys
+    # before canonicalizing caller-owned training fingerprint collections.
+    if not isinstance(fingerprint_key, bytes) or not 32 <= len(fingerprint_key) <= 65536:
+        return {**denied, "reason": "invalid_fingerprint_key"}
+    if (isinstance(weight_revision, bool) or not isinstance(weight_revision, int) or
+            not 0 <= weight_revision <= _ADVCU_WEIGHT_MAX_TOTAL_SAMPLES):
+        return {**denied, "reason": "invalid_weight_revision"}
+    if (not isinstance(fingerprints, (list, tuple)) or
+            len(fingerprints) > _ADVCU_WEIGHT_MAX_TOTAL_SAMPLES or
+            any(not isinstance(token, str) or len(token) != 64 or
+                any(ch not in "0123456789abcdef" for ch in token)
+                for token in fingerprints)):
+        return {**denied, "reason": "invalid_training_fingerprints"}
+    # Sorting and deduplication avoid order-dependent commitments.
+    canonical = json.dumps([weight_revision, sorted(set(fingerprints))],
+                           separators=(",", ":"), allow_nan=False)
+    commitment = hmac.new(fingerprint_key,
+                          ("AdvCU-training-fingerprints-v1:" + canonical).encode("utf-8"),
+                          hashlib.sha256).hexdigest()
+    return {"ok": True, "weight_revision": weight_revision,
+            "fingerprint_count": len(set(fingerprints)),
+            "commitment": commitment, "execution_authority": False,
+            "retained_by_advcu": False}
+
+
+def evaluate_advcu_local_weights(
+    samples: List[Dict[str, str]], *, approved_for_evaluation: bool = False,
+    require_unique_texts: bool = False,
+    training_text_fingerprints: Optional[List[str]] = None,
+    fingerprint_key: Optional[bytes] = None,
+    expected_weight_revision: Optional[int] = None,
+    training_fingerprint_commitment: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Evaluate explicitly supplied labeled holdout samples without training.
+
+    Returns aggregate counts only, not the input text. Evaluation is not proof
+    of generalization, calibration, security compliance, or execution authority.
+    Callers must ensure holdout examples were not included in training.
+    Optional caller-managed HMAC fingerprints reject exact normalized training
+    overlap; absence of a match does not establish independent holdout data.
+    Set require_unique_texts=True to reject repeated evaluation text after
+    whitespace/case normalization; this does NOT prove training independence.
+    expected_weight_revision optionally fences the frozen model snapshot against
+    the caller's approved revision. A supplied training_fingerprint_commitment
+    authenticates caller-provided fingerprints to that revision under the shared
+    key, but cannot prove they originated from the actual training examples.
+    """
+    base = {"ok": False, "execution_authority": False, "trained": False,
+            "advisory_only": True}
+    if approved_for_evaluation is not True:
+        return {**base, "reason": "explicit_evaluation_approval_required"}
+    if not isinstance(require_unique_texts, bool):
+        return {**base, "reason": "invalid_uniqueness_policy"}
+    # Optional caller-owned revision fence: prevent stale holdout reports.
+    # A revision alone does not authenticate training fingerprints or datasets.
+    if expected_weight_revision is not None and (
+            isinstance(expected_weight_revision, bool) or
+            not isinstance(expected_weight_revision, int) or
+            not 0 <= expected_weight_revision <= _ADVCU_WEIGHT_MAX_TOTAL_SAMPLES):
+        return {**base, "reason": "invalid_expected_weight_revision"}
+    if not isinstance(samples, (list, tuple)) or not 1 <= len(samples) <= 128:
+        return {**base, "reason": "sample_count_out_of_bounds"}
+    # Opt-in exact normalized-text overlap screening against caller-provided
+    # keyed training fingerprints. Neither the secret nor tokens are retained.
+    overlap_screened = training_text_fingerprints is not None
+    training_tokens: Set[str] = set()
+    if overlap_screened:
+        if (not isinstance(fingerprint_key, bytes) or len(fingerprint_key) < 32 or
+                not isinstance(training_text_fingerprints, (list, tuple)) or
+                len(training_text_fingerprints) > _ADVCU_WEIGHT_MAX_TOTAL_SAMPLES or
+                any(not isinstance(token, str) or len(token) != 64 or
+                    any(ch not in "0123456789abcdef" for ch in token)
+                    for token in training_text_fingerprints)):
+            return {**base, "reason": "invalid_training_fingerprints"}
+        training_tokens = set(training_text_fingerprints)
+    elif fingerprint_key is not None:
+        return {**base, "reason": "training_fingerprints_required"}
+    if training_fingerprint_commitment is not None:
+        if (not overlap_screened or expected_weight_revision is None or
+                not isinstance(training_fingerprint_commitment, str) or
+                len(training_fingerprint_commitment) != 64 or
+                any(ch not in "0123456789abcdef" for ch in training_fingerprint_commitment)):
+            return {**base, "reason": "invalid_training_fingerprint_commitment"}
+        binding = bind_advcu_training_fingerprints(
+            training_text_fingerprints, approved_for_binding=True,
+            fingerprint_key=fingerprint_key, weight_revision=expected_weight_revision)
+        if (not binding["ok"] or not hmac.compare_digest(
+                binding["commitment"], training_fingerprint_commitment)):
+            return {**base, "reason": "training_fingerprint_commitment_mismatch"}
+    allowed = {item.value for item in IntentType} | {"model_governance"}
+    validated = []
+    seen_texts: Set[str] = set()  # ephemeral; never retained in model or report
+    for sample in samples:
+        if not isinstance(sample, dict):
+            return {**base, "reason": "invalid_sample"}
+        text, label = sample.get("text"), sample.get("label")
+        if (not isinstance(text, str) or not text.strip() or
+                len(text) > _ADVCU_WEIGHT_MAX_TEXT_LENGTH or
+                not isinstance(label, str) or label not in allowed):
+            return {**base, "reason": "invalid_sample"}
+        if require_unique_texts:
+            # Normalization is deterministic, local, and does not expose text.
+            # Reject duplicate texts even when their labels disagree; repeated
+            # observations would otherwise inflate evaluation sample counts.
+            key = " ".join(text.split()).casefold()
+            if key in seen_texts:
+                return {**base, "reason": "duplicate_evaluation_text"}
+            seen_texts.add(key)
+        if overlap_screened:
+            token = hmac.new(fingerprint_key, " ".join(text.split()).casefold().encode("utf-8"),
+                             hashlib.sha256).hexdigest()
+            if token in training_tokens:
+                return {**base, "reason": "training_evaluation_overlap_detected"}
+        validated.append((text, label))
+    # Freeze model once, so concurrent training cannot mix revisions in a report.
+    with _ADVCU_WEIGHT_LOCK:
+        rows = {label: dict(row) for label, row in _ADVCU_WEIGHT_ROWS.items()}
+        counts = dict(_ADVCU_WEIGHT_LABEL_COUNTS)
+        revision = _ADVCU_WEIGHT_REVISION
+        seen = _ADVCU_WEIGHT_SAMPLES_SEEN
+    if expected_weight_revision is not None and revision != expected_weight_revision:
+        return {**base, "reason": "weight_revision_mismatch", "revision": revision}
+    if len(counts) < 2 or seen < 4:
+        return {**base, "reason": "insufficient_approved_training", "revision": revision}
+    correct = 0
+    abstained = 0
+    covered = 0
+    known = {index for row in rows.values() for index in row}
+    confusion: Dict[str, Dict[str, int]] = {}
+    for text, truth in validated:
+        features = _advcu_weight_features(text)
+        mass = sum(abs(v) for i, v in features.items() if i != 0)
+        overlap = sum(abs(v) for i, v in features.items() if i != 0 and i in known)
+        coverage = overlap / mass if mass else 0.0
+        logits = {label: sum(row.get(i, 0.0) * v for i, v in features.items())
+                  for label, row in rows.items()}
+        maximum = max(logits.values())
+        scores = {label: math.exp(value - maximum) for label, value in logits.items()}
+        total = sum(scores.values())
+        ranked = sorted(scores, key=lambda label: (-scores[label], label))
+        best = scores[ranked[0]] / total
+        second = scores[ranked[1]] / total if len(ranked) > 1 else 0.0
+        if coverage < 0.25 or best < 0.55 or best - second < 0.10:
+            predicted = "__abstain__"
+            abstained += 1
+        else:
+            predicted = ranked[0]
+            covered += 1
+            correct += int(predicted == truth)
+        confusion.setdefault(truth, {})[predicted] = confusion.setdefault(truth, {}).get(predicted, 0) + 1
+    # Aggregate selective classification metrics. Abstentions count as misses
+    # for recall, but not as false positive predictions for any label.
+    # This reports observed behavior, not calibrated probabilities or proof
+    # that examples were independently held out.
+    per_label = {}
+    for label in sorted(set(confusion) | {pred for row in confusion.values()
+                                               for pred in row if pred != "__abstain__"}):
+        support = sum(confusion.get(label, {}).values())
+        tp = confusion.get(label, {}).get(label, 0)
+        predicted_count = sum(row.get(label, 0) for row in confusion.values())
+        per_label[label] = {
+            "support": support,
+            "predicted": predicted_count,
+            "correct": tp,
+            "precision": round(tp / predicted_count, 6) if predicted_count else None,
+            "recall": round(tp / support, 6) if support else None,
+        }
+    supported = [v for v in per_label.values() if v["support"]]
+    macro_recall = (round(sum(v["recall"] for v in supported) / len(supported), 6)
+                    if supported else None)
+    n = len(validated)
+    return {**base, "ok": True, "revision": revision, "evaluated": n,
+            "correct": correct, "abstained": abstained, "answered": covered,
+            "accuracy_all": round(correct / n, 6),
+            "accuracy_answered": round(correct / covered, 6) if covered else None,
+            "coverage": round(covered / n, 6), "confusion_counts": confusion,
+            "per_label": per_label, "macro_recall": macro_recall,
+            "holdout_independence_verified": False,
+            "training_overlap_screened": overlap_screened,
+            "evaluation_text_uniqueness_verified": require_unique_texts,
+            "calibrated_probability": False}
+
+
 # --- SML ORGAN ADAPTER START ---
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
@@ -3378,3 +4048,1348 @@ def sml_classify_packet_mission(packet, text=""):
         pkt.payload["raw_request"] = str(text)
     return get_protocol().classify_mission(pkt)
 # --- SML ADVCU SPECIALIZATION END ---
+
+# ==========================================================================
+# ADVCU OPTIONAL TRAINING RECEIPT AUTHENTICATION — CALLER-OWNED, NO I/O
+# ==========================================================================
+def sign_advcu_training_receipt(receipt: Any, *, approved_for_signing: bool = False,
+                                provenance_key: Optional[bytes] = None) -> Dict[str, Any]:
+    """Authenticate a bounded v1 receipt; never authenticate the underlying dataset.
+
+    Caller owns the secret and storage. No ledger write or execution permission.
+    """
+    denied = {"ok": False, "execution_authority": False}
+    if approved_for_signing is not True:
+        return {**denied, "reason": "explicit_signing_approval_required"}
+    if not isinstance(provenance_key, bytes) or len(provenance_key) < 32:
+        return {**denied, "reason": "invalid_provenance_key"}
+    if not isinstance(receipt, dict) or set(receipt) != {
+            "schema", "revision_before", "revision_after", "samples_accepted",
+            "samples_seen_total", "epochs", "dataset_commitment", "commitment_verified",
+            "audit_ledger_written", "persisted", "execution_authority"}:
+        return {**denied, "reason": "invalid_training_receipt"}
+    if receipt.get("schema") != "SarahMemory.AdvCU.training_receipt.v1":
+        return {**denied, "reason": "invalid_training_receipt"}
+    before, after = receipt["revision_before"], receipt["revision_after"]
+    accepted, total, epochs = (receipt[k] for k in ("samples_accepted", "samples_seen_total", "epochs"))
+    if (any(type(x) is not int for x in (before, after, accepted, total, epochs)) or
+            not (0 <= before < _ADVCU_WEIGHT_MAX_TOTAL_SAMPLES and after == before + 1) or
+            not (1 <= accepted <= _ADVCU_WEIGHT_MAX_SAMPLES_PER_CALL and
+                 accepted <= total <= _ADVCU_WEIGHT_MAX_TOTAL_SAMPLES) or
+            not 1 <= epochs <= 4 or
+            any(receipt[k] is not False for k in
+                ("commitment_verified", "audit_ledger_written", "persisted", "execution_authority"))):
+        return {**denied, "reason": "invalid_training_receipt"}
+    commitment = receipt["dataset_commitment"]
+    if commitment is not None and (not isinstance(commitment, str) or len(commitment) != 64 or
+                                   any(c not in "0123456789abcdef" for c in commitment)):
+        return {**denied, "reason": "invalid_training_receipt"}
+    canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    signature = hmac.new(provenance_key, ("AdvCU.training_receipt.v1:" + canonical).encode("utf-8"),
+                         hashlib.sha256).hexdigest()
+    return {"ok": True, "receipt": dict(receipt), "algorithm": "HMAC-SHA256",
+            "signature": signature, "execution_authority": False, "persisted": False}
+
+
+def verify_advcu_training_receipt(signed_receipt: Any, *,
+                                  trusted_provenance_key: Optional[bytes] = None,
+                                  expected_weight_revision: Optional[int] = None,
+                                  previously_accepted_signatures: Optional[Any] = None) -> Dict[str, Any]:
+    """Verify receipt with optional revision/replay fences; caller maintains replay history.
+
+    A successful replay_token must be durably recorded by the caller to reject
+    future repeats. This read-only check cannot guarantee atomic cross-process replay defense.
+    """
+    denied = {"ok": False, "execution_authority": False}
+    if not isinstance(trusted_provenance_key, bytes) or len(trusted_provenance_key) < 32:
+        return {**denied, "reason": "invalid_provenance_key"}
+    if expected_weight_revision is not None and (
+            type(expected_weight_revision) is not int or
+            not 0 <= expected_weight_revision <= _ADVCU_WEIGHT_MAX_TOTAL_SAMPLES):
+        return {**denied, "reason": "invalid_expected_revision"}
+    # Replay history belongs to the caller; this function never stores or mutates it.
+    if previously_accepted_signatures is not None:
+        if not isinstance(previously_accepted_signatures, (set, frozenset)) or len(previously_accepted_signatures) > 10000 or any(
+                not isinstance(item, str) or len(item) != 64 or
+                any(ch not in "0123456789abcdef" for ch in item)
+                for item in previously_accepted_signatures):
+            return {**denied, "reason": "invalid_replay_history"}
+    if not isinstance(signed_receipt, dict) or signed_receipt.get("algorithm") != "HMAC-SHA256":
+        return {**denied, "reason": "invalid_signed_receipt"}
+    signature = signed_receipt.get("signature")
+    if not isinstance(signature, str) or len(signature) != 64 or any(c not in "0123456789abcdef" for c in signature):
+        return {**denied, "reason": "invalid_signed_receipt"}
+    # Revalidate all receipt fields before accepting any signature.
+    checked = sign_advcu_training_receipt(signed_receipt.get("receipt"), approved_for_signing=True,
+                                          provenance_key=trusted_provenance_key)
+    if not checked["ok"] or not hmac.compare_digest(checked["signature"], signature):
+        return {**denied, "reason": "receipt_authentication_failed"}
+    if (expected_weight_revision is not None and
+            signed_receipt["receipt"]["revision_after"] != expected_weight_revision):
+        return {**denied, "reason": "weight_revision_mismatch"}
+    if (previously_accepted_signatures is not None and
+            signature in previously_accepted_signatures):
+        return {**denied, "reason": "receipt_replay_detected"}
+    return {"ok": True, "authenticated": True, "dataset_verified": False,
+            "audit_ledger_written": False, "execution_authority": False,
+            "replay_token": signature}
+
+
+# Caller-owned atomic in-process replay admission; no persistence or external I/O.
+def accept_advcu_training_receipt_once(signed_receipt: Any, *,
+                                      trusted_provenance_key: Optional[bytes] = None,
+                                      accepted_signatures: Any = None,
+                                      replay_lock: Any = None,
+                                      expected_weight_revision: Optional[int] = None) -> Dict[str, Any]:
+    """Verify and atomically record one receipt in a caller-owned set.
+
+    The caller MUST supply the same lock for every accessor of the shared set.
+    This only protects cooperating threads in one process; durable cross-process
+    replay prevention requires an external transactional authority.
+    """
+    denied = {"ok": False, "execution_authority": False}
+    if type(accepted_signatures) is not set or replay_lock is None or not (
+            callable(getattr(replay_lock, "acquire", None)) and
+            callable(getattr(replay_lock, "release", None))):
+        return {**denied, "reason": "caller_replay_state_required"}
+    # Authenticate before entering the critical section to minimize lock hold time.
+    verified = verify_advcu_training_receipt(
+        signed_receipt, trusted_provenance_key=trusted_provenance_key,
+        expected_weight_revision=expected_weight_revision)
+    if not verified.get("ok"):
+        return verified
+    token = verified["replay_token"]
+    with replay_lock:
+        if len(accepted_signatures) > 10000 or any(
+                not isinstance(x, str) or len(x) != 64 or
+                any(c not in "0123456789abcdef" for c in x)
+                for x in accepted_signatures):
+            return {**denied, "reason": "invalid_replay_history"}
+        if token in accepted_signatures:
+            return {**denied, "reason": "receipt_replay_detected"}
+        if len(accepted_signatures) >= 10000:
+            return {**denied, "reason": "replay_history_capacity_reached"}
+        accepted_signatures.add(token)
+    return {**verified, "replay_recorded": True, "persisted": False}
+
+
+
+# Caller-managed replay-history checkpoint; no disk I/O, execution, or ledger writes.
+def export_advcu_replay_checkpoint(accepted_signatures: Any, *,
+                                   approved_for_export: bool = False,
+                                   provenance_key: Optional[bytes] = None,
+                                   checkpoint_revision: Optional[int] = None) -> Dict[str, Any]:
+    """Authenticate bounded caller-managed replay state, optionally with a revision.
+
+    Revision fencing only works when the caller supplies and durably protects a
+    trusted minimum revision. This function performs no persistence or I/O.
+    """
+    denied = {"ok": False, "execution_authority": False}
+    if approved_for_export is not True:
+        return {**denied, "reason": "explicit_export_approval_required"}
+    if not isinstance(provenance_key, bytes) or len(provenance_key) < 32:
+        return {**denied, "reason": "invalid_provenance_key"}
+    if checkpoint_revision is not None and (type(checkpoint_revision) is not int or
+                                            not 0 <= checkpoint_revision <= 2**63 - 1):
+        return {**denied, "reason": "invalid_checkpoint_revision"}
+    if type(accepted_signatures) not in (set, frozenset) or len(accepted_signatures) > 10000 or any(
+            type(item) is not str or len(item) != 64 or
+            any(ch not in "0123456789abcdef" for ch in item)
+            for item in accepted_signatures):
+        return {**denied, "reason": "invalid_replay_history"}
+    version = 2 if checkpoint_revision is not None else 1
+    payload = {"schema": f"SarahMemory.AdvCU.replay_checkpoint.v{version}",
+               "signatures": sorted(accepted_signatures)}
+    if version == 2:
+        payload["revision"] = checkpoint_revision
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    signature = hmac.new(provenance_key,
+                         (f"AdvCU.replay_checkpoint.v{version}:" + canonical).encode("utf-8"),
+                         hashlib.sha256).hexdigest()
+    return {"ok": True, "checkpoint": payload, "signature": signature,
+            "algorithm": "HMAC-SHA256", "persisted": False,
+            "execution_authority": False}
+
+
+def verify_advcu_replay_checkpoint(signed_checkpoint: Any, *,
+                                    trusted_provenance_key: Optional[bytes] = None,
+                                    minimum_checkpoint_revision: Optional[int] = None,
+                                    expected_checkpoint_revision: Optional[int] = None,
+                                    previous_signed_checkpoint: Optional[Dict[str, Any]] = None,
+                                    maximum_new_signatures: Optional[int] = None,
+                                    expected_previous_signature: Optional[str] = None) -> Dict[str, Any]:
+    """Verify authenticated history and optionally reject older revisions.
+
+    The minimum revision MUST come from trusted caller-managed monotonic state;
+    this API cannot prevent rollback if the caller also rolls back that state.
+    """
+    denied = {"ok": False, "execution_authority": False}
+    if not isinstance(trusted_provenance_key, bytes) or len(trusted_provenance_key) < 32:
+        return {**denied, "reason": "invalid_provenance_key"}
+    if minimum_checkpoint_revision is not None and (
+            type(minimum_checkpoint_revision) is not int or
+            not 0 <= minimum_checkpoint_revision <= 2**63 - 1):
+        return {**denied, "reason": "invalid_minimum_checkpoint_revision"}
+    if expected_checkpoint_revision is not None and (
+            type(expected_checkpoint_revision) is not int or
+            not 0 <= expected_checkpoint_revision <= 2**63 - 1):
+        return {**denied, "reason": "invalid_expected_checkpoint_revision"}
+    if (minimum_checkpoint_revision is not None and
+            expected_checkpoint_revision is not None and
+            expected_checkpoint_revision < minimum_checkpoint_revision):
+        return {**denied, "reason": "inconsistent_checkpoint_revision_bounds"}
+    if maximum_new_signatures is not None:
+        if (type(maximum_new_signatures) is not int or
+                not 0 <= maximum_new_signatures <= 10000):
+            return {**denied, "reason": "invalid_maximum_new_signatures"}
+        if previous_signed_checkpoint is None:
+            return {**denied, "reason": "previous_checkpoint_required"}
+    # Caller-owned trust anchor: bind continuity to a specific prior checkpoint.
+    # A signature alone is not a trusted anchor unless protected by the caller.
+    if expected_previous_signature is not None:
+        if (type(expected_previous_signature) is not str or
+                len(expected_previous_signature) != 64 or
+                any(ch not in "0123456789abcdef" for ch in expected_previous_signature)):
+            return {**denied, "reason": "invalid_expected_previous_signature"}
+        if previous_signed_checkpoint is None:
+            return {**denied, "reason": "previous_checkpoint_required"}
+    if (not isinstance(signed_checkpoint, dict) or set(signed_checkpoint) != {
+            "ok", "checkpoint", "signature", "algorithm", "persisted", "execution_authority"} or
+            signed_checkpoint.get("ok") is not True or
+            signed_checkpoint.get("algorithm") != "HMAC-SHA256" or
+            signed_checkpoint.get("persisted") is not False or
+            signed_checkpoint.get("execution_authority") is not False):
+        return {**denied, "reason": "invalid_replay_checkpoint"}
+    payload = signed_checkpoint.get("checkpoint")
+    if not isinstance(payload, dict):
+        return {**denied, "reason": "invalid_replay_checkpoint"}
+    schema = payload.get("schema")
+    if schema == "SarahMemory.AdvCU.replay_checkpoint.v1" and set(payload) == {"schema", "signatures"}:
+        version = 1
+    elif schema == "SarahMemory.AdvCU.replay_checkpoint.v2" and set(payload) == {"schema", "signatures", "revision"}:
+        version = 2
+        if type(payload["revision"]) is not int or not 0 <= payload["revision"] <= 2**63 - 1:
+            return {**denied, "reason": "invalid_replay_checkpoint"}
+    else:
+        return {**denied, "reason": "invalid_replay_checkpoint"}
+    entries = payload.get("signatures")
+    if (not isinstance(entries, list) or len(entries) > 10000 or any(
+            type(item) is not str or len(item) != 64 or
+            any(ch not in "0123456789abcdef" for ch in item) for item in entries) or
+            entries != sorted(set(entries))):
+        return {**denied, "reason": "invalid_replay_checkpoint"}
+    signature = signed_checkpoint.get("signature")
+    if type(signature) is not str or len(signature) != 64 or any(
+            ch not in "0123456789abcdef" for ch in signature):
+        return {**denied, "reason": "invalid_replay_checkpoint"}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    expected = hmac.new(trusted_provenance_key,
+                        (f"AdvCU.replay_checkpoint.v{version}:" + canonical).encode("utf-8"),
+                        hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return {**denied, "reason": "replay_checkpoint_authentication_failed"}
+    if minimum_checkpoint_revision is not None:
+        if version != 2:
+            return {**denied, "reason": "checkpoint_revision_required"}
+        if payload["revision"] < minimum_checkpoint_revision:
+            return {**denied, "reason": "stale_checkpoint_revision"}
+    if expected_checkpoint_revision is not None:
+        if version != 2:
+            return {**denied, "reason": "checkpoint_revision_required"}
+        if payload["revision"] != expected_checkpoint_revision:
+            return {**denied, "reason": "unexpected_checkpoint_revision"}
+    if previous_signed_checkpoint is not None:
+        # Verify both authenticated snapshots before comparing sequence/history.
+        # The caller must independently protect the trusted prior checkpoint.
+        previous = verify_advcu_replay_checkpoint(
+            previous_signed_checkpoint, trusted_provenance_key=trusted_provenance_key)
+        if not previous.get("ok"):
+            return {**denied, "reason": "invalid_previous_checkpoint"}
+        if (expected_previous_signature is not None and
+                not hmac.compare_digest(previous_signed_checkpoint["signature"],
+                                        expected_previous_signature)):
+            return {**denied, "reason": "unexpected_previous_checkpoint"}
+        if version != 2 or "checkpoint_revision" not in previous:
+            return {**denied, "reason": "checkpoint_revision_required"}
+        previous_revision = previous["checkpoint_revision"]
+        if previous_revision == 2**63 - 1 or payload["revision"] != previous_revision + 1:
+            return {**denied, "reason": "checkpoint_sequence_discontinuity"}
+        current_entries = set(entries)
+        if not previous["accepted_signatures"].issubset(current_entries):
+            return {**denied, "reason": "checkpoint_history_discontinuity"}
+        if (maximum_new_signatures is not None and
+                len(current_entries) - previous["count"] > maximum_new_signatures):
+            return {**denied, "reason": "checkpoint_growth_limit_exceeded"}
+    result = {"ok": True, "accepted_signatures": set(entries), "count": len(entries),
+              "persisted": False, "execution_authority": False}
+    if version == 2:
+        result["checkpoint_revision"] = payload["revision"]
+    return result
+
+# Explicit, caller-authorized checkpoint recovery validation; no mutation or persistence.
+def validate_advcu_replay_checkpoint_recovery(signed_checkpoint: Any, *,
+                                              approved_for_recovery: bool = False,
+                                              trusted_provenance_key: Optional[bytes] = None,
+                                              trusted_checkpoint_signature: Optional[str] = None,
+                                              minimum_checkpoint_revision: Optional[int] = None,
+                                              maximum_recovered_signatures: int = 10000) -> Dict[str, Any]:
+    """Validate a recovery candidate against a caller-protected exact trust anchor.
+
+    This read-only operation never replaces caller state. The caller must
+    independently authorize and atomically commit any recovery, and must keep
+    the anchor and revision floor in trusted durable storage.
+    """
+    denied = {"ok": False, "execution_authority": False}
+    if approved_for_recovery is not True:
+        return {**denied, "reason": "explicit_recovery_approval_required"}
+    if (type(trusted_checkpoint_signature) is not str or
+            len(trusted_checkpoint_signature) != 64 or
+            any(ch not in "0123456789abcdef" for ch in trusted_checkpoint_signature)):
+        return {**denied, "reason": "trusted_checkpoint_signature_required"}
+    if (type(minimum_checkpoint_revision) is not int or
+            not 0 <= minimum_checkpoint_revision <= 2**63 - 1):
+        return {**denied, "reason": "trusted_revision_floor_required"}
+    if (type(maximum_recovered_signatures) is not int or
+            not 0 <= maximum_recovered_signatures <= 10000):
+        return {**denied, "reason": "invalid_recovery_capacity"}
+    verified = verify_advcu_replay_checkpoint(
+        signed_checkpoint, trusted_provenance_key=trusted_provenance_key,
+        minimum_checkpoint_revision=minimum_checkpoint_revision)
+    if not verified.get("ok"):
+        return verified
+    if not hmac.compare_digest(signed_checkpoint["signature"], trusted_checkpoint_signature):
+        return {**denied, "reason": "untrusted_recovery_checkpoint"}
+    if verified["count"] > maximum_recovered_signatures:
+        return {**denied, "reason": "recovery_capacity_exceeded"}
+    return {**verified, "recovery_validated": True, "recovery_committed": False,
+            "audit_ledger_written": False, "execution_authority": False}
+
+
+# Read-only recovery planning; the caller owns any later atomic commit and audit.
+def plan_advcu_replay_checkpoint_recovery(signed_checkpoint: Any, *,
+                                          approved_for_recovery: bool = False,
+                                          trusted_provenance_key: Optional[bytes] = None,
+                                          trusted_checkpoint_signature: Optional[str] = None,
+                                          minimum_checkpoint_revision: Optional[int] = None,
+                                          current_accepted_signatures: Any = None,
+                                          maximum_recovered_signatures: int = 10000,
+                                          maximum_state_changes: int = 10000) -> Dict[str, Any]:
+    """Produce a bounded, non-executable before/after recovery plan.
+
+    Current state is caller-supplied and untrusted; the plan is advisory only.
+    The caller must recheck state under its own lock before any authorized commit.
+    """
+    denied = {"ok": False, "execution_authority": False}
+    if type(current_accepted_signatures) not in (set, frozenset) or (
+            len(current_accepted_signatures) > 10000 or any(
+                type(item) is not str or len(item) != 64 or
+                any(ch not in "0123456789abcdef" for ch in item)
+                for item in current_accepted_signatures)):
+        return {**denied, "reason": "invalid_current_replay_history"}
+    if (type(maximum_state_changes) is not int or
+            not 0 <= maximum_state_changes <= 10000):
+        return {**denied, "reason": "invalid_recovery_change_limit"}
+    validated = validate_advcu_replay_checkpoint_recovery(
+        signed_checkpoint, approved_for_recovery=approved_for_recovery,
+        trusted_provenance_key=trusted_provenance_key,
+        trusted_checkpoint_signature=trusted_checkpoint_signature,
+        minimum_checkpoint_revision=minimum_checkpoint_revision,
+        maximum_recovered_signatures=maximum_recovered_signatures)
+    if not validated.get("ok"):
+        return validated
+    before = current_accepted_signatures
+    after = validated["accepted_signatures"]
+    added = len(after - before)
+    removed = len(before - after)
+    if added + removed > maximum_state_changes:
+        return {**denied, "reason": "recovery_change_limit_exceeded"}
+    def commitment(entries: Any) -> str:
+        canonical = json.dumps(sorted(entries), separators=(",", ":"), ensure_ascii=True)
+        return hashlib.sha256(canonical.encode("ascii")).hexdigest()
+    return {"ok": True, "recovery_plan_only": True,
+            "recovery_committed": False, "audit_ledger_written": False,
+            "execution_authority": False,
+            "checkpoint_revision": validated["checkpoint_revision"],
+            "checkpoint_signature": signed_checkpoint["signature"],
+            "before_count": len(before), "after_count": len(after),
+            "added_count": added, "removed_count": removed,
+            "before_sha256": commitment(before),
+            "after_sha256": commitment(after),
+            "requires_caller_state_recheck": True,
+            "requires_caller_atomic_commit": True,
+            "requires_caller_audit": True}
+
+
+# Advisory freshness check; callers must hold their own lock during final commit.
+def verify_advcu_recovery_plan_freshness(recovery_plan: Any, *,
+                                         approved_for_recovery: bool = False,
+                                         current_accepted_signatures: Any = None,
+                                         expected_checkpoint_signature: Optional[str] = None,
+                                         expected_checkpoint_revision: Optional[int] = None) -> Dict[str, Any]:
+    """Check that a previously produced plan still matches caller-supplied state.
+
+    This does not authenticate a plan or authorize a commit. The caller must
+    protect the plan and trust anchor, verify the checkpoint independently,
+    and recheck state under a lock immediately before its own atomic commit.
+    """
+    denied = {"ok": False, "execution_authority": False}
+    if approved_for_recovery is not True:
+        return {**denied, "reason": "explicit_recovery_approval_required"}
+    if (type(current_accepted_signatures) not in (set, frozenset) or
+            len(current_accepted_signatures) > 10000 or any(
+                type(item) is not str or len(item) != 64 or
+                any(ch not in "0123456789abcdef" for ch in item)
+                for item in current_accepted_signatures)):
+        return {**denied, "reason": "invalid_current_replay_history"}
+    if (type(expected_checkpoint_signature) is not str or
+            len(expected_checkpoint_signature) != 64 or
+            any(ch not in "0123456789abcdef" for ch in expected_checkpoint_signature)):
+        return {**denied, "reason": "trusted_checkpoint_signature_required"}
+    if (type(expected_checkpoint_revision) is not int or
+            not 0 <= expected_checkpoint_revision <= 2**63 - 1):
+        return {**denied, "reason": "trusted_checkpoint_revision_required"}
+    required = {"ok", "recovery_plan_only", "recovery_committed", "audit_ledger_written",
+                "execution_authority", "checkpoint_revision", "checkpoint_signature",
+                "before_count", "after_count", "added_count", "removed_count",
+                "before_sha256", "after_sha256", "requires_caller_state_recheck",
+                "requires_caller_atomic_commit", "requires_caller_audit"}
+    if (type(recovery_plan) is not dict or set(recovery_plan) != required or
+            recovery_plan.get("ok") is not True or
+            recovery_plan.get("recovery_plan_only") is not True or
+            recovery_plan.get("recovery_committed") is not False or
+            recovery_plan.get("audit_ledger_written") is not False or
+            recovery_plan.get("execution_authority") is not False or
+            any(recovery_plan.get(k) is not True for k in (
+                "requires_caller_state_recheck", "requires_caller_atomic_commit",
+                "requires_caller_audit")) or
+            any(type(recovery_plan.get(k)) is not int or not 0 <= recovery_plan[k] <= 10000
+                for k in ("before_count", "after_count", "added_count", "removed_count")) or
+            any(type(recovery_plan.get(k)) is not str or len(recovery_plan[k]) != 64 or
+                any(ch not in "0123456789abcdef" for ch in recovery_plan[k])
+                for k in ("before_sha256", "after_sha256", "checkpoint_signature")) or
+            type(recovery_plan.get("checkpoint_revision")) is not int or
+            not 0 <= recovery_plan["checkpoint_revision"] <= 2**63 - 1 or
+            recovery_plan["before_count"] + recovery_plan["added_count"] -
+                recovery_plan["removed_count"] != recovery_plan["after_count"]):
+        return {**denied, "reason": "invalid_recovery_plan"}
+    if (not hmac.compare_digest(recovery_plan["checkpoint_signature"],
+                                expected_checkpoint_signature) or
+            recovery_plan["checkpoint_revision"] != expected_checkpoint_revision):
+        return {**denied, "reason": "untrusted_recovery_plan_anchor"}
+    canonical = json.dumps(sorted(current_accepted_signatures),
+                           separators=(",", ":"), ensure_ascii=True)
+    current_digest = hashlib.sha256(canonical.encode("ascii")).hexdigest()
+    if (len(current_accepted_signatures) != recovery_plan["before_count"] or
+            not hmac.compare_digest(current_digest, recovery_plan["before_sha256"])):
+        return {**denied, "reason": "recovery_plan_stale"}
+    return {"ok": True, "recovery_plan_fresh": True,
+            "recovery_committed": False, "audit_ledger_written": False,
+            "execution_authority": False, "requires_caller_atomic_commit": True,
+            "requires_caller_audit": True, "requires_caller_state_recheck": True}
+
+
+# Authenticated advisory recovery plans. Caller retains keys, trust anchors and authority.
+def sign_advcu_recovery_plan(recovery_plan: Any, *,
+                             approved_for_signing: bool = False,
+                             provenance_key: Optional[bytes] = None) -> Dict[str, Any]:
+    """Sign a bounded recovery plan; never authorize or perform recovery."""
+    denied = {"ok": False, "execution_authority": False}
+    if approved_for_signing is not True:
+        return {**denied, "reason": "explicit_plan_signing_approval_required"}
+    if type(provenance_key) is not bytes or len(provenance_key) < 32:
+        return {**denied, "reason": "invalid_provenance_key"}
+    if type(recovery_plan) is not dict:
+        return {**denied, "reason": "invalid_recovery_plan"}
+    # The existing strict schema validator checks the plan and its trust anchor.
+    anchor = recovery_plan.get("checkpoint_signature")
+    revision = recovery_plan.get("checkpoint_revision")
+    if (type(anchor) is not str or type(revision) is not int):
+        return {**denied, "reason": "invalid_recovery_plan"}
+    # Validate structure with a synthetic bounded before-state only when empty.
+    # Otherwise validate all plan fields explicitly without inventing state.
+    required = {"ok", "recovery_plan_only", "recovery_committed",
+                "audit_ledger_written", "execution_authority", "checkpoint_revision",
+                "checkpoint_signature", "before_count", "after_count", "added_count",
+                "removed_count", "before_sha256", "after_sha256",
+                "requires_caller_state_recheck", "requires_caller_atomic_commit",
+                "requires_caller_audit"}
+    if (set(recovery_plan) != required or recovery_plan.get("ok") is not True or
+            recovery_plan.get("recovery_plan_only") is not True or
+            any(recovery_plan.get(k) is not False for k in (
+                "recovery_committed", "audit_ledger_written", "execution_authority")) or
+            any(recovery_plan.get(k) is not True for k in (
+                "requires_caller_state_recheck", "requires_caller_atomic_commit",
+                "requires_caller_audit")) or
+            not 0 <= revision <= 2**63 - 1 or
+            any(type(recovery_plan.get(k)) is not int or
+                not 0 <= recovery_plan[k] <= 10000 for k in (
+                    "before_count", "after_count", "added_count", "removed_count")) or
+            recovery_plan["before_count"] + recovery_plan["added_count"] -
+                recovery_plan["removed_count"] != recovery_plan["after_count"] or
+            any(type(recovery_plan.get(k)) is not str or
+                len(recovery_plan[k]) != 64 or
+                any(c not in "0123456789abcdef" for c in recovery_plan[k])
+                for k in ("checkpoint_signature", "before_sha256", "after_sha256"))):
+        return {**denied, "reason": "invalid_recovery_plan"}
+    canonical = json.dumps(recovery_plan, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=True, allow_nan=False)
+    mac = hmac.new(provenance_key,
+                   ("AdvCU.recovery_plan.v1:" + canonical).encode("ascii"),
+                   hashlib.sha256).hexdigest()
+    return {"ok": True, "schema": "SarahMemory.AdvCU.recovery_plan_signature.v1",
+            "plan": dict(recovery_plan), "signature": mac,
+            "algorithm": "HMAC-SHA256", "execution_authority": False,
+            "recovery_committed": False}
+
+
+def verify_advcu_signed_recovery_plan(signed_plan: Any, *,
+                                       trusted_provenance_key: Optional[bytes] = None,
+                                       approved_for_verification: bool = False) -> Dict[str, Any]:
+    """Authenticate an advisory plan; freshness and commit authorization are separate."""
+    denied = {"ok": False, "execution_authority": False}
+    if approved_for_verification is not True:
+        return {**denied, "reason": "explicit_plan_verification_approval_required"}
+    if type(trusted_provenance_key) is not bytes or len(trusted_provenance_key) < 32:
+        return {**denied, "reason": "invalid_provenance_key"}
+    if (type(signed_plan) is not dict or set(signed_plan) != {
+            "ok", "schema", "plan", "signature", "algorithm",
+            "execution_authority", "recovery_committed"} or
+            signed_plan.get("ok") is not True or
+            signed_plan.get("schema") != "SarahMemory.AdvCU.recovery_plan_signature.v1" or
+            signed_plan.get("algorithm") != "HMAC-SHA256" or
+            signed_plan.get("execution_authority") is not False or
+            signed_plan.get("recovery_committed") is not False or
+            type(signed_plan.get("signature")) is not str or
+            len(signed_plan["signature"]) != 64 or
+            any(c not in "0123456789abcdef" for c in signed_plan["signature"])):
+        return {**denied, "reason": "invalid_signed_recovery_plan"}
+    # Reuse the same strict schema and canonicalization; no state is modified.
+    candidate = sign_advcu_recovery_plan(
+        signed_plan["plan"], approved_for_signing=True,
+        provenance_key=trusted_provenance_key)
+    if not candidate.get("ok"):
+        return {**denied, "reason": "invalid_recovery_plan"}
+    if not hmac.compare_digest(candidate["signature"], signed_plan["signature"]):
+        return {**denied, "reason": "recovery_plan_authentication_failed"}
+    return {"ok": True, "plan_authenticated": True, "plan_fresh": False,
+            "recovery_committed": False, "execution_authority": False,
+            "requires_caller_state_recheck": True, "requires_caller_audit": True}
+
+
+# Optional authenticated expiry/replay gate; advisory only, with caller-owned clock/state.
+def sign_advcu_timed_recovery_plan(signed_plan: Any, *,
+                                   approved_for_signing: bool = False,
+                                   provenance_key: Optional[bytes] = None,
+                                   issued_at: Any = None, expires_at: Any = None,
+                                   nonce: Any = None) -> Dict[str, Any]:
+    """Bind a previously authenticated advisory plan to a bounded time and nonce."""
+    denied = {"ok": False, "execution_authority": False}
+    if approved_for_signing is not True:
+        return {**denied, "reason": "explicit_plan_signing_approval_required"}
+    checked = verify_advcu_signed_recovery_plan(
+        signed_plan, trusted_provenance_key=provenance_key,
+        approved_for_verification=True)
+    if not checked.get("ok"):
+        return {**denied, "reason": "invalid_signed_recovery_plan"}
+    if (type(issued_at) is not int or type(expires_at) is not int or
+            not 0 <= issued_at < expires_at <= 2**63 - 1 or
+            expires_at - issued_at > 86400 or
+            type(nonce) is not str or len(nonce) != 64 or
+            any(c not in "0123456789abcdef" for c in nonce)):
+        return {**denied, "reason": "invalid_time_window_or_nonce"}
+    payload = {"schema": "SarahMemory.AdvCU.timed_recovery_plan.v1",
+               "signed_plan": signed_plan, "issued_at": issued_at,
+               "expires_at": expires_at, "nonce": nonce}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=True, allow_nan=False)
+    signature = hmac.new(provenance_key,
+                         ("AdvCU.timed_recovery_plan.v1:" + canonical).encode("ascii"),
+                         hashlib.sha256).hexdigest()
+    return {"ok": True, "payload": payload, "signature": signature,
+            "execution_authority": False, "recovery_committed": False}
+
+
+def verify_advcu_timed_recovery_plan(envelope: Any, *,
+                                     approved_for_verification: bool = False,
+                                     trusted_provenance_key: Optional[bytes] = None,
+                                     trusted_now: Any = None,
+                                     accepted_nonces: Any = None,
+                                     maximum_clock_skew: int = 0) -> Dict[str, Any]:
+    """Read-only expiry/replay screening; caller must atomically reserve nonce."""
+    denied = {"ok": False, "execution_authority": False}
+    if approved_for_verification is not True:
+        return {**denied, "reason": "explicit_plan_verification_approval_required"}
+    if (type(trusted_now) is not int or not 0 <= trusted_now <= 2**63 - 1 or
+            type(maximum_clock_skew) is not int or not 0 <= maximum_clock_skew <= 300 or
+            type(accepted_nonces) not in (set, frozenset) or
+            len(accepted_nonces) > 10000):
+        return {**denied, "reason": "invalid_caller_trust_state"}
+    if (type(envelope) is not dict or set(envelope) != {
+            "ok", "payload", "signature", "execution_authority", "recovery_committed"} or
+            envelope.get("ok") is not True or
+            envelope.get("execution_authority") is not False or
+            envelope.get("recovery_committed") is not False or
+            type(envelope.get("signature")) is not str or
+            len(envelope["signature"]) != 64 or
+            any(c not in "0123456789abcdef" for c in envelope["signature"])):
+        return {**denied, "reason": "invalid_timed_envelope"}
+    payload = envelope["payload"]
+    if (type(payload) is not dict or set(payload) != {
+            "schema", "signed_plan", "issued_at", "expires_at", "nonce"} or
+            payload.get("schema") != "SarahMemory.AdvCU.timed_recovery_plan.v1"):
+        return {**denied, "reason": "invalid_timed_envelope"}
+    # Recompute the authenticated envelope using the same strict signer.
+    expected = sign_advcu_timed_recovery_plan(
+        payload["signed_plan"], approved_for_signing=True,
+        provenance_key=trusted_provenance_key, issued_at=payload["issued_at"],
+        expires_at=payload["expires_at"], nonce=payload["nonce"])
+    if not expected.get("ok"):
+        return {**denied, "reason": "invalid_timed_envelope"}
+    if not hmac.compare_digest(expected["signature"], envelope["signature"]):
+        return {**denied, "reason": "timed_envelope_authentication_failed"}
+    if trusted_now + maximum_clock_skew < payload["issued_at"]:
+        return {**denied, "reason": "recovery_plan_not_yet_valid"}
+    if trusted_now >= payload["expires_at"] + maximum_clock_skew:
+        return {**denied, "reason": "recovery_plan_expired"}
+    if payload["nonce"] in accepted_nonces:
+        return {**denied, "reason": "recovery_plan_replay_detected"}
+    return {"ok": True, "time_window_valid": True, "nonce_not_seen": True,
+            "plan_authenticated": True, "plan_fresh": False,
+            "execution_authority": False, "recovery_committed": False,
+            "requires_caller_atomic_nonce_reservation": True,
+            "requires_caller_state_recheck": True, "requires_caller_audit": True}
+
+
+def preflight_advcu_timed_nonce_reservation(envelope: Any, *,
+        approved_for_verification: bool = False,
+        trusted_provenance_key: Optional[bytes] = None,
+        trusted_now: Any = None, accepted_nonces: Any = None,
+        maximum_clock_skew: int = 0, maximum_accepted_nonces: int = 10000) -> Dict[str, Any]:
+    """Read-only capacity/freshness preflight; never reserves or commits a nonce.
+
+    Caller must revalidate and atomically reserve under its own lock/transaction.
+    This result is not an authorization, nor a race-free reservation guarantee.
+    """
+    denied = {"ok": False, "execution_authority": False, "recovery_committed": False}
+    if approved_for_verification is not True:
+        return {**denied, "reason": "explicit_plan_verification_approval_required"}
+    if (type(maximum_accepted_nonces) is not int or
+            not 1 <= maximum_accepted_nonces <= 10000 or
+            type(accepted_nonces) not in (set, frozenset) or
+            len(accepted_nonces) > maximum_accepted_nonces):
+        return {**denied, "reason": "invalid_nonce_reservation_capacity"}
+    if any(type(item) is not str or len(item) != 64 or
+           any(ch not in "0123456789abcdef" for ch in item)
+           for item in accepted_nonces):
+        return {**denied, "reason": "invalid_accepted_nonce_entry"}
+    verified = verify_advcu_timed_recovery_plan(
+        envelope, approved_for_verification=True,
+        trusted_provenance_key=trusted_provenance_key, trusted_now=trusted_now,
+        accepted_nonces=accepted_nonces, maximum_clock_skew=maximum_clock_skew)
+    if not verified.get("ok"):
+        return {**denied, "reason": verified.get("reason", "verification_failed")}
+    if len(accepted_nonces) >= maximum_accepted_nonces:
+        return {**denied, "reason": "nonce_reservation_capacity_exhausted"}
+    return {"ok": True, "nonce": envelope["payload"]["nonce"],
+            "remaining_capacity_after_reservation": maximum_accepted_nonces - len(accepted_nonces) - 1,
+            "plan_authenticated": True, "plan_fresh": False,
+            "nonce_reserved": False, "execution_authority": False,
+            "recovery_committed": False,
+            "requires_caller_atomic_nonce_reservation": True,
+            "requires_caller_state_recheck": True, "requires_caller_audit": True}
+
+
+# Caller-attested reservation evidence; does not reserve or authenticate the caller's transaction.
+def attest_advcu_nonce_reservation(envelope: Any, *,
+        approved_for_attestation: bool = False,
+        trusted_provenance_key: Optional[bytes] = None,
+        trusted_now: Any = None, accepted_nonces: Any = None,
+        reservation_id: Any = None, maximum_accepted_nonces: int = 10000) -> Dict[str, Any]:
+    """Sign bounded evidence of a caller-reported completed nonce reservation.
+
+    Caller MUST have atomically reserved the nonce before invoking this method.
+    A signed receipt proves only that the signer attested to the supplied state;
+    it does not prove transaction atomicity, durable storage, or audit completion.
+    """
+    denied = {"ok": False, "execution_authority": False,
+              "recovery_committed": False, "audit_ledger_written": False}
+    if approved_for_attestation is not True:
+        return {**denied, "reason": "explicit_reservation_attestation_approval_required"}
+    if (type(maximum_accepted_nonces) is not int or
+            not 1 <= maximum_accepted_nonces <= 10000 or
+            type(accepted_nonces) not in (set, frozenset) or
+            not 1 <= len(accepted_nonces) <= maximum_accepted_nonces or
+            any(type(n) is not str or len(n) != 64 or
+                any(c not in "0123456789abcdef" for c in n)
+                for n in accepted_nonces) or
+            type(reservation_id) is not str or len(reservation_id) != 64 or
+            any(c not in "0123456789abcdef" for c in reservation_id) or
+            type(trusted_now) is not int or not 0 <= trusted_now <= 2**63 - 1 or
+            type(trusted_provenance_key) is not bytes or
+            not 16 <= len(trusted_provenance_key) <= 4096):
+        return {**denied, "reason": "invalid_caller_reservation_evidence"}
+    # Check authentication and time with an empty replay set: the nonce MUST
+    # already be present in caller-supplied post-reservation state.
+    verified = verify_advcu_timed_recovery_plan(
+        envelope, approved_for_verification=True,
+        trusted_provenance_key=trusted_provenance_key,
+        trusted_now=trusted_now, accepted_nonces=frozenset())
+    if not verified.get("ok"):
+        return {**denied, "reason": verified.get("reason", "invalid_timed_plan")}
+    nonce = envelope["payload"]["nonce"]
+    if nonce not in accepted_nonces:
+        return {**denied, "reason": "nonce_not_in_caller_reserved_state"}
+    receipt = {"schema": "SarahMemory.AdvCU.nonce_reservation_attestation.v1",
+               "nonce": nonce, "reservation_id": reservation_id,
+               "observed_at": trusted_now,
+               "timed_plan_signature": envelope["signature"],
+               "accepted_nonce_count": len(accepted_nonces),
+               "caller_attestation_only": True}
+    canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=True, allow_nan=False)
+    signature = hmac.new(trusted_provenance_key,
+        ("AdvCU.nonce_reservation_attestation.v1:" + canonical).encode("ascii"),
+        hashlib.sha256).hexdigest()
+    return {"ok": True, "receipt": receipt, "signature": signature,
+            "nonce_reserved_by_advcu": False, "execution_authority": False,
+            "recovery_committed": False, "audit_ledger_written": False,
+            "requires_caller_audit": True}
+
+def verify_advcu_nonce_reservation_attestation(attestation: Any, *,
+        approved_for_verification: bool = False,
+        trusted_provenance_key: Optional[bytes] = None) -> Dict[str, Any]:
+    """Authenticate caller attestation without asserting transaction correctness."""
+    denied = {"ok": False, "execution_authority": False}
+    if approved_for_verification is not True:
+        return {**denied, "reason": "explicit_attestation_verification_approval_required"}
+    if (type(trusted_provenance_key) is not bytes or
+            not 16 <= len(trusted_provenance_key) <= 4096 or
+            type(attestation) is not dict or set(attestation) != {
+                "ok", "receipt", "signature", "nonce_reserved_by_advcu",
+                "execution_authority", "recovery_committed",
+                "audit_ledger_written", "requires_caller_audit"} or
+            attestation.get("ok") is not True or
+            any(attestation.get(k) is not False for k in (
+                "nonce_reserved_by_advcu", "execution_authority",
+                "recovery_committed", "audit_ledger_written")) or
+            attestation.get("requires_caller_audit") is not True or
+            type(attestation.get("signature")) is not str or
+            len(attestation["signature"]) != 64 or
+            any(c not in "0123456789abcdef" for c in attestation["signature"])):
+        return {**denied, "reason": "invalid_reservation_attestation"}
+    r = attestation["receipt"]
+    if (type(r) is not dict or set(r) != {
+            "schema", "nonce", "reservation_id", "observed_at",
+            "timed_plan_signature", "accepted_nonce_count",
+            "caller_attestation_only"} or
+            r.get("schema") != "SarahMemory.AdvCU.nonce_reservation_attestation.v1" or
+            r.get("caller_attestation_only") is not True or
+            type(r.get("observed_at")) is not int or
+            not 0 <= r["observed_at"] <= 2**63 - 1 or
+            type(r.get("accepted_nonce_count")) is not int or
+            not 1 <= r["accepted_nonce_count"] <= 10000 or
+            any(type(r.get(k)) is not str or len(r[k]) != 64 or
+                any(c not in "0123456789abcdef" for c in r[k])
+                for k in ("nonce", "reservation_id", "timed_plan_signature"))):
+        return {**denied, "reason": "invalid_reservation_attestation"}
+    canonical = json.dumps(r, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=True, allow_nan=False)
+    expected = hmac.new(trusted_provenance_key,
+        ("AdvCU.nonce_reservation_attestation.v1:" + canonical).encode("ascii"),
+        hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, attestation["signature"]):
+        return {**denied, "reason": "reservation_attestation_authentication_failed"}
+    return {"ok": True, "attestation_authenticated": True,
+            "atomic_reservation_verified": False, "execution_authority": False,
+            "requires_caller_audit": True}
+
+
+def reconcile_advcu_nonce_reservation_attestation(attestation: Any, *,
+        approved_for_reconciliation: bool = False,
+        trusted_provenance_key: Optional[bytes] = None,
+        trusted_reservations: Any = None,
+        maximum_reservations: int = 10000) -> Dict[str, Any]:
+    """Read-only reconciliation against a caller-protected nonce-to-ID snapshot.
+
+    The snapshot must originate from the caller's authoritative transaction store.
+    Matching evidence does not establish atomicity, durability, or audit completion.
+    Caller must synchronize/recheck before acting; no state is changed here.
+    """
+    denied = {"ok": False, "execution_authority": False,
+              "recovery_committed": False, "audit_ledger_written": False}
+    if approved_for_reconciliation is not True:
+        return {**denied, "reason": "explicit_reconciliation_approval_required"}
+    if (type(maximum_reservations) is not int or
+            not 1 <= maximum_reservations <= 10000 or
+            type(trusted_reservations) is not dict or
+            not 1 <= len(trusted_reservations) <= maximum_reservations):
+        return {**denied, "reason": "invalid_trusted_reservation_snapshot"}
+    for nonce, reservation_id in trusted_reservations.items():
+        if any(type(value) is not str or len(value) != 64 or
+               any(c not in "0123456789abcdef" for c in value)
+               for value in (nonce, reservation_id)):
+            return {**denied, "reason": "invalid_trusted_reservation_snapshot"}
+    verified = verify_advcu_nonce_reservation_attestation(
+        attestation, approved_for_verification=True,
+        trusted_provenance_key=trusted_provenance_key)
+    if not verified.get("ok"):
+        return {**denied, "reason": verified.get("reason", "invalid_attestation")}
+    receipt = attestation["receipt"]
+    if receipt["nonce"] not in trusted_reservations:
+        return {**denied, "reason": "nonce_absent_from_trusted_reservations"}
+    if not hmac.compare_digest(trusted_reservations[receipt["nonce"]],
+                               receipt["reservation_id"]):
+        return {**denied, "reason": "reservation_id_mismatch"}
+    if len(trusted_reservations) < receipt["accepted_nonce_count"]:
+        return {**denied, "reason": "trusted_snapshot_count_below_attested_count"}
+    return {"ok": True, "attestation_authenticated": True,
+            "reservation_snapshot_matched": True,
+            "atomic_reservation_verified": False, "durability_verified": False,
+            "execution_authority": False, "recovery_committed": False,
+            "audit_ledger_written": False, "requires_caller_audit": True,
+            "requires_caller_state_recheck": True}
+
+
+def verify_advcu_reservation_history_continuity(previous_snapshot: Any,
+        current_snapshot: Any, *, approved_for_verification: bool = False,
+        maximum_reservations: int = 10000) -> Dict[str, Any]:
+    """Read-only check for monotonic nonce-to-reservation-ID history.
+
+    Both snapshots MUST be independently protected by the caller. This
+    function cannot establish their provenance, durability, atomicity or
+    freshness. No reservation, execution, or audit write is performed.
+    """
+    denied = {"ok": False, "execution_authority": False,
+              "recovery_committed": False, "audit_ledger_written": False}
+    if approved_for_verification is not True:
+        return {**denied, "reason": "explicit_continuity_verification_approval_required"}
+    if (type(maximum_reservations) is not int or
+            not 1 <= maximum_reservations <= 10000 or
+            type(previous_snapshot) is not dict or
+            type(current_snapshot) is not dict or
+            len(previous_snapshot) > maximum_reservations or
+            len(current_snapshot) > maximum_reservations):
+        return {**denied, "reason": "invalid_reservation_history_snapshot"}
+    for snapshot in (previous_snapshot, current_snapshot):
+        for nonce, reservation_id in snapshot.items():
+            if any(type(value) is not str or len(value) != 64 or
+                   any(char not in "0123456789abcdef" for char in value)
+                   for value in (nonce, reservation_id)):
+                return {**denied, "reason": "invalid_reservation_history_snapshot"}
+    for nonce, reservation_id in previous_snapshot.items():
+        if nonce not in current_snapshot:
+            return {**denied, "reason": "previous_reservation_missing"}
+        if not hmac.compare_digest(reservation_id, current_snapshot[nonce]):
+            return {**denied, "reason": "conflicting_reservation_identifier"}
+    return {"ok": True, "history_continuous": True,
+            "previous_count": len(previous_snapshot),
+            "current_count": len(current_snapshot),
+            "new_reservations": len(current_snapshot) - len(previous_snapshot),
+            "atomic_reservation_verified": False,
+            "durability_verified": False, "execution_authority": False,
+            "recovery_committed": False, "audit_ledger_written": False,
+            "requires_caller_audit": True,
+            "requires_caller_state_recheck": True}
+
+
+def sign_advcu_reservation_snapshot(snapshot: Any, *,
+        approved_for_signing: bool = False,
+        provenance_key: Optional[bytes] = None,
+        maximum_reservations: int = 10000) -> Dict[str, Any]:
+    """Authenticate caller-supplied reservation history without changing it.
+
+    Caller owns key custody, snapshot provenance, persistence, and audit.
+    This commitment is not proof of reservation atomicity or freshness.
+    """
+    denied = {"ok": False, "execution_authority": False,
+              "audit_ledger_written": False}
+    if approved_for_signing is not True:
+        return {**denied, "reason": "explicit_snapshot_signing_approval_required"}
+    if (type(provenance_key) is not bytes or not 32 <= len(provenance_key) <= 4096 or
+            type(maximum_reservations) is not int or
+            not 1 <= maximum_reservations <= 10000 or
+            type(snapshot) is not dict or len(snapshot) > maximum_reservations):
+        return {**denied, "reason": "invalid_snapshot_or_key"}
+    for nonce, reservation_id in snapshot.items():
+        if any(type(value) is not str or len(value) != 64 or
+               any(char not in "0123456789abcdef" for char in value)
+               for value in (nonce, reservation_id)):
+            return {**denied, "reason": "invalid_reservation_history_snapshot"}
+    canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=True, allow_nan=False)
+    signature = hmac.new(provenance_key,
+        ("AdvCU.reservation_snapshot.v1:" + canonical).encode("ascii"),
+        hashlib.sha256).hexdigest()
+    return {"ok": True, "schema": "SarahMemory.AdvCU.reservation_snapshot.v1",
+            "snapshot": dict(snapshot), "signature": signature,
+            "algorithm": "HMAC-SHA256", "execution_authority": False,
+            "audit_ledger_written": False, "requires_caller_audit": True}
+
+
+def verify_advcu_reservation_snapshot(commitment: Any, *,
+        approved_for_verification: bool = False,
+        trusted_provenance_key: Optional[bytes] = None,
+        maximum_reservations: int = 10000) -> Dict[str, Any]:
+    """Read-only authentication of a bounded reservation snapshot commitment."""
+    denied = {"ok": False, "execution_authority": False,
+              "audit_ledger_written": False}
+    if approved_for_verification is not True:
+        return {**denied, "reason": "explicit_snapshot_verification_approval_required"}
+    if (type(commitment) is not dict or
+            set(commitment) != {"ok", "schema", "snapshot", "signature",
+                                "algorithm", "execution_authority",
+                                "audit_ledger_written", "requires_caller_audit"} or
+            commitment.get("ok") is not True or
+            commitment.get("schema") != "SarahMemory.AdvCU.reservation_snapshot.v1" or
+            commitment.get("algorithm") != "HMAC-SHA256" or
+            commitment.get("execution_authority") is not False or
+            commitment.get("audit_ledger_written") is not False or
+            commitment.get("requires_caller_audit") is not True or
+            type(commitment.get("signature")) is not str or
+            len(commitment["signature"]) != 64 or
+            any(c not in "0123456789abcdef" for c in commitment["signature"])):
+        return {**denied, "reason": "invalid_snapshot_commitment"}
+    signed = sign_advcu_reservation_snapshot(
+        commitment["snapshot"], approved_for_signing=True,
+        provenance_key=trusted_provenance_key,
+        maximum_reservations=maximum_reservations)
+    if not signed.get("ok"):
+        return {**denied, "reason": "invalid_snapshot_or_key"}
+    if not hmac.compare_digest(signed["signature"], commitment["signature"]):
+        return {**denied, "reason": "snapshot_authentication_failed"}
+    return {"ok": True, "snapshot_authenticated": True,
+            "reservation_count": len(commitment["snapshot"]),
+            "atomic_reservation_verified": False, "durability_verified": False,
+            "execution_authority": False, "audit_ledger_written": False,
+            "requires_caller_audit": True}
+
+
+def verify_advcu_authenticated_reservation_continuity(previous_commitment: Any,
+        current_commitment: Any, *, approved_for_verification: bool = False,
+        trusted_provenance_key: Optional[bytes] = None,
+        maximum_reservations: int = 10000,
+        trusted_previous_signature: Optional[str] = None) -> Dict[str, Any]:
+    """Read-only continuity check between authenticated reservation snapshots.
+
+    Caller must anchor the previous signature to trusted durable history;
+    authentication alone cannot establish freshness or prevent a pair rollback.
+    No nonce reservation, persistence, approval grant, or execution occurs.
+    """
+    denied = {"ok": False, "execution_authority": False,
+              "recovery_committed": False, "audit_ledger_written": False}
+    if approved_for_verification is not True:
+        return {**denied, "reason": "explicit_continuity_verification_approval_required"}
+    if (type(trusted_previous_signature) is not str or
+            len(trusted_previous_signature) != 64 or
+            any(c not in "0123456789abcdef" for c in trusted_previous_signature)):
+        return {**denied, "reason": "trusted_previous_signature_required"}
+    for label, commitment in (("previous", previous_commitment),
+                              ("current", current_commitment)):
+        verified = verify_advcu_reservation_snapshot(
+            commitment, approved_for_verification=True,
+            trusted_provenance_key=trusted_provenance_key,
+            maximum_reservations=maximum_reservations)
+        if not verified.get("ok"):
+            return {**denied, "reason": label + "_snapshot_authentication_failed"}
+    if not hmac.compare_digest(previous_commitment["signature"],
+                               trusted_previous_signature):
+        return {**denied, "reason": "previous_snapshot_anchor_mismatch"}
+    continuity = verify_advcu_reservation_history_continuity(
+        previous_commitment["snapshot"], current_commitment["snapshot"],
+        approved_for_verification=True, maximum_reservations=maximum_reservations)
+    if not continuity.get("ok"):
+        return {**denied, "reason": continuity.get("reason", "history_not_continuous")}
+    return {"ok": True, "authenticated_continuity": True,
+            "previous_count": continuity["previous_count"],
+            "current_count": continuity["current_count"],
+            "new_reservations": continuity["new_reservations"],
+            "atomic_reservation_verified": False, "durability_verified": False,
+            "freshness_verified": False, "execution_authority": False,
+            "recovery_committed": False, "audit_ledger_written": False,
+            "requires_caller_audit": True, "requires_caller_state_recheck": True}
+
+
+def sign_advcu_reservation_revision(previous_commitment: Any,
+        current_commitment: Any, *, previous_revision: int,
+        approved_for_signing: bool = False,
+        provenance_key: Optional[bytes] = None,
+        trusted_previous_signature: Optional[str] = None,
+        maximum_reservations: int = 10000) -> Dict[str, Any]:
+    """Sign one bounded, monotonic reservation revision; never persist or execute.
+
+    Caller must retain a trusted previous revision AND its snapshot signature.
+    A signature alone cannot prove the caller's durable rollback anchor.
+    """
+    denied = {"ok": False, "execution_authority": False,
+              "audit_ledger_written": False}
+    if approved_for_signing is not True:
+        return {**denied, "reason": "explicit_revision_signing_approval_required"}
+    if (type(previous_revision) is not int or
+            not 0 <= previous_revision < 2**63 - 1):
+        return {**denied, "reason": "invalid_previous_revision"}
+    checked = verify_advcu_authenticated_reservation_continuity(
+        previous_commitment, current_commitment,
+        approved_for_verification=True,
+        trusted_provenance_key=provenance_key,
+        trusted_previous_signature=trusted_previous_signature,
+        maximum_reservations=maximum_reservations)
+    if not checked.get("ok"):
+        return {**denied, "reason": checked.get("reason", "continuity_failed")}
+    revision = previous_revision + 1
+    payload = {"previous_revision": previous_revision, "revision": revision,
+               "previous_signature": previous_commitment["signature"],
+               "current_signature": current_commitment["signature"]}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=True)
+    signature = hmac.new(provenance_key,
+        ("AdvCU.reservation_revision.v1:" + canonical).encode("ascii"),
+        hashlib.sha256).hexdigest()
+    return {"ok": True, "schema": "SarahMemory.AdvCU.reservation_revision.v1",
+            "payload": payload, "signature": signature,
+            "execution_authority": False, "audit_ledger_written": False,
+            "requires_caller_audit": True}
+
+
+def verify_advcu_reservation_revision(previous_commitment: Any,
+        current_commitment: Any, revision_receipt: Any, *,
+        trusted_previous_revision: int,
+        trusted_previous_signature: Optional[str] = None,
+        approved_for_verification: bool = False,
+        trusted_provenance_key: Optional[bytes] = None,
+        maximum_reservations: int = 10000) -> Dict[str, Any]:
+    """Read-only revision verification against caller-owned rollback anchors."""
+    denied = {"ok": False, "execution_authority": False,
+              "audit_ledger_written": False, "recovery_committed": False}
+    if approved_for_verification is not True:
+        return {**denied, "reason": "explicit_revision_verification_approval_required"}
+    if (type(trusted_previous_revision) is not int or
+            not 0 <= trusted_previous_revision < 2**63 - 1 or
+            type(revision_receipt) is not dict or
+            set(revision_receipt) != {"ok", "schema", "payload", "signature",
+                                      "execution_authority", "audit_ledger_written",
+                                      "requires_caller_audit"} or
+            revision_receipt.get("ok") is not True or
+            revision_receipt.get("schema") != "SarahMemory.AdvCU.reservation_revision.v1" or
+            revision_receipt.get("execution_authority") is not False or
+            revision_receipt.get("audit_ledger_written") is not False or
+            revision_receipt.get("requires_caller_audit") is not True or
+            type(revision_receipt.get("signature")) is not str or
+            len(revision_receipt["signature"]) != 64 or
+            any(c not in "0123456789abcdef" for c in revision_receipt["signature"])):
+        return {**denied, "reason": "invalid_revision_receipt"}
+    expected = sign_advcu_reservation_revision(
+        previous_commitment, current_commitment,
+        previous_revision=trusted_previous_revision,
+        approved_for_signing=True, provenance_key=trusted_provenance_key,
+        trusted_previous_signature=trusted_previous_signature,
+        maximum_reservations=maximum_reservations)
+    if not expected.get("ok"):
+        return {**denied, "reason": expected.get("reason", "revision_continuity_failed")}
+    if (type(revision_receipt.get("payload")) is not dict or
+            revision_receipt["payload"] != expected["payload"]):
+        return {**denied, "reason": "revision_anchor_or_payload_mismatch"}
+    if not hmac.compare_digest(revision_receipt["signature"], expected["signature"]):
+        return {**denied, "reason": "revision_authentication_failed"}
+    return {"ok": True, "revision_authenticated": True,
+            "revision": expected["payload"]["revision"],
+            "freshness_verified": False, "durability_verified": False,
+            "execution_authority": False, "recovery_committed": False,
+            "audit_ledger_written": False, "requires_caller_audit": True,
+            "requires_caller_state_recheck": True}
+
+
+
+def verify_advcu_reservation_revision_chain(commitments: Any,
+        revision_receipts: Any, *, trusted_start_revision: int,
+        trusted_start_signature: Optional[str] = None,
+        approved_for_verification: bool = False,
+        trusted_provenance_key: Optional[bytes] = None,
+        maximum_reservations: int = 10000,
+        maximum_chain_links: int = 128) -> Dict[str, Any]:
+    """Verify a bounded, caller-anchored chain; no writes or authority grants.
+
+    The caller must protect the starting revision and signature independently.
+    Verification proves neither freshness nor durable reservation history.
+    """
+    denied = {"ok": False, "execution_authority": False,
+              "recovery_committed": False, "audit_ledger_written": False}
+    if approved_for_verification is not True:
+        return {**denied, "reason": "explicit_chain_verification_approval_required"}
+    if (type(maximum_chain_links) is not int or
+            not 1 <= maximum_chain_links <= 128 or
+            type(maximum_reservations) is not int or
+            not 1 <= maximum_reservations <= 10000 or
+            type(trusted_start_revision) is not int or
+            not 0 <= trusted_start_revision < 2**63 - 1 or
+            type(trusted_start_signature) is not str or
+            len(trusted_start_signature) != 64 or
+            any(c not in "0123456789abcdef" for c in trusted_start_signature) or
+            type(commitments) not in (list, tuple) or
+            type(revision_receipts) not in (list, tuple) or
+            not 1 <= len(revision_receipts) <= maximum_chain_links or
+            len(commitments) != len(revision_receipts) + 1 or
+            trusted_start_revision + len(revision_receipts) >= 2**63):
+        return {**denied, "reason": "invalid_revision_chain_bounds"}
+    if (type(commitments[0]) is not dict or
+            type(commitments[0].get("signature")) is not str or
+            not hmac.compare_digest(commitments[0]["signature"],
+                                    trusted_start_signature)):
+        return {**denied, "reason": "starting_snapshot_anchor_mismatch"}
+    for index, receipt in enumerate(revision_receipts):
+        result = verify_advcu_reservation_revision(
+            commitments[index], commitments[index + 1], receipt,
+            trusted_previous_revision=trusted_start_revision + index,
+            trusted_previous_signature=commitments[index]["signature"],
+            approved_for_verification=True,
+            trusted_provenance_key=trusted_provenance_key,
+            maximum_reservations=maximum_reservations)
+        if not result.get("ok"):
+            return {**denied, "reason": "chain_link_verification_failed",
+                    "failed_link": index, "link_reason": result.get("reason", "invalid_link")}
+    return {"ok": True, "chain_authenticated": True,
+            "links_verified": len(revision_receipts),
+            "final_revision": trusted_start_revision + len(revision_receipts),
+            "final_snapshot_signature": commitments[-1]["signature"],
+            "freshness_verified": False, "durability_verified": False,
+            "atomic_reservation_verified": False, "execution_authority": False,
+            "recovery_committed": False, "audit_ledger_written": False,
+            "requires_caller_audit": True, "requires_caller_state_recheck": True}
+
+
+def verify_advcu_reservation_revision_checkpoint(commitments: Any,
+        revision_receipts: Any, *, trusted_start_revision: int,
+        trusted_start_signature: Optional[str], trusted_end_revision: int,
+        trusted_end_signature: Optional[str],
+        approved_for_verification: bool = False,
+        trusted_provenance_key: Optional[bytes] = None,
+        maximum_reservations: int = 10000,
+        maximum_chain_links: int = 128) -> Dict[str, Any]:
+    """Verify a bounded chain between two independently caller-trusted anchors.
+
+    No implicit checkpoint trust, key management, state writes or audit claims.
+    A valid chain does not establish freshness of either external anchor.
+    """
+    denied = {"ok": False, "execution_authority": False,
+              "recovery_committed": False, "audit_ledger_written": False}
+    if approved_for_verification is not True:
+        return {**denied, "reason": "explicit_checkpoint_verification_approval_required"}
+    if (type(trusted_end_revision) is not int or
+            not 0 <= trusted_end_revision < 2**63 or
+            type(trusted_end_signature) is not str or
+            len(trusted_end_signature) != 64 or
+            any(c not in "0123456789abcdef" for c in trusted_end_signature)):
+        return {**denied, "reason": "invalid_trusted_end_checkpoint"}
+    checked = verify_advcu_reservation_revision_chain(
+        commitments, revision_receipts,
+        trusted_start_revision=trusted_start_revision,
+        trusted_start_signature=trusted_start_signature,
+        approved_for_verification=True,
+        trusted_provenance_key=trusted_provenance_key,
+        maximum_reservations=maximum_reservations,
+        maximum_chain_links=maximum_chain_links)
+    if not checked.get("ok"):
+        return {**denied, "reason": checked.get("reason", "chain_verification_failed"),
+                **({"failed_link": checked["failed_link"]} if "failed_link" in checked else {})}
+    if (checked["final_revision"] != trusted_end_revision or
+            not hmac.compare_digest(checked["final_snapshot_signature"],
+                                    trusted_end_signature)):
+        return {**denied, "reason": "trusted_end_checkpoint_mismatch"}
+    return {"ok": True, "checkpoint_continuity_verified": True,
+            "links_verified": checked["links_verified"],
+            "final_revision": checked["final_revision"],
+            "final_snapshot_signature": checked["final_snapshot_signature"],
+            "freshness_verified": False, "durability_verified": False,
+            "atomic_reservation_verified": False, "execution_authority": False,
+            "recovery_committed": False, "audit_ledger_written": False,
+            "requires_caller_audit": True, "requires_caller_state_recheck": True}
+
+
+def verify_advcu_reservation_checkpoint_segments(segments: Any, *,
+        trusted_start_revision: int, trusted_start_signature: Optional[str],
+        trusted_end_revision: int, trusted_end_signature: Optional[str],
+        approved_for_verification: bool = False,
+        trusted_provenance_key: Optional[bytes] = None,
+        maximum_reservations: int = 10000,
+        maximum_segments: int = 8,
+        maximum_total_links: int = 128) -> Dict[str, Any]:
+    """Read-only bounded verification of consecutive caller-anchored segments.
+
+    Each segment is (commitments, revision_receipts). Intermediate anchors
+    are derived from authenticated prior segments, never silently trusted.
+    Neither durability nor freshness nor execution permission is established.
+    """
+    denied = {"ok": False, "execution_authority": False,
+              "recovery_committed": False, "audit_ledger_written": False}
+    if approved_for_verification is not True:
+        return {**denied, "reason": "explicit_segment_verification_approval_required"}
+    if (type(maximum_segments) is not int or not 1 <= maximum_segments <= 8 or
+            type(maximum_total_links) is not int or not 1 <= maximum_total_links <= 128 or
+            type(maximum_reservations) is not int or not 1 <= maximum_reservations <= 10000 or
+            type(segments) not in (list, tuple) or
+            not 1 <= len(segments) <= maximum_segments or
+            type(trusted_start_revision) is not int or
+            not 0 <= trusted_start_revision < 2**63 or
+            type(trusted_end_revision) is not int or
+            not 0 <= trusted_end_revision < 2**63 or
+            type(trusted_start_signature) is not str or
+            len(trusted_start_signature) != 64 or
+            any(c not in "0123456789abcdef" for c in trusted_start_signature) or
+            type(trusted_end_signature) is not str or
+            len(trusted_end_signature) != 64 or
+            any(c not in "0123456789abcdef" for c in trusted_end_signature)):
+        return {**denied, "reason": "invalid_segment_bounds_or_anchors"}
+    total_links = 0
+    for segment in segments:
+        if (type(segment) not in (list, tuple) or len(segment) != 2 or
+                type(segment[0]) not in (list, tuple) or
+                type(segment[1]) not in (list, tuple) or
+                not 1 <= len(segment[1]) <= 128 or
+                len(segment[0]) != len(segment[1]) + 1):
+            return {**denied, "reason": "invalid_segment_structure"}
+        total_links += len(segment[1])
+        if total_links > maximum_total_links:
+            return {**denied, "reason": "total_link_capacity_exceeded"}
+    if trusted_start_revision + total_links != trusted_end_revision:
+        return {**denied, "reason": "segment_revision_anchor_mismatch"}
+    revision, signature = trusted_start_revision, trusted_start_signature
+    for index, (commitments, receipts) in enumerate(segments):
+        checked = verify_advcu_reservation_revision_chain(
+            commitments, receipts, trusted_start_revision=revision,
+            trusted_start_signature=signature, approved_for_verification=True,
+            trusted_provenance_key=trusted_provenance_key,
+            maximum_reservations=maximum_reservations,
+            maximum_chain_links=maximum_total_links)
+        if not checked.get("ok"):
+            return {**denied, "reason": "segment_verification_failed",
+                    "failed_segment": index,
+                    "segment_reason": checked.get("reason", "invalid_segment")}
+        revision, signature = checked["final_revision"], checked["final_snapshot_signature"]
+    if not hmac.compare_digest(signature, trusted_end_signature):
+        return {**denied, "reason": "segment_end_signature_mismatch"}
+    return {"ok": True, "segments_verified": len(segments),
+            "links_verified": total_links, "final_revision": revision,
+            "final_snapshot_signature": signature, "freshness_verified": False,
+            "durability_verified": False, "atomic_reservation_verified": False,
+            "execution_authority": False, "recovery_committed": False,
+            "audit_ledger_written": False, "requires_caller_audit": True,
+            "requires_caller_state_recheck": True}
+
+
+def verify_advcu_reservation_intermediate_anchors(segments: Any,
+        intermediate_anchors: Any, *, trusted_start_revision: int,
+        trusted_start_signature: Optional[str], trusted_end_revision: int,
+        trusted_end_signature: Optional[str],
+        approved_for_verification: bool = False,
+        trusted_provenance_key: Optional[bytes] = None,
+        maximum_reservations: int = 10000,
+        maximum_segments: int = 8,
+        maximum_total_links: int = 128) -> Dict[str, Any]:
+    """Read-only verification of independently supplied intermediate checkpoints.
+
+    Exactly one caller-trusted (revision, signature) anchor is required at
+    each internal segment boundary. These anchors MUST be independently
+    authenticated by the caller; this function does not confer trust on them.
+    """
+    denied = {"ok": False, "execution_authority": False,
+              "recovery_committed": False, "audit_ledger_written": False}
+    if approved_for_verification is not True:
+        return {**denied, "reason": "explicit_intermediate_verification_approval_required"}
+    if (type(maximum_segments) is not int or
+            not 1 <= maximum_segments <= 8 or
+            type(maximum_total_links) is not int or
+            not 1 <= maximum_total_links <= 128 or
+            type(maximum_reservations) is not int or
+            not 1 <= maximum_reservations <= 10000):
+        return {**denied, "reason": "invalid_segment_bounds_or_anchors"}
+    if (type(segments) not in (list, tuple) or
+            not 2 <= len(segments) <= maximum_segments or
+            type(intermediate_anchors) not in (list, tuple) or
+            len(intermediate_anchors) != len(segments) - 1):
+        return {**denied, "reason": ("invalid_segment_bounds_or_anchors"
+                if type(segments) in (list, tuple) and len(segments) > maximum_segments
+                else "invalid_intermediate_anchor_count")}
+    for anchor in intermediate_anchors:
+        if (type(anchor) not in (tuple, list) or len(anchor) != 2 or
+                type(anchor[0]) is not int or
+                not 0 <= anchor[0] < 2**63 or
+                type(anchor[1]) is not str or len(anchor[1]) != 64 or
+                any(ch not in "0123456789abcdef" for ch in anchor[1])):
+            return {**denied, "reason": "invalid_intermediate_anchor"}
+    # Reject contradictory or out-of-order caller checkpoints before the
+    # more expensive cryptographic segment traversal.  This preflight does
+    # not confer trust on any supplied anchor or mutate caller state.
+    if (type(trusted_start_revision) is not int or
+            not 0 <= trusted_start_revision < 2**63 or
+            type(trusted_end_revision) is not int or
+            not 0 <= trusted_end_revision < 2**63):
+        return {**denied, "reason": "invalid_revision_anchor"}
+    # Reject malformed caller trust anchors before traversing revision history.
+    # Authentication still occurs in the delegated cryptographic verifier.
+    if (type(trusted_start_signature) is not str or
+            len(trusted_start_signature) != 64 or
+            any(ch not in "0123456789abcdef" for ch in trusted_start_signature) or
+            type(trusted_end_signature) is not str or
+            len(trusted_end_signature) != 64 or
+            any(ch not in "0123456789abcdef" for ch in trusted_end_signature)):
+        return {**denied, "reason": "invalid_terminal_signature_anchor"}
+    # Enforce the caller's aggregate budget before cryptographic traversal.
+    # Reject oversized segments without iterating through individual receipts.
+    total_links = 0
+    for segment in segments:
+        if (type(segment) not in (tuple, list) or len(segment) != 2 or
+                type(segment[0]) not in (tuple, list) or
+                type(segment[1]) not in (tuple, list) or
+                not 1 <= len(segment[1]) <= 128 or
+                len(segment[0]) != len(segment[1]) + 1):
+            return {**denied, "reason": "invalid_segment_structure"}
+        total_links += len(segment[1])
+        if total_links > maximum_total_links:
+            return {**denied, "reason": "total_link_capacity_exceeded"}
+    # Fail closed on a contradictory terminal revision before any HMAC work.
+    # This is only a structural preflight; trust remains caller-managed.
+    if (trusted_start_revision + total_links != trusted_end_revision or
+            trusted_start_revision + total_links >= 2**63):
+        return {**denied, "reason": "segment_revision_anchor_mismatch"}
+    expected_revision = trusted_start_revision
+    for index, (segment, anchor) in enumerate(zip(segments[:-1], intermediate_anchors)):
+        if (type(segment) not in (tuple, list) or len(segment) != 2 or
+                type(segment[1]) not in (tuple, list) or
+                not 1 <= len(segment[1]) <= 128):
+            return {**denied, "reason": "invalid_segment_structure"}
+        expected_revision += len(segment[1])
+        if (expected_revision >= trusted_end_revision or
+                anchor[0] != expected_revision):
+            return {**denied, "reason": "intermediate_revision_order_mismatch",
+                    "failed_boundary": index}
+    checked = verify_advcu_reservation_checkpoint_segments(
+        segments, trusted_start_revision=trusted_start_revision,
+        trusted_start_signature=trusted_start_signature,
+        trusted_end_revision=trusted_end_revision,
+        trusted_end_signature=trusted_end_signature,
+        approved_for_verification=True,
+        trusted_provenance_key=trusted_provenance_key,
+        maximum_reservations=maximum_reservations,
+        maximum_segments=maximum_segments,
+        maximum_total_links=maximum_total_links)
+    if not checked.get("ok"):
+        return {**denied, "reason": checked.get("reason", "segment_verification_failed"),
+                **({"failed_segment": checked["failed_segment"]}
+                   if "failed_segment" in checked else {})}
+    revision = trusted_start_revision
+    for index, segment in enumerate(segments[:-1]):
+        revision += len(segment[1])
+        signature = segment[0][-1]["signature"]
+        anchor_revision, anchor_signature = intermediate_anchors[index]
+        if (revision != anchor_revision or
+                not hmac.compare_digest(signature, anchor_signature)):
+            return {**denied, "reason": "intermediate_anchor_mismatch",
+                    "failed_boundary": index}
+    return {"ok": True, "intermediate_anchors_verified": len(intermediate_anchors),
+            "segments_verified": checked["segments_verified"],
+            "links_verified": checked["links_verified"],
+            "final_revision": checked["final_revision"],
+            "final_snapshot_signature": checked["final_snapshot_signature"],
+            "freshness_verified": False, "durability_verified": False,
+            "atomic_reservation_verified": False, "execution_authority": False,
+            "recovery_committed": False, "audit_ledger_written": False,
+            "requires_caller_audit": True, "requires_caller_state_recheck": True}

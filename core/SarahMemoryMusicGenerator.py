@@ -256,6 +256,7 @@ try:
     import SarahMemoryGlobals as SMG
     DEBUG_MODE = SMG.DEBUG_MODE
 except ImportError:
+    SMG = None  # Standalone/CPU-first mode must not depend on global configuration.
     DEBUG_MODE = True
     logging.warning("[MusicStudio] Running in standalone mode without SarahMemoryGlobals")
 
@@ -277,10 +278,15 @@ try:
     _CANVAS_PROJECTS = SMG.CANVAS_PROJECTS_DIR
     _CANVAS_CACHE = SMG.CANVAS_CACHE_DIR
 except Exception:
+    # Preserve the core/data workspace convention when Globals is absent.
+    DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
     MUSIC_DIR = os.path.join(DATA_DIR, "canvas", "music")
     EXPORTS_DIR = os.path.join(DATA_DIR, "canvas", "exports")
     _CANVAS_PROJECTS = os.path.join(DATA_DIR, "canvas", "projects")
     _CANVAS_CACHE = os.path.join(DATA_DIR, "canvas", "cache")
+
+# Both configured and standalone export paths must have one canonical owner.
+MUSIC_EXPORTS_DIR = EXPORTS_DIR
 
 MUSIC_PROJECTS_DIR = os.path.join(_CANVAS_PROJECTS, "music")
 MUSIC_CACHE_DIR = os.path.join(_CANVAS_CACHE, "music")
